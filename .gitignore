@@ -1,0 +1,10 @@
+# Build
+build/
+*.o
+*.out
+
+# VS Code
+.vscode/
+
+# Sistema
+.DS_Store
