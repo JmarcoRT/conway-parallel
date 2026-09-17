@@ -254,18 +254,23 @@ Las optimizaciones de rendimiento no deben sacrificar la corrección.
 
 No se deben agregar bibliotecas o dependencias nuevas sin coordinación.
 
-Entorno de referencia inicial:
+Entorno de referencia:
 
-```text
+``` text
 Ubuntu 24.04 LTS
-C++17
-GCC/G++ 14
-CMake
-OpenMP
-Open MPI
+C++20
+GCC/G++ 14.2
+CMake 3.20 o superior
+OpenMP mediante GCC (libgomp)
+Open MPI 5.0.10 compilado con GCC 14
 ```
 
-La interfaz de terminal y otras dependencias todavía pueden definirse posteriormente.
+La instalación de referencia de Open MPI se encuentra en:
+
+`/opt/openmpi-5.0.10-gcc14`
+
+La interfaz de terminal y otras dependencias todavía pueden definirse
+posteriormente.
 
 ---
 

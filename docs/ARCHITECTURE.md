@@ -170,16 +170,20 @@ La edad nunca debe modificar las reglas originales de Conway.
 
 ## 7. Representación del tablero
 
-La representación debe ser compacta y adecuada para recorrer grandes cantidades de células.
+El estado del tablero se almacenará mediante estructuras contiguas en memoria.
 
-Como dirección inicial se consideran estructuras contiguas en memoria para almacenar:
+La implementación actual utiliza:
 
-- estado vivo/muerto;
-- edad.
+- `std::vector<std::uint8_t>` para representar el estado vivo/muerto;
+- `std::vector<std::uint16_t>` para representar la edad de las células.
 
-La representación interna definitiva se definirá durante la implementación del `core`.
+El tablero bidimensional se representa internamente de forma lineal, utilizando la relación:
 
-No se deben crear dependencias externas sobre la representación interna del tablero. Los demás módulos deberán acceder al estado mediante interfaces definidas por `core`.
+`index = row * width + col`
+
+Esta representación facilita recorridos secuenciales y paralelos sobre memoria contigua.
+
+La representación interna permanece encapsulada dentro de `core`. Los demás módulos no deben depender directamente de estas estructuras y deberán acceder al estado mediante las interfaces públicas definidas por `core`.
 
 ---
 
@@ -241,7 +245,31 @@ Si aparecen instrucciones MPI, códigos de color o lectura de teclado dentro de 
 
 ---
 
-## 10. Interfaces y cambios
+## 10. Entorno tecnológico de referencia
+
+El entorno de referencia del proyecto es:
+
+- Ubuntu 24.04 LTS;
+- C++20;
+- GCC/G++ 14.2;
+- CMake 3.20 o superior;
+- OpenMP mediante GCC (`libgomp`);
+- Open MPI 5.0.10 compilado con GCC 14.
+
+La instalación de referencia de Open MPI se encuentra en:
+
+`/opt/openmpi-5.0.10-gcc14`
+
+El proyecto utiliza CMake para localizar y enlazar OpenMP y MPI mediante:
+
+- `OpenMP::OpenMP_CXX`;
+- `MPI::MPI_CXX`.
+
+Las pruebas de rendimiento oficiales del proyecto deberán ejecutarse utilizando este entorno de referencia o documentando explícitamente cualquier diferencia.
+
+---
+
+## 11. Interfaces y cambios
 
 Las interfaces públicas compartidas entre módulos forman parte del contrato del proyecto.
 
@@ -256,11 +284,10 @@ No se deben crear versiones alternativas del `core` dentro de otros módulos.
 
 ---
 
-## 11. Decisiones todavía abiertas
+## 12. Decisiones todavía abiertas
 
 Las siguientes decisiones todavía pueden evolucionar:
 
-- representación interna definitiva de la matriz;
 - detalles de la estrategia de partición MPI;
 - biblioteca definitiva para la interfaz de terminal;
 - representación visual de hilos y procesos;
