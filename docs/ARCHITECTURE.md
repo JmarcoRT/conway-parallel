@@ -4,9 +4,9 @@
 
 Este documento define la arquitectura base de `conway-parallel`.
 
-Su objetivo es permitir que distintos integrantes desarrollen módulos en paralelo sin crear implementaciones incompatibles entre sí.
+El objetivo es permitir que distintos integrantes desarrollen módulos en paralelo sin crear implementaciones incompatibles.
 
-Las decisiones definidas aquí deben respetarse durante el desarrollo. Cualquier cambio que afecte interfaces comunes o la arquitectura debe coordinarse antes de implementarse.
+Las decisiones aquí definidas deben respetarse durante el desarrollo. Cualquier cambio que afecte interfaces comunes o la arquitectura debe coordinarse antes de implementarse.
 
 ---
 
@@ -16,117 +16,224 @@ Implementar el Juego de la Vida de Conway en C++ mediante cuatro modos de ejecuc
 
 - Secuencial
 - OpenMP
+- Pthreads
 - MPI
-- Híbrido MPI + OpenMP
 
 Todos los modos deben producir el mismo estado del tablero para una misma configuración inicial.
 
-La implementación secuencial será utilizada como referencia para validar las implementaciones paralelas.
+La implementación secuencial será utilizada como referencia de corrección para validar las implementaciones paralelas.
+
+El proyecto tendrá dos formas principales de uso:
+
+- `benchmark`: comparar rendimiento entre implementaciones;
+- `visualización`: observar cómo cada implementación construye las generaciones.
 
 ---
 
 ## 3. Arquitectura general
 
 ```text
-                     main / app
-                         |
-          +--------------+--------------+
-          |              |              |
-       controls       renderer       benchmark
-          |              |              |
-          +--------------+--------------+
-                         |
-                       CORE
-                  estado del tablero
-                         |
-        +----------------+-----------------+
-        |                |                 |
-   Sequential         OpenMP              MPI
-        |                |                 |
-        +----------------+-------+---------+
-                                 |
-                          MPI + OpenMP
+                    main / app
+                        |
+                 entrada activa
+                        |
+             +----------+----------+
+             |                     |
+         benchmark            visualización
+             |                     |
+             +----------+----------+
+                        |
+                       core
+                        |
+      +-------------+-------------+-------------+
+      |             |             |             |
+ sequential      openmp        pthreads         mpi
 ```
+
+Los cuatro motores de ejecución trabajan sobre el mismo problema lógico y deben respetar las mismas reglas de Conway.
+
+La entrada activa se mantiene mientras el programa permanezca abierto y puede reutilizarse entre `benchmark` y `visualización`.
 
 ---
 
 ## 4. Módulos
 
+### input
+
+Responsable de leer y validar la entrada del usuario.
+
+Debe:
+
+- leer archivos `.txt`;
+- obtener dimensiones del tablero;
+- obtener el estado inicial;
+- validar formato y contenido;
+- producir una representación común `InputData`.
+
+No debe:
+
+- aplicar reglas de Conway;
+- agregar halos;
+- ejecutar motores;
+- medir rendimiento;
+- renderizar.
+
+La entrada representa únicamente el tablero lógico del usuario.
+
 ### core
 
-Responsable únicamente del estado y representación del Juego de la Vida.
+Responsable de la representación interna del Juego de la Vida.
 
 Incluye:
 
-- dimensiones del tablero;
-- estado de las células;
-- edad de las células;
+- ancho y alto lógicos;
+- `stride`;
+- buffer `current`;
+- buffer `next`;
 - generación actual;
-- consulta y modificación de células.
+- consulta y modificación controlada de células.
+
+El tablero utiliza memoria contigua y un halo de una celda alrededor del área lógica.
+
+Para un tablero lógico:
+
+```text
+width x height
+```
+
+la representación interna será:
+
+```text
+(width + 2) x (height + 2)
+```
 
 No debe contener:
 
 - MPI;
 - OpenMP;
+- Pthreads;
 - interfaz de terminal;
-- entrada de teclado;
+- lectura de teclado;
 - mediciones de rendimiento.
 
 ### sequential
 
-Implementación secuencial de la evolución del tablero y referencia de corrección para OpenMP, MPI e híbrido.
+Implementación secuencial de la evolución del tablero.
+
+Es la implementación de referencia para validar OpenMP, Pthreads y MPI.
+
+Debe recorrer únicamente las células reales del tablero y calcular `next` leyendo exclusivamente desde `current`.
 
 ### openmp
 
-Implementación de la evolución utilizando memoria compartida mediante OpenMP. Paralelizará principalmente el cálculo de las células del tablero.
+Implementación de la evolución utilizando memoria compartida mediante OpenMP.
+
+Paralelizará principalmente el cálculo de las células del tablero.
+
+Todos los hilos deben:
+
+- leer desde `current`;
+- escribir únicamente en su región correspondiente de `next`;
+- sincronizarse antes del intercambio de buffers.
+
+### pthreads
+
+Implementación mediante POSIX Threads.
+
+El programa crea explícitamente los hilos y asigna rangos del tablero a cada uno.
+
+Todos los hilos deben:
+
+- leer desde `current`;
+- escribir únicamente en su región correspondiente de `next`;
+- sincronizarse antes del intercambio de buffers.
 
 ### mpi
 
-Responsable de la ejecución distribuida mediante MPI. Inicialmente se utilizará una partición horizontal del tablero. Cada proceso trabajará con una región local y se comunicará con los procesos vecinos mediante filas halo.
+Responsable de la ejecución distribuida mediante MPI.
 
-### hybrid
+Inicialmente se utilizará una partición horizontal del tablero.
 
-Combina ambas estrategias:
+Cada proceso trabajará con una región local y se comunicará con sus procesos vecinos mediante filas halo.
 
-- MPI distribuye regiones del tablero entre procesos.
-- OpenMP paraleliza el cálculo dentro de cada proceso.
+La estrategia podrá revisarse posteriormente si los experimentos justifican otra descomposición.
 
 ### patterns
 
-Responsable de cargar configuraciones conocidas, como Block, Blinker, Glider, Toad, Beacon, Pulsar y Gosper Glider Gun.
+Contendrá entradas conocidas para pruebas y demostraciones, por ejemplo:
+
+- Block;
+- Blinker;
+- Glider;
+- Toad;
+- Beacon;
+- Pulsar;
+- Gosper Glider Gun.
+
+Estos patrones pueden almacenarse como archivos de entrada y no sustituyen al módulo `input`.
 
 ### renderer
 
 Responsable exclusivamente de representar el estado de la simulación.
 
-Debe permitir posteriormente:
+Podrá mostrar:
 
-- visualización por edad de las células;
-- visualización de regiones MPI;
-- límites entre regiones;
-- métricas de ejecución.
+- generación actual;
+- construcción de `next`;
+- regiones procesadas por hilos;
+- regiones MPI;
+- intercambio de halos;
+- información suministrada por otros módulos.
 
 La simulación debe poder funcionar sin `renderer`.
 
-### controls
+El renderer no mide rendimiento ni implementa reglas de Conway.
 
-Gestionará acciones del usuario como Play/Pause, Step, Reset, Clear, Random, selección de patrones y cambio de visualización.
+### app / controls
+
+Gestiona el flujo de interacción del usuario.
+
+Debe coordinar:
+
+- menú principal;
+- entrada activa;
+- acceso a benchmark;
+- acceso a visualización;
+- selección de implementación;
+- cambio de entrada;
+- volver y salir.
+
+La visualización podrá incorporar controles opcionales como pausa, avance por generación o velocidad, sin formar parte del núcleo.
 
 ### benchmark
 
-Responsable de medir el rendimiento sin renderizado para evitar que la interfaz altere las mediciones.
+Responsable de medir rendimiento sin renderizado.
+
+Cada implementación debe iniciar desde la misma entrada original.
 
 Métricas previstas:
 
-- tiempo de ejecución;
+- tiempo total;
 - tiempo por generación;
 - speedup;
 - eficiencia;
 - throughput.
 
+La validación no debe contaminar la región temporizada del benchmark.
+
 ### tests
 
-Contendrá pruebas de corrección. Las implementaciones OpenMP, MPI e híbrida deberán compararse con la implementación secuencial.
+Contendrá pruebas de corrección.
+
+Las implementaciones OpenMP, Pthreads y MPI deberán compararse con la implementación secuencial.
+
+Casos mínimos:
+
+- Block permanece estable;
+- Blinker vuelve a su estado inicial después de dos generaciones;
+- OpenMP produce el mismo resultado que secuencial;
+- Pthreads produce el mismo resultado que secuencial;
+- MPI produce el mismo resultado que secuencial.
 
 ---
 
@@ -151,39 +258,76 @@ current --calcular--> next
                       +-- swap --> current
 ```
 
+Todos los motores deben respetar esta regla.
+
 ---
 
-## 6. Edad de las células
+## 6. Representación del tablero
 
-La edad se utilizará únicamente con fines de visualización.
+El estado del tablero se almacenará mediante memoria contigua.
 
-```text
-célula muerta        -> edad = 0
-célula que nace      -> edad = 1
-célula que sobrevive -> edad + 1
-célula que muere     -> edad = 0
+La representación base utilizará:
+
+```cpp
+std::vector<std::uint8_t>
 ```
 
-La edad nunca debe modificar las reglas originales de Conway.
+Cada posición representa:
+
+```text
+0 -> célula muerta
+1 -> célula viva
+```
+
+El tablero se almacena de forma lineal.
+
+Con halo:
+
+```cpp
+stride = width + 2;
+index = row * stride + col;
+```
+
+Las células reales ocupan:
+
+```text
+row = 1 .. height
+col = 1 .. width
+```
+
+El halo ocupa las filas y columnas exteriores.
+
+Los demás módulos no deben depender directamente de la representación interna de `core`.
 
 ---
 
-## 7. Representación del tablero
+## 7. Entrada activa
 
-El estado del tablero se almacenará mediante estructuras contiguas en memoria.
+La aplicación mantiene una única entrada activa durante su ejecución.
 
-La implementación actual utiliza:
+El flujo general es:
 
-- `std::vector<std::uint8_t>` para representar el estado vivo/muerto;
-- `std::vector<std::uint16_t>` para representar la edad de las células.
+```text
+archivo .txt
+     |
+     v
+   input
+     |
+     v
+ InputData
+     |
+     +--> benchmark
+     |
+     +--> visualización
+```
 
-El tablero bidimensional se representa internamente de forma lineal, utilizando la relación:
+Si no existe una entrada activa al entrar a un modo, el programa solicitará una.
 
-`index = row * width + col`
+Si ya existe, se reutilizará.
 
-Esta representación facilita recorridos secuenciales y paralelos sobre memoria contigua.
+El usuario podrá cambiarla desde `benchmark` o `visualización`.
 
-La representación interna permanece encapsulada dentro de `core`. Los demás módulos no deben depender directamente de estas estructuras y deberán acceder al estado mediante las interfaces públicas definidas por `core`.
+Cada ejecución debe crear su propio estado de trabajo a partir de la entrada inicial, sin modificar el original.
 
 ---
 
@@ -191,9 +335,22 @@ La representación interna permanece encapsulada dentro de `core`. Los demás m�
 
 ### OpenMP
 
-OpenMP se utilizará para distribuir entre hilos el cálculo de células.
+OpenMP distribuirá entre hilos el cálculo de las células.
 
-No debe utilizarse para paralelizar el renderizado, la entrada de usuario, la lectura de teclado o la escritura de archivos.
+No debe utilizarse para paralelizar:
+
+- renderizado;
+- entrada de usuario;
+- lectura de teclado;
+- escritura de archivos.
+
+### Pthreads
+
+Pthreads utilizará hilos creados explícitamente.
+
+La primera estrategia será dividir el tablero en rangos de filas.
+
+Cada hilo trabajará sobre una región propia de `next`.
 
 ### MPI
 
@@ -211,41 +368,47 @@ La primera estrategia será dividir el tablero horizontalmente:
 +----------------------+
 ```
 
-Los procesos intercambiarán las filas necesarias de sus fronteras mediante halos.
-
-Esta estrategia podrá revisarse posteriormente si los experimentos justifican otra descomposición.
-
-### MPI + OpenMP
-
-```text
-Tablero
-   |
-   +-- MPI -> regiones
-   |
-   +-- cada región
-          |
-          +-- OpenMP -> hilos
-```
+Los procesos intercambiarán las filas frontera necesarias mediante halos.
 
 ---
 
-## 9. Principios de integración
+## 9. Benchmark y validación
+
+Todos los modos deben recibir:
+
+- la misma entrada inicial;
+- el mismo número de generaciones;
+- las mismas reglas;
+- las mismas condiciones de borde.
+
+Durante pruebas de corrección se podrá comparar el tablero generación por generación.
+
+Durante benchmarks, la validación debe realizarse fuera de la región temporizada.
+
+El resultado paralelo debe ser equivalente al resultado secuencial.
+
+---
+
+## 10. Principios de integración
 
 Un módulo no debe conocer detalles que no necesita.
 
 - `core` no depende de MPI.
 - `core` no depende de OpenMP.
+- `core` no depende de Pthreads.
 - `core` no depende de la interfaz.
 - `renderer` no implementa reglas de Conway.
+- `renderer` no mide rendimiento.
 - los motores de ejecución no contienen código de renderizado.
 - `benchmark` puede ejecutar la simulación sin interfaz.
 - `main` coordina módulos, pero no concentra su implementación.
+- `input` no conoce detalles de la representación interna del tablero.
 
-Si aparecen instrucciones MPI, códigos de color o lectura de teclado dentro de `core`, debe revisarse el diseño.
+No se deben crear versiones alternativas del `core` dentro de otros módulos.
 
 ---
 
-## 10. Entorno tecnológico de referencia
+## 11. Entorno tecnológico de referencia
 
 El entorno de referencia del proyecto es:
 
@@ -258,39 +421,43 @@ El entorno de referencia del proyecto es:
 
 La instalación de referencia de Open MPI se encuentra en:
 
-`/opt/openmpi-5.0.10-gcc14`
+```text
+/opt/openmpi-5.0.10-gcc14
+```
 
-El proyecto utiliza CMake para localizar y enlazar OpenMP y MPI mediante:
+El proyecto utiliza CMake para localizar y enlazar:
 
 - `OpenMP::OpenMP_CXX`;
 - `MPI::MPI_CXX`.
 
-Las pruebas de rendimiento oficiales del proyecto deberán ejecutarse utilizando este entorno de referencia o documentando explícitamente cualquier diferencia.
+Las pruebas oficiales de rendimiento deberán ejecutarse en este entorno o documentando cualquier diferencia.
 
 ---
 
-## 11. Interfaces y cambios
+## 12. Interfaces y cambios
 
-Las interfaces públicas compartidas entre módulos forman parte del contrato del proyecto.
+Las interfaces públicas compartidas forman parte del contrato del proyecto.
 
-Antes de modificar una interfaz utilizada por otros integrantes se debe:
+Antes de modificar una interfaz utilizada por otros módulos se debe:
 
 1. justificar el cambio;
 2. comunicarlo al integrador;
 3. revisar los módulos afectados;
 4. actualizar este documento si cambia la arquitectura.
 
-No se deben crear versiones alternativas del `core` dentro de otros módulos.
+No se deben introducir dependencias nuevas sin coordinación.
 
 ---
 
-## 12. Decisiones todavía abiertas
+## 13. Decisiones todavía abiertas
 
-Las siguientes decisiones todavía pueden evolucionar:
+Las siguientes decisiones pueden evolucionar:
 
-- detalles de la estrategia de partición MPI;
+- detalles de la estrategia MPI;
 - biblioteca definitiva para la interfaz de terminal;
 - representación visual de hilos y procesos;
-- tamaños y configuraciones finales de los benchmarks.
+- controles interactivos de visualización;
+- tamaños finales de benchmark;
+- formato definitivo de exportación de resultados.
 
 Estas decisiones no deben asumirse como definitivas sin coordinación con el equipo.

@@ -12,6 +12,7 @@ find_package(MPI REQUIRED COMPONENTS CXX)
 add_executable(conway
     src/main.cpp
     src/core/game.cpp
+    src/input/input.cpp
 )
 
 target_include_directories(conway PRIVATE include)
