@@ -5,14 +5,35 @@
 
 namespace conway {
 
-Game::Game(std::size_t width, std::size_t height)
-    : width_(width),
-      height_(height),
-      cells_(width * height, 0),
-      ages_(width * height, 0) {
+Game::Game(const InputData& input)
+    : width_(input.width),
+      height_(input.height),
+      stride_(input.width + 2),
+      current_((input.width + 2) * (input.height + 2), 0),
+      next_((input.width + 2) * (input.height + 2), 0) {
 
-    if (width == 0 || height == 0) {
-        throw std::invalid_argument("El tablero debe tener dimensiones mayores que cero");
+    if (width_ == 0 || height_ == 0) {
+        throw std::invalid_argument(
+            "El tablero debe tener dimensiones mayores que cero"
+        );
+    }
+
+    for (std::size_t row = 0; row < height_; ++row) {
+        for (std::size_t col = 0; col < width_; ++col) {
+
+            const std::size_t inputIndex =
+                row * width_ + col;
+
+            const std::size_t gameIndex =
+                (row + 1) * stride_ + (col + 1);
+
+            current_[gameIndex] =
+                input.cells[inputIndex];
+
+            if (current_[gameIndex] != 0) {
+                ++aliveCount_;
+            }
+        }
     }
 }
 
@@ -33,23 +54,18 @@ std::size_t Game::aliveCount() const noexcept {
 }
 
 bool Game::isAlive(std::size_t row, std::size_t col) const {
-    return cells_.at(index(row, col)) != 0;
-}
-
-std::uint16_t Game::age(std::size_t row, std::size_t col) const {
-    return ages_.at(index(row, col));
+    return current_.at(index(row, col)) != 0;
 }
 
 void Game::setCell(std::size_t row, std::size_t col, bool alive) {
     const std::size_t i = index(row, col);
-    const bool wasAlive = cells_.at(i) != 0;
+    const bool wasAlive = current_.at(i) != 0;
 
     if (wasAlive == alive) {
         return;
     }
 
-    cells_[i] = alive ? 1 : 0;
-    ages_[i] = alive ? 1 : 0;
+    current_[i] = alive ? 1 : 0;
 
     if (alive) {
         ++aliveCount_;
@@ -59,19 +75,60 @@ void Game::setCell(std::size_t row, std::size_t col, bool alive) {
 }
 
 void Game::clear() {
-    std::fill(cells_.begin(), cells_.end(), 0);
-    std::fill(ages_.begin(), ages_.end(), 0);
+    std::fill(current_.begin(), current_.end(), 0);
+    std::fill(next_.begin(), next_.end(), 0);
 
     generation_ = 0;
     aliveCount_ = 0;
 }
 
-std::size_t Game::index(std::size_t row, std::size_t col) const {
+std::size_t Game::index(
+    std::size_t row,
+    std::size_t col
+) const {
+
     if (row >= height_ || col >= width_) {
-        throw std::out_of_range("Celda fuera de los limites del tablero");
+        throw std::out_of_range(
+            "Celda fuera de los limites del tablero"
+        );
     }
 
-    return row * width_ + col;
+    return (row + 1) * stride_ + (col + 1);
+}
+
+void Game::step() {
+    std::size_t nextAliveCount = 0;
+
+    for (std::size_t row = 1; row <= height_; ++row) {
+        for (std::size_t col = 1; col <= width_; ++col) {
+
+            const std::size_t i =
+                row * stride_ + col;
+
+            const int neighbors =
+                  current_[i - stride_ - 1]
+                + current_[i - stride_]
+                + current_[i - stride_ + 1]
+                + current_[i - 1]
+                + current_[i + 1]
+                + current_[i + stride_ - 1]
+                + current_[i + stride_]
+                + current_[i + stride_ + 1];
+
+            next_[i] =
+                (neighbors == 3) ||
+                (current_[i] != 0 && neighbors == 2);
+
+            if (next_[i] != 0) {
+                ++nextAliveCount;
+            }
+        }
+    }
+
+    current_.swap(next_);
+
+    aliveCount_ = nextAliveCount;
+    ++generation_;
 }
 
 }
