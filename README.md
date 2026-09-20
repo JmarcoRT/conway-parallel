@@ -4,15 +4,23 @@ Simulador del **Juego de la Vida de Conway** desarrollado en C++ para estudiar y
 
 - Secuencial
 - OpenMP
+- Pthreads
 - MPI
-- MPI + OpenMP
 
-El proyecto busca comprobar que las versiones paralelas produzcan los mismos resultados que la versión secuencial y analizar su rendimiento.
+El proyecto busca comprobar que las implementaciones paralelas y distribuidas produzcan los mismos resultados que la versión secuencial, y analizar su rendimiento mediante métricas como tiempo de ejecución, speedup y eficiencia.
+
+Además, el simulador contará con:
+
+- carga de tableros desde archivos `.txt`;
+- modo de visualización de la evolución del tablero;
+- visualización del trabajo realizado por threads y procesos;
+- modo benchmark sin renderizado para realizar mediciones comparables.
 
 ## Tecnologías
 
-- C++17
+- C++20
 - OpenMP
+- Pthreads
 - Open MPI
 - CMake
 
@@ -23,7 +31,8 @@ Entorno de referencia: **Ubuntu 24.04 LTS**.
 ```text
 conway-parallel/
 ├── docs/       # Arquitectura y reglas de colaboración
-├── include/    # Cabeceras
+├── include/    # Cabeceras y APIs
+├── patterns/   # Tableros y patrones de entrada
 ├── src/        # Código fuente
 └── tests/      # Pruebas
 ```
@@ -35,3 +44,14 @@ Las reglas para contribuir al proyecto están en [`docs/CONTRIBUTING.md`](docs/C
 ## Estado
 
 Proyecto en desarrollo.
+
+Actualmente se encuentra implementada la base del motor secuencial, incluyendo:
+
+- carga y validación de tableros desde archivos `.txt`;
+- representación del tablero en memoria contigua;
+- halo de una celda alrededor del tablero lógico;
+- doble buffer mediante `current` y `next`;
+- evolución secuencial de generaciones;
+- validación básica mediante patrones conocidos como Blinker.
+
+Las versiones OpenMP, Pthreads y MPI se integrarán progresivamente sobre esta base común.
