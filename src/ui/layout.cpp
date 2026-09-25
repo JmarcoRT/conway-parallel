@@ -20,35 +20,54 @@ std::string repeatStr(const std::string& str, std::size_t times) {
     return result;
 }
 
-// Helper para calcular longitud visual en caracteres UTF-8
+// Helper para calcular longitud visual en caracteres UTF-8 (1 codepoint = 1 celda de terminal)
 std::size_t utf8Length(const std::string& str) {
     std::size_t len = 0;
     for (std::size_t i = 0; i < str.size(); ++i) {
-        if ((static_cast<unsigned char>(str[i]) & 0xC0) != 0x80) {
+        unsigned char c = static_cast<unsigned char>(str[i]);
+        if ((c & 0xC0) != 0x80) {
             len++;
         }
     }
     return len;
 }
 
-// Imprime una línea centrada dentro de la caja con bordes laterales '│'
-void printCenteredLine(const std::string& rawText, const std::string& formattedText, std::size_t innerWidth) {
-    std::size_t textLen = utf8Length(rawText);
-    std::size_t leftPadding = (innerWidth > textLen) ? (innerWidth - textLen) / 2 : 0;
-    std::size_t rightPadding = innerWidth - textLen - leftPadding;
+/**
+ * Imprime una línea dentro del cuadro exterior garantizando matemáticamente
+ * que el espacio interior entre los bordes '│' es exactamente 'innerWidth' caracteres.
+ */
+void printFrameLine(
+    const std::string& rawText,
+    const std::string& formattedText,
+    std::size_t innerWidth,
+    std::size_t leftMargin = 0,
+    bool center = false
+) {
+    std::size_t textVisualLen = utf8Length(rawText);
+    std::size_t leftPadding = 0;
+    std::size_t rightPadding = 0;
 
-    std::cout << color::WHITE << "│" << color::RESET;
-    std::cout << repeatStr(" ", leftPadding);
-    std::cout << formattedText;
-    std::cout << repeatStr(" ", rightPadding);
-    std::cout << color::WHITE << "│" << color::RESET << "\n";
+    if (textVisualLen >= innerWidth) {
+        leftPadding = 0;
+        rightPadding = 0;
+    } else if (center) {
+        leftPadding = (innerWidth - textVisualLen) / 2;
+        rightPadding = innerWidth - textVisualLen - leftPadding;
+    } else {
+        leftPadding = std::min(leftMargin, innerWidth - textVisualLen);
+        rightPadding = innerWidth - textVisualLen - leftPadding;
+    }
+
+    std::cout << color::WHITE << "│" << color::RESET
+              << repeatStr(" ", leftPadding)
+              << formattedText
+              << repeatStr(" ", rightPadding)
+              << color::WHITE << "│" << color::RESET << "\n";
 }
 
-// Imprime una línea vacía dentro de la caja
+// Imprime una línea vacía de la caja
 void printEmptyLine(std::size_t innerWidth) {
-    std::cout << color::WHITE << "│" << color::RESET
-              << repeatStr(" ", innerWidth)
-              << color::WHITE << "│" << color::RESET << "\n";
+    printFrameLine("", "", innerWidth, 0, false);
 }
 
 } // namespace
@@ -73,13 +92,13 @@ void renderLayout(
     std::string titleRaw = "──── " + title + " ────";
     std::ostringstream titleFormatted;
     titleFormatted << color::CYAN << color::BOLD << "──── " << title << " ────" << color::RESET;
-    printCenteredLine(titleRaw, titleFormatted.str(), innerWidth);
+    printFrameLine(titleRaw, titleFormatted.str(), innerWidth, 0, true);
 
     // Subtítulo (opcional)
     if (!subtitle.empty()) {
         std::ostringstream subFormatted;
         subFormatted << color::GRAY << subtitle << color::RESET;
-        printCenteredLine(subtitle, subFormatted.str(), innerWidth);
+        printFrameLine(subtitle, subFormatted.str(), innerWidth, 0, true);
     }
 
     printEmptyLine(innerWidth);
@@ -99,14 +118,7 @@ void renderLayout(
         inputStatusFormatted << color::GREEN << "ninguna" << color::RESET;
     }
 
-    // Alinear entrada activa a la izquierda con padding de 3 espacios
-    std::size_t leftMargin = 3;
-    std::size_t statusLen = utf8Length(inputStatusRaw);
-    std::size_t rightPadding = (innerWidth > leftMargin + statusLen) ? innerWidth - leftMargin - statusLen : 0;
-
-    std::cout << color::WHITE << "│" << color::RESET;
-    std::cout << repeatStr(" ", leftMargin) << inputStatusFormatted.str() << repeatStr(" ", rightPadding);
-    std::cout << color::WHITE << "│" << color::RESET << "\n";
+    printFrameLine(inputStatusRaw, inputStatusFormatted.str(), innerWidth, 3, false);
 
     // Separador horizontal superior: ├────────────────────┤
     std::cout << color::WHITE << "├" << repeatStr("─", innerWidth) << "┤" << color::RESET << "\n";
@@ -122,14 +134,13 @@ void renderLayout(
         std::string optTextRaw = "[" + opt.key + "]  " + opt.label;
 
         if (isSelected) {
-            // Usar utf8Length para medir adecuadamente caracteres con acento como 'ó'
             std::size_t textVisualLen = utf8Length(optTextRaw);
-            std::size_t boxInnerWidth = textVisualLen + 4; // 2 espacios por lado
+            std::size_t boxInnerWidth = textVisualLen + 4; // 2 espacios a cada lado
 
             std::string topBoxRaw = "┌" + repeatStr("─", boxInnerWidth) + "┐";
             std::ostringstream topBoxFormatted;
             topBoxFormatted << color::GRAY << topBoxRaw << color::RESET;
-            printCenteredLine(topBoxRaw, topBoxFormatted.str(), innerWidth);
+            printFrameLine(topBoxRaw, topBoxFormatted.str(), innerWidth, 0, true);
 
             std::string midBoxRaw = "│  " + optTextRaw + "  │";
             std::ostringstream midBoxFormatted;
@@ -137,17 +148,17 @@ void renderLayout(
                             << color::CYAN << color::BOLD << "[" << opt.key << "]" << color::RESET
                             << color::WHITE << color::BOLD << "  " << opt.label << color::RESET
                             << color::GRAY << "  │" << color::RESET;
-            printCenteredLine(midBoxRaw, midBoxFormatted.str(), innerWidth);
+            printFrameLine(midBoxRaw, midBoxFormatted.str(), innerWidth, 0, true);
 
             std::string botBoxRaw = "└" + repeatStr("─", boxInnerWidth) + "┘";
             std::ostringstream botBoxFormatted;
             botBoxFormatted << color::GRAY << botBoxRaw << color::RESET;
-            printCenteredLine(botBoxRaw, botBoxFormatted.str(), innerWidth);
+            printFrameLine(botBoxRaw, botBoxFormatted.str(), innerWidth, 0, true);
         } else {
             std::ostringstream optFormatted;
             optFormatted << color::CYAN << "[" << opt.key << "]" << color::RESET
                          << color::WHITE << "  " << opt.label << color::RESET;
-            printCenteredLine(optTextRaw, optFormatted.str(), innerWidth);
+            printFrameLine(optTextRaw, optFormatted.str(), innerWidth, 0, true);
         }
 
         if (i + 1 < options.size()) {
@@ -164,7 +175,7 @@ void renderLayout(
     std::string footerRaw = "↑ ↓ Navegar   Enter Seleccionar";
     std::ostringstream footerFormatted;
     footerFormatted << color::GRAY << "↑ ↓ Navegar   Enter Seleccionar" << color::RESET;
-    printCenteredLine(footerRaw, footerFormatted.str(), innerWidth);
+    printFrameLine(footerRaw, footerFormatted.str(), innerWidth, 0, true);
 
     // Borde inferior del marco exterior: └────────────────────┘
     std::cout << color::WHITE << "└" << repeatStr("─", innerWidth) << "┘" << color::RESET << "\n";
