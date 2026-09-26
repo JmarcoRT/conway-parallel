@@ -18,6 +18,8 @@ add_executable(conway
     src/input/input.cpp
     src/ui/layout.cpp
     src/ui/menu.cpp
+    src/app/app.cpp
+    src/app/controls.cpp
 )
 
 target_include_directories(conway PRIVATE include)
