@@ -21,3 +21,17 @@ target_link_libraries(conway PRIVATE
     OpenMP::OpenMP_CXX
     MPI::MPI_CXX
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(input_tests
+        tests/input_tests.cpp
+        src/input/input.cpp
+        src/core/game.cpp
+    )
+    target_include_directories(input_tests PRIVATE include)
+    add_test(NAME input_functional
+        COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+endif()
