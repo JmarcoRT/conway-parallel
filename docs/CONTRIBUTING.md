@@ -235,6 +235,15 @@ En particular:
 
 Si una tarea requiere cambiar la arquitectura, debe discutirse antes de implementarla.
 
+Para añadir un nuevo motor de ejecución (OpenMP, Pthreads, MPI u otro), el patrón es:
+
+1. Crear `include/core/engines/<motor>.hpp` y `src/core/engines/<motor>.cpp` con la firma `void step_<motor>(conway::core::GameState&)`.
+2. Implementar **el recorrido** propio del motor (paralelo, con reparto de filas, etc.).
+3. Para cada celda lógica `(r, c)` del recorrido, llamar a `conway::core::next_cell_state(current, stride, r, c)` — **no redefinir la regla B3/S23**.
+4. Mantener la propia estrategia de `aliveCount` (counter local, `reduction`, parciales por hilo + suma, `MPI_Reduce`, etc.).
+5. Antes de retornar, llamar a `swap_buffers(state)` y `++state.generation`.
+6. Registrar el nuevo `.cpp` en el(los) target(s) apropiado(s) de `CMakeLists.txt`.
+
 ---
 
 ## 8. Pruebas
