@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/game_state.hpp"
 #include "input/input.hpp"
 
 #include <cstddef>
@@ -8,6 +9,11 @@
 
 namespace conway {
 
+// Fachada que mantiene la API publica intacta y delega su representacion
+// interna en core::GameState. Game NO depende de OpenMP / MPI / Pthreads.
+// El calculo de la siguiente generacion se delega en core::step_sequential
+// (motor secuencial); los futuros motores (OpenMP, Pthreads, MPI) daran
+// implementaciones alternativas que operaran sobre la misma GameState.
 class Game {
 public:
     explicit Game(const InputData& input);
@@ -25,20 +31,9 @@ public:
     void step();
 
 private:
-    std::size_t width_;
-    std::size_t height_;
-    std::size_t stride_;
+    core::GameState state_;
 
-    std::size_t generation_{0};
-    std::size_t aliveCount_{0};
-
-    std::vector<std::uint8_t> current_;
-    std::vector<std::uint8_t> next_;
-
-    std::size_t index(
-        std::size_t row,
-        std::size_t col
-    ) const;
+    std::size_t index(std::size_t row, std::size_t col) const;
 };
 
-}
+} // namespace conway

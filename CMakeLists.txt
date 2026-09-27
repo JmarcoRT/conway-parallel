@@ -31,6 +31,8 @@ if(BUILD_TESTING)
         tests/input_tests.cpp
         src/input/input.cpp
         src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/bs23.cpp
     )
     target_include_directories(input_tests PRIVATE include)
     add_test(NAME input_functional
