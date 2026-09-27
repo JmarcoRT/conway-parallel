@@ -12,6 +12,8 @@ find_package(MPI REQUIRED COMPONENTS CXX)
 add_executable(conway
     src/main.cpp
     src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
     src/input/input.cpp
 )
 
@@ -29,9 +31,20 @@ if(BUILD_TESTING)
         tests/input_tests.cpp
         src/input/input.cpp
         src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/bs23.cpp
     )
     target_include_directories(input_tests PRIVATE include)
     add_test(NAME input_functional
         COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    add_executable(next_cell_state_tests
+        tests/test_next_cell_state.cpp
+        src/core/bs23.cpp
+    )
+    target_include_directories(next_cell_state_tests PRIVATE include)
+    add_test(NAME rule_bs23_per_cell
+        COMMAND next_cell_state_tests
     )
 endif()

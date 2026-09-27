@@ -9,11 +9,13 @@ flags=(-std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
 "$compiler" "${flags[@]}" -I"$root/include" \
     "$root/tests/input_tests.cpp" "$root/src/input/input.cpp" "$root/src/core/game.cpp" \
+    "$root/src/core/engines/sequential.cpp" "$root/src/core/bs23.cpp" \
     -o "$work/input_tests"
 "$work/input_tests" "$root" "$@"
 
 "$compiler" "${flags[@]}" -I"$root/include" \
     "$root/src/main.cpp" "$root/src/input/input.cpp" "$root/src/core/game.cpp" \
+    "$root/src/core/engines/sequential.cpp" "$root/src/core/bs23.cpp" \
     -o "$work/conway"
 mkdir -p "$work/app/patterns"
 # main currently uses a fixed relative path. Only the isolated copy is replaced.
