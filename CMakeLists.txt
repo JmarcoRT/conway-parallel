@@ -12,6 +12,8 @@ find_package(MPI REQUIRED COMPONENTS CXX)
 add_executable(conway
     src/main.cpp
     src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
     src/input/input.cpp
 )
 
