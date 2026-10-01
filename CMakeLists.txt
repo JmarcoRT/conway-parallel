@@ -145,7 +145,6 @@ add_test(NAME openmp_vs_sequential
 )
 endif()
 
-
 # Target independiente de demostración para la UI (Semana 5)
 add_executable(conway_ui_demo
     src/ui/demo_menu.cpp
@@ -154,3 +153,14 @@ add_executable(conway_ui_demo
 )
 
 target_include_directories(conway_ui_demo PRIVATE include)
+
+# Vista del tablero (current / next / generacion / leyenda). Semana 5.
+add_executable(conway_view_demo
+    src/ui/demo_view.cpp
+    src/ui/board_view.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(conway_view_demo PRIVATE include)
