@@ -48,3 +48,13 @@ if(BUILD_TESTING)
         COMMAND next_cell_state_tests
     )
 endif()
+
+add_executable(conway_view_demo
+    src/ui/demo_view.cpp
+    src/ui/board_view.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(conway_view_demo PRIVATE include)
