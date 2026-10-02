@@ -84,18 +84,16 @@ La entrada representa únicamente el tablero lógico del usuario.
 
 Responsable de la representación interna del Juego de la Vida.
 
-Incluye:
+La representación común vive en `core::GameState` (header `include/core/game_state.hpp`), un POD con:
 
-- ancho y alto lógicos;
-- `stride`;
-- buffer `current`;
-- buffer `next`;
-- generación actual;
-- consulta y modificación controlada de células.
+- ancho lógico (`width`);
+- alto lógico (`height`);
+- `stride = width + 2`;
+- buffer `current` y buffer `next`, cada uno de tamaño `stride * (height + 2)`;
+- generación actual (`generation`);
+- contador de células vivas (`aliveCount`).
 
-El tablero utiliza memoria contigua y un halo de una celda alrededor del área lógica.
-
-Para un tablero lógico:
+El tablero utiliza memoria contigua y un halo de una celda alrededor del área lógica. Para un tablero lógico:
 
 ```text
 width x height
@@ -107,56 +105,47 @@ la representación interna será:
 (width + 2) x (height + 2)
 ```
 
-No debe contener:
+Sobre `GameState` opera la fachada pública `conway::Game` (header `include/core/game.hpp`), que mantiene exactamente el contrato estable del proyecto: constructor desde `InputData`, `isAlive`, `setCell`, `clear`, `step`, `width`, `height`, `generation`, `aliveCount`.
 
-- MPI;
-- OpenMP;
-- Pthreads;
+`core` no depende de OpenMP / MPI / Pthreads: la regla B3/S23 vive en `core::bs23::next_cell_state(...)` (header `include/core/bs23.hpp`), un helper puro por celda que no incluye, importa ni menciona nada relativo a paralelismo. `Game::step()` simplemente delega en el motor activo — hoy `core::engines::step_sequential`; mañana OpenMP / Pthreads / MPI.
+
+No debe contener además:
+
 - interfaz de terminal;
 - lectura de teclado;
 - mediciones de rendimiento.
 
-### sequential
+### Motores de ejecución: `sequential`, `openmp`, `pthreads`, `mpi`
 
-Implementación secuencial de la evolución del tablero.
+Cada motor es un archivo bajo `core::engines::` que implementa cómo se calcula la siguiente generación sobre un `GameState`:
 
-Es la implementación de referencia para validar OpenMP, Pthreads y MPI.
+- Realiza **su propio recorrido** sobre las celdas lógicas (filas 1..height, columnas 1..width).
+- Para cada celda, llama a la regla compartida `core::bs23::next_cell_state(current, stride, row, col)`.
+- Mantiene **su propia estrategia de `aliveCount`**: `step_sequential` usa un contador local; `step_openmp` usará `reduction(+:alive)`; `step_pthreads` sumará parciales por hilo; `step_mpi` operará sobre `alive` local por rank (con `MPI_Reduce` si se requiere un total global).
+- Al terminar: escribe `state.aliveCount`, llama `swap_buffers(state)` (helper trivial que sólo intercambia `current` y `next`, sin tocar `generation` ni `aliveCount`) e incrementa `state.generation`.
 
-Debe recorrer únicamente las células reales del tablero y calcular `next` leyendo exclusivamente desde `current`.
+#### sequential
 
-### openmp
+Implementación de referencia para validar OpenMP, Pthreads y MPI (hoy vive en `src/core/engines/sequential.cpp` como `core::engines::step_sequential(GameState&)`). Recorre las celdas reales secuencialmente calculando `next` a partir de `current` mediante `next_cell_state`.
 
-Implementación de la evolución utilizando memoria compartida mediante OpenMP.
+#### openmp
 
-Paralelizará principalmente el cálculo de las células del tablero.
+(Futuro.) Implementación paralela con memoria compartida mediante OpenMP. Operará sobre la misma `GameState` que `sequential`; el recorrido será `#pragma omp parallel for collapse(2)` repartiendo filas y columnas entre hilos, todos leyendo desde `state.current` y escribiendo en su región correspondiente de `state.next`. La sincronización implícita en las barreras OpenMP precede al `swap_buffers`.
 
-Todos los hilos deben:
+#### pthreads
 
-- leer desde `current`;
-- escribir únicamente en su región correspondiente de `next`;
-- sincronizarse antes del intercambio de buffers.
+(Futuro.) Implementación mediante POSIX Threads. Repartirá el rango `[1..height]` entre hilos con `pthread_create`; cada hilo iterará sobre sus filas y columnas escribiendo en `state.next` con `next_cell_state`. Tras `pthread_join`, el hilo principal consolidará los `aliveCount` parciales, aplicará `swap_buffers` e incrementará `generation`.
 
-### pthreads
+#### mpi
 
-Implementación mediante POSIX Threads.
+(Futuro.) Implementación distribuida. Cada rank construirá su propio `GameState` local con `height = alto_local`, buffers dimensionados `stride * (alto_local + 2)` (1 fila halo arriba y 1 abajo). Su `step_*` deberá:
 
-El programa crea explícitamente los hilos y asigna rangos del tablero a cada uno.
+1. Intercambiar las filas halo con los procesos vecinos vía `MPI_Sendrecv` (o equivalente).
+2. Recorrer sólo `[1..alto_local]` con `next_cell_state`.
+3. Aplicar `swap_buffers` y actualizar metadatos localmente.
+4. Si se requiere `aliveCount` global, consolidar con `MPI_Reduce` sobre el comm.
 
-Todos los hilos deben:
-
-- leer desde `current`;
-- escribir únicamente en su región correspondiente de `next`;
-- sincronizarse antes del intercambio de buffers.
-
-### mpi
-
-Responsable de la ejecución distribuida mediante MPI.
-
-Inicialmente se utilizará una partición horizontal del tablero.
-
-Cada proceso trabajará con una región local y se comunicará con sus procesos vecinos mediante filas halo.
-
-La estrategia podrá revisarse posteriormente si los experimentos justifican otra descomposición.
+La forma del `GameState` y de `next_cell_state` es la misma que para `sequential`/`openmp`/`pthreads`; sólo cambia la orquestación (intercambio de halo antes del recorrido) y el ámbito del recorrido (local vs total).
 
 ### patterns
 
@@ -403,8 +392,9 @@ Un módulo no debe conocer detalles que no necesita.
 - `benchmark` puede ejecutar la simulación sin interfaz.
 - `main` coordina módulos, pero no concentra su implementación.
 - `input` no conoce detalles de la representación interna del tablero.
+- Los motores (`sequential`, `openmp`, `pthreads`, `mpi`) no duplican la regla B3/S23: la regla vive una sola vez en `core::bs23::next_cell_state(...)`. Cada motor controla su recorrido (secuencial, OpenMP, Pthreads, MPI) y su propia estrategia de `aliveCount`, pero todos invocan `next_cell_state` celda por celda sobre un mismo `GameState`.
 
-No se deben crear versiones alternativas del `core` dentro de otros módulos.
+No se deben crear versiones alternativas del `core` dentro de otros módulos. En particular: añadir un motor de ejecución significa crear `src/core/engines/<motor>.cpp` con la firma `void step_<motor>(GameState&)`, sin redefinir la regla.
 
 ---
 
