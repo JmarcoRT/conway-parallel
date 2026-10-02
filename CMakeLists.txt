@@ -18,6 +18,7 @@ add_executable(conway
     src/input/input.cpp
     src/ui/layout.cpp
     src/ui/menu.cpp
+    src/ui/simulation_layout.cpp
 )
 
 target_include_directories(conway PRIVATE include)
@@ -61,3 +62,12 @@ add_executable(conway_ui_demo
 )
 
 target_include_directories(conway_ui_demo PRIVATE include)
+
+# Target independiente de demostración para el Layout de Simulación (Semana 6)
+add_executable(conway_simulation_demo
+    src/ui/demo_simulation.cpp
+    src/ui/simulation_layout.cpp
+    src/ui/layout.cpp
+)
+
+target_include_directories(conway_simulation_demo PRIVATE include)
