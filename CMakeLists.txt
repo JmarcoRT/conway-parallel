@@ -27,6 +27,18 @@ target_link_libraries(conway PRIVATE
     MPI::MPI_CXX
 )
 
+# Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
+# Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
+add_executable(mpi_partition_prototype
+    src/mpi/partition_prototype.cpp
+    src/mpi/partition.cpp
+    src/mpi/local_state.cpp
+    src/input/input.cpp
+)
+target_include_directories(mpi_partition_prototype PRIVATE include)
+target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
+
+
 include(CTest)
 
 if(BUILD_TESTING)
@@ -49,6 +61,16 @@ if(BUILD_TESTING)
     target_include_directories(next_cell_state_tests PRIVATE include)
     add_test(NAME rule_bs23_per_cell
         COMMAND next_cell_state_tests
+    )
+    # Particion horizontal y GameState local: aritmetica pura, no usa MPI.
+    add_executable(partition_tests
+        tests/partition_tests.cpp
+        src/mpi/partition.cpp
+        src/mpi/local_state.cpp
+    )
+    target_include_directories(partition_tests PRIVATE include)
+    add_test(NAME mpi_partition_unit
+        COMMAND partition_tests
     )
 
 add_executable(openmp_vs_sequential
