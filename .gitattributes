@@ -1,1 +1,4 @@
+# Normaliza a LF todos los archivos de texto para que el sync entre equipos no ensucie el arbol.
+
+* text=auto eol=lf
 *.sh text eol=lf
