@@ -115,13 +115,12 @@ La columna `pid` cambia en cada ejecución (son procesos distintos del SO); el r
 ## Evidencia de funcionamiento
 
 Ejecución propia en WSL (Ubuntu 24.04): [`docs/evidence/mpi_partition_wsl.txt`](evidence/mpi_partition_wsl.txt)
-(np=4 y np=7 con `glider.txt`, np=4 con tablero sintético 10×13).
+(salida completa de `mpirun -np 4` con `glider.txt`, y resumen de la matriz de `tests/run_mpi_partition.sh`).
 
-- `ctest`: 3/3 pruebas pasan (`input_functional`, `rule_bs23_per_cell`, `mpi_partition_unit`).
+- `ctest`: 4/4 pruebas pasan (`input_functional`, `rule_bs23_per_cell`, `mpi_partition_unit` y
+  `openmp_vs_sequential`; esta última no es de este entregable, pero forma parte de la suite).
 - `tests/run_mpi_partition.sh`: 22 ejecuciones (np = 1, 2, 3, 4, 7, 8; patrones y tableros
   sintéticos, incluidos 3 filas con 4 y 8 procesos) terminan con `RESULTADO: OK`.
-- Prueba negativa: una versión con un error de un solo índice en `partition_rows` (inyectada
-  a mano, no incluida en el repositorio) fue detectada: `RESULTADO: FALLO` y código de salida ≠ 0.
 
 Verificaciones que hace el ejecutable (rank 0, tras `MPI_Scatterv`/`MPI_Gather`/`MPI_Gatherv`/`MPI_Reduce`):
 identificación de cada rank y pids distintos; contigüidad; suma de filas = alto; balance (max−min ≤ 1);
@@ -132,8 +131,10 @@ invariantes del `GameState` local (todos los ranks, con `MPI_Allreduce`).
 
 - Solo rank 0 lee el archivo; el reparto usa `MPI_Scatterv`, como propone el documento S4. Los conteos
   de MPI son `int`, por lo que se rechaza un tablero con más de `INT_MAX` celdas (error limpio).
-- Los errores de entrada se acuerdan con `MPI_Allreduce` para que todos los ranks terminen limpio
-  (sin quedar bloqueados en colectivas).
+- Los errores de entrada se comunican a todos los ranks con el mismo `MPI_Bcast` que difunde las
+  dimensiones (`dims[0]` = indicador de fallo), para que todos terminen limpio sin quedar bloqueados
+  en colectivas. `MPI_Allreduce` (`MPI_MIN`) se usa solo para saber si el `GameState` local de todos
+  los ranks es válido.
 - Se permiten particiones vacías en lugar de rechazar `size > alto`.
 - Se añadieron `include/mpi/` y `src/mpi/` (módulo `mpi` ya previsto en `ARCHITECTURE.md`); no se
   cambió ninguna interfaz compartida.
