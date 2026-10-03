@@ -9,12 +9,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
 
+# Ejecutable principal del proyecto
 add_executable(conway
     src/main.cpp
     src/core/game.cpp
     src/core/engines/sequential.cpp
     src/core/bs23.cpp
     src/input/input.cpp
+    src/ui/layout.cpp
+    src/ui/menu.cpp
 )
 
 target_include_directories(conway PRIVATE include)
@@ -61,3 +64,13 @@ add_test(NAME openmp_vs_sequential
     COMMAND openmp_vs_sequential "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 endif()
+
+
+# Target independiente de demostración para la UI (Semana 5)
+add_executable(conway_ui_demo
+    src/ui/demo_menu.cpp
+    src/ui/layout.cpp
+    src/ui/menu.cpp
+)
+
+target_include_directories(conway_ui_demo PRIVATE include)
