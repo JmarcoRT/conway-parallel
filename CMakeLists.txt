@@ -47,4 +47,17 @@ if(BUILD_TESTING)
     add_test(NAME rule_bs23_per_cell
         COMMAND next_cell_state_tests
     )
+
+add_executable(openmp_vs_sequential
+    tests/openmp_vs_sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(openmp_vs_sequential PRIVATE include)
+target_link_libraries(openmp_vs_sequential PRIVATE OpenMP::OpenMP_CXX)
+add_test(NAME openmp_vs_sequential
+    COMMAND openmp_vs_sequential "${CMAKE_CURRENT_SOURCE_DIR}"
+)
 endif()
