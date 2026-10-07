@@ -2,33 +2,30 @@
 
 ## 0. Alcance y base revisada
 
-Base: `origin/develop`, commit `adcee7b` (`docs: actualizar README y guía de
-contribución`). No se modifica ninguna interfaz existente (`InputData`,
-`loadInput`, `conway::Game`); todo lo aquí descrito se apoya en el motor
-secuencial tal como está implementado hoy.
+Rama `test/core-validation`, actualizada con `origin/develop` (merge
+`"merge: actualizar test/core-validation con develop"`). No se modifica
+ninguna interfaz existente (`InputData`, `loadInput`, `conway::Game`); todo
+lo aquí descrito se apoya en el motor secuencial tal como está implementado
+hoy, ya refactorizado en `core::GameState` + `core::next_cell_state`
+(`src/core/bs23.cpp`) + `core::step_sequential` (`src/core/engines/sequential.cpp`).
 
-**Coordinación con trabajo en curso.** Existe una rama sin fusionar,
-`origin/test/patrones-entrada` (título interno: "Semana 5 — Patrones y
-pruebas funcionales de entrada"), que ya agrega `patterns/block.txt`,
-`patterns/blinker.txt`, `patterns/glider.txt` y una suite
-(`tests/input_tests.cpp`) enfocada en el módulo `input` (parseo válido e
-inválido) que de paso comprueba Block, Blinker y Glider durante algunas
-generaciones. Esta entrega:
+**Relación con `tests/input_tests.cpp`.** Ese archivo ya vive en `develop`
+y cubre, además del parseo de `input`, la corrección de Block, Blinker y
+Glider generación a generación (`block_stable`, `blinker_period_2`,
+`glider_moves_after_4_steps`), con los mismos patrones y los mismos estados
+esperados que se usarían aquí. Por eso esta entrega:
 
-- **reutiliza los mismos tres patrones y los mismos estados esperados** que
-  esa rama (se verificaron de forma independiente aquí, ver §4, y coinciden
-  exactamente), para no dejar dos versiones distintas de un mismo patrón
-  circulando;
-- **no duplica** las pruebas de carga/parseo de `input` (formato inválido,
-  CRLF, cambio de archivo, etc.), que ya están cubiertas allí;
-- **agrega** lo que esa rama no cubre y que es el objeto de esta semana:
-  más patrones de referencia (Toad, Beacon, Pulsar), la definición formal
-  de los criterios de equivalencia para comparar motores entre sí, y una
-  herramienta reutilizable para aplicarlos.
-
-Antes de fusionar ambas ramas a `develop` conviene revisar en conjunto que
-`patterns/block.txt`, `patterns/blinker.txt` y `patterns/glider.txt` no
-queden duplicados con contenido distinto.
+- **no repite** esos tres casos en `tests/conway_correctness_tests.cpp`
+  (se verificaron igual, de forma independiente, antes de quitarlos; ver
+  `docs/TESTING_EVIDENCE.md`), para no mantener dos pruebas distintas
+  comprobando exactamente lo mismo;
+- **agrega** lo que `input_tests.cpp` no cubre: Toad y Beacon (patrones
+  nuevos), Pulsar con verificación de tablero completo (no solo conteo de
+  vivas) y un helper de equivalencia reutilizable pensado para comparar
+  motores entre sí (ver §4);
+- `patterns/block.txt`, `patterns/blinker.txt` y `patterns/glider.txt` son
+  los mismos tres archivos que ya usa `input_tests.cpp` (no hay dos
+  versiones distintas).
 
 ## 1. Formato del archivo de entrada (confirmado en el código)
 
@@ -78,12 +75,13 @@ y, en el caso del pulsar, la firma de población documentados en la fuente.
 | Toad | `patterns/toad.txt` | 6×6 | 2 | Fase A (gen. 0) → fase B (gen. 1) → fase A (gen. 2). 6 células vivas en ambas fases. | LifeWiki [Toad](https://conwaylife.com/wiki/Toad) (RLE `b2o$o$3bo$b2o!`) |
 | Beacon | `patterns/beacon.txt` | 6×6 | 2 | Fase densa, 8 vivas (gen. 0) → fase dispersa, 6 vivas (gen. 1) → fase densa original (gen. 2). | LifeWiki [Beacon](https://conwaylife.com/wiki/Beacon) (dos bloques 2×2 en contacto diagonal) |
 | Glider | `patterns/glider.txt` | 6×7 | 4 (ver §2: con este tablero no deben ejecutarse muchas más sin ampliarlo) | Misma forma, desplazada (+1 fila, +1 columna). 5 células vivas en todo momento. | LifeWiki [Glider](https://conwaylife.com/wiki/Glider) |
-| Pulsar | `patterns/pulsar.txt` | 17×17 (patrón 13×13 con margen 2) | 3 | Vuelve exactamente al estado inicial. Población: 48 (gen. 0) → 56 (gen. 1) → 72 (gen. 2) → 48 (gen. 3). | LifeWiki [Pulsar](https://conwaylife.com/wiki/Pulsar), RLE oficial; conocido como *CP 48-56-72* |
+| Pulsar | `patterns/pulsar.txt` | 17×17 (patrón 13×13 con margen 2) | 3 | Vuelve exactamente al estado inicial (verificado celda a celda, no solo por conteo). Población: 48 (gen. 0) → 56 (gen. 1) → 72 (gen. 2) → 48 (gen. 3). | LifeWiki [Pulsar](https://conwaylife.com/wiki/Pulsar), RLE oficial; conocido como *CP 48-56-72* |
 
-Los estados exactos, celda por celda, de cada generación están escritos en
-`tests/conway_correctness_tests.cpp` (constantes `block`, `blinkerVertical`,
-`blinkerHorizontal`, `toadA`, `toadB`, `beaconDense`, `beaconSparse`,
-`gliderStart`, `gliderAfter4`), y las verifica automáticamente esa suite.
+Los estados exactos, celda por celda, de cada generación de Block, Blinker
+y Glider están escritos en `tests/input_tests.cpp`; los de Toad, Beacon y
+Pulsar, en `tests/conway_correctness_tests.cpp` (constantes `toadA`,
+`toadB`, `beaconDense`, `beaconSparse`, `pulsarGen0`, `pulsarGen1`,
+`pulsarGen2`). Ambas suites los verifican automáticamente.
 
 ## 4. Criterios de equivalencia
 
@@ -156,11 +154,33 @@ OpenMP/Pthreads/MPI sin cambiar el comando):
 python3 tests/compare_boards.py --require-generation 3 secuencial.txt openmp.txt
 ```
 
+(El `secuencial.txt` de este ejemplo es solo texto ilustrativo del comando;
+no debe quedar comiteado en la raíz del repositorio.)
+
 ## 5. Cómo reproducir
 
-Desde la raíz del repositorio, con Bash y un compilador C++20 (no requiere
-CMake, OpenMP ni MPI: los tests de esta entrega compilan `core` e `input`
-directamente, igual que `tests/run_input_tests.sh`):
+### 5.1 Vía CTest (forma recomendada)
+
+`conway_correctness_tests` está integrado en `CMakeLists.txt` igual que
+`input_tests`, `next_cell_state_tests`, `partition_tests` y
+`openmp_vs_sequential`: se construye con el resto del proyecto y CTest lo
+corre como un caso más (`conway_correctness`).
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+# o solo este caso:
+ctest --test-dir build -R conway_correctness -V
+```
+
+Requiere `OpenMP` y `MPI` instalados (los exige `CMakeLists.txt` para el
+ejecutable `conway`), igual que cualquier otro build del proyecto.
+
+### 5.2 Sin CMake (script directo)
+
+Para cuando no se quiere/puede configurar `OpenMP`/`MPI` localmente, igual
+que `tests/run_input_tests.sh`:
 
 ```bash
 bash tests/run_conway_correctness_tests.sh
@@ -168,12 +188,16 @@ bash tests/run_conway_correctness_tests.sh
 
 Puede elegirse el compilador con `CXX=g++-14 bash tests/run_conway_correctness_tests.sh`.
 
-Para investigar un fallo puntual o compilar a mano:
+Para investigar un fallo puntual o compilar a mano (nótese que, tras el
+refactor del `core`, hace falta enlazar también `engines/sequential.cpp` y
+`bs23.cpp`; sin ellos falla el link con `undefined reference to
+step_sequential`/`next_cell_state`):
 
 ```bash
 mkdir -p build
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Iinclude \
     tests/conway_correctness_tests.cpp src/input/input.cpp src/core/game.cpp \
+    src/core/engines/sequential.cpp src/core/bs23.cpp \
     -o build/conway_correctness_tests
 ./build/conway_correctness_tests "$PWD"
 ```
@@ -183,7 +207,8 @@ un caso o preparar la comparación contra un futuro motor paralelo):
 
 ```bash
 g++ -std=c++20 -Wall -Wextra -Iinclude \
-    tests/dump_board.cpp src/input/input.cpp src/core/game.cpp -o build/dump_board
+    tests/dump_board.cpp src/input/input.cpp src/core/game.cpp \
+    src/core/engines/sequential.cpp src/core/bs23.cpp -o build/dump_board
 ./build/dump_board patterns/pulsar.txt 3 > /tmp/a.txt
 ./build/dump_board patterns/pulsar.txt 3 > /tmp/b.txt
 python3 tests/compare_boards.py /tmp/a.txt /tmp/b.txt

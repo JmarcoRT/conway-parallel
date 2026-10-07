@@ -1,0 +1,124 @@
+# Evidencia de ejecucion (WSL, 2026-10-03)
+mpirun (Open MPI) 4.1.6
+g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+$ ctest --test-dir ~/conway-build
+Internal ctest changing into directory: /home/nkowth/conway-build
+Test project /home/nkowth/conway-build
+    Start 1: input_functional
+1/4 Test #1: input_functional .................   Passed    0.61 sec
+    Start 2: rule_bs23_per_cell
+2/4 Test #2: rule_bs23_per_cell ...............   Passed    0.03 sec
+    Start 3: mpi_partition_unit
+3/4 Test #3: mpi_partition_unit ...............   Passed    0.05 sec
+    Start 4: openmp_vs_sequential
+4/4 Test #4: openmp_vs_sequential .............   Passed    2.96 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   3.68 sec
+
+$ mpirun --oversubscribe -np 4 mpi_partition_prototype patterns/glider.txt
+== Prototipo MPI: reparto horizontal de filas ==
+MPI: Open MPI v4.1.6, package: Debian OpenMPI, ident: 4.1.6, repo rev: v4.1.6, Sep 30, 2023
+Procesos: 4 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+
+rank     pid  filas globales  n_filas  vivas  stride  buffer(bytes)
+   0    5514          [0..1]        2      1       9             36
+   1    5515          [2..3]        2      4       9             36
+   2    5516          [4..4]        1      0       9             27
+   3    5517          [5..5]        1      0       9             27
+
+Filas recibidas por cada rank (indice global: contenido):
+rank 0:
+  fila   0: 0000000
+  fila   1: 0010000
+rank 1:
+  fila   2: 0001000
+  fila   3: 0111000
+rank 2:
+  fila   4: 0000000
+rank 3:
+  fila   5: 0000000
+
+Verificaciones:
+[OK]    cada proceso reporta su propio rank (0..3) de 4
+[OK]    los 4 procesos son procesos del SO distintos (pids unicos)
+[OK]    bloques contiguos en orden de rank (sin huecos ni solapes)
+[OK]    suma de filas repartidas = alto global (6 de 6)
+[OK]    reparto balanceado: max-min <= 1 y las filas sobrantes van a los primeros ranks
+[OK]    lo reportado por cada rank coincide con partition_rows(alto, size, rank)
+[OK]    tablero reensamblado desde los GameState locales == entrada (ninguna fila perdida/duplicada)
+[OK]    celulas vivas: suma de ranks (5) == entrada (5)
+[OK]    GameState local de cada rank valido (width, height local, stride=width+2, buffers, halos a 0)
+
+RESULTADO: OK
+
+$ bash tests/run_mpi_partition.sh
+--- mpirun -np 1 patterns/glider.txt ---
+Procesos: 1 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+RESULTADO: OK
+--- mpirun -np 1 patterns/blinker.txt ---
+Procesos: 1 | Tablero: 5 filas x 5 columnas | Entrada: patterns/blinker.txt
+RESULTADO: OK
+--- mpirun -np 2 patterns/glider.txt ---
+Procesos: 2 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+RESULTADO: OK
+--- mpirun -np 2 patterns/blinker.txt ---
+Procesos: 2 | Tablero: 5 filas x 5 columnas | Entrada: patterns/blinker.txt
+RESULTADO: OK
+--- mpirun -np 3 patterns/glider.txt ---
+Procesos: 3 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+RESULTADO: OK
+--- mpirun -np 3 patterns/blinker.txt ---
+Procesos: 3 | Tablero: 5 filas x 5 columnas | Entrada: patterns/blinker.txt
+RESULTADO: OK
+--- mpirun -np 4 patterns/glider.txt ---
+Procesos: 4 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+RESULTADO: OK
+--- mpirun -np 4 patterns/blinker.txt ---
+Procesos: 4 | Tablero: 5 filas x 5 columnas | Entrada: patterns/blinker.txt
+RESULTADO: OK
+--- mpirun -np 7 patterns/glider.txt ---
+Procesos: 7 | Tablero: 6 filas x 7 columnas | Entrada: patterns/glider.txt
+RESULTADO: OK
+--- mpirun -np 7 patterns/blinker.txt ---
+Procesos: 7 | Tablero: 5 filas x 5 columnas | Entrada: patterns/blinker.txt
+RESULTADO: OK
+--- mpirun -np 1 --synthetic 10 13 ---
+Procesos: 1 | Tablero: 10 filas x 13 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 1 --synthetic 3 5 ---
+Procesos: 1 | Tablero: 3 filas x 5 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 1 --synthetic 101 64 ---
+Procesos: 1 | Tablero: 101 filas x 64 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 3 --synthetic 10 13 ---
+Procesos: 3 | Tablero: 10 filas x 13 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 3 --synthetic 3 5 ---
+Procesos: 3 | Tablero: 3 filas x 5 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 3 --synthetic 101 64 ---
+Procesos: 3 | Tablero: 101 filas x 64 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 4 --synthetic 10 13 ---
+Procesos: 4 | Tablero: 10 filas x 13 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 4 --synthetic 3 5 ---
+Procesos: 4 | Tablero: 3 filas x 5 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 4 --synthetic 101 64 ---
+Procesos: 4 | Tablero: 101 filas x 64 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 8 --synthetic 10 13 ---
+Procesos: 8 | Tablero: 10 filas x 13 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 8 --synthetic 3 5 ---
+Procesos: 8 | Tablero: 3 filas x 5 columnas | Entrada: sintetica
+RESULTADO: OK
+--- mpirun -np 8 --synthetic 101 64 ---
+Procesos: 8 | Tablero: 101 filas x 64 columnas | Entrada: sintetica
+RESULTADO: OK
+TODOS LOS CASOS OK
