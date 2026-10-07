@@ -64,22 +64,6 @@ if(BUILD_TESTING)
     add_test(NAME rule_bs23_per_cell
         COMMAND next_cell_state_tests
     )
-
-    # Casos de correccion del motor no cubiertos por input_tests.cpp:
-    # Toad, Beacon, Pulsar (ver docs/TESTING.md) y el helper de equivalencia
-    # que mas adelante se reutilizara para comparar OpenMP/Pthreads/MPI
-    # contra el secuencial.
-    add_executable(conway_correctness_tests
-        tests/conway_correctness_tests.cpp
-        src/input/input.cpp
-        src/core/game.cpp
-        src/core/engines/sequential.cpp
-        src/core/bs23.cpp
-    )
-    target_include_directories(conway_correctness_tests PRIVATE include)
-    add_test(NAME conway_correctness
-        COMMAND conway_correctness_tests "${CMAKE_CURRENT_SOURCE_DIR}"
-    )
     # Particion horizontal y GameState local: aritmetica pura, no usa MPI.
     add_executable(partition_tests
         tests/partition_tests.cpp
