@@ -2,6 +2,8 @@
 build/
 *.o
 *.out
+conway
+conway_ui_demo
 
 # VS Code
 .vscode/
