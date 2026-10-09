@@ -220,6 +220,34 @@ int main(int argc, char** argv) {
             conway::Game fresh(input);
             expectGame(fresh, glider);
         });
+        suite.test("gosper_glider_gun_emits_glider_at_generation_30", [&] {
+            const auto input = loadInput((root / "patterns/gosper_glider_gun.txt").string());
+            require(input.height == 18 && input.width == 50, "Dimensiones incorrectas");
+            conway::Game game(input);
+            require(game.aliveCount() == 36, "Conteo inicial incorrecto");
+
+            for (int generation = 1; generation <= 30; ++generation) {
+                game.step();
+                if (generation == 1) require(game.aliveCount() == 39, "Conteo incorrecto en generacion 1");
+                if (generation == 2) require(game.aliveCount() == 43, "Conteo incorrecto en generacion 2");
+                if (generation == 3) require(game.aliveCount() == 48, "Conteo incorrecto en generacion 3");
+                if (generation == 4) require(game.aliveCount() == 51, "Conteo incorrecto en generacion 4");
+            }
+
+            require(game.generation() == 30, "Generacion incorrecta");
+            require(game.aliveCount() == 41, "El canon no emitio un planeador en generacion 30");
+            for (std::size_t row = 0; row < input.height; ++row) {
+                for (std::size_t col = 0; col < input.width; ++col) {
+                    if (input.cells[row * input.width + col] != 0) {
+                        require(game.isAlive(row, col), "El canon cambio su patron inicial antes de la emision");
+                    }
+                }
+            }
+            for (const auto& [row, col] : std::vector<std::pair<std::size_t, std::size_t>>{
+                     {13, 28}, {14, 29}, {14, 30}, {15, 28}, {15, 29}}) {
+                require(game.isAlive(row, col), "Falta una celula del planeador emitido");
+            }
+        });
         return suite.result();
     } catch (const std::exception& error) {
         std::cerr << "Error de preparacion: " << error.what() << '\n';
