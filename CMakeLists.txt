@@ -75,6 +75,20 @@ if(BUILD_TESTING)
         COMMAND partition_tests
     )
 
+    # Casos de correccion del motor (toad, beacon, pulsar, auto-consistencia
+    # del criterio de equivalencia): aritmetica pura, no usa OpenMP/MPI.
+    add_executable(conway_correctness_tests
+        tests/conway_correctness_tests.cpp
+        src/input/input.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/bs23.cpp
+    )
+    target_include_directories(conway_correctness_tests PRIVATE include)
+    add_test(NAME conway_correctness
+        COMMAND conway_correctness_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
 add_executable(openmp_vs_sequential
     tests/openmp_vs_sequential.cpp
     src/core/engines/openmp.cpp
