@@ -1,17 +1,25 @@
 #include "app/app.hpp"
 
+#include "app/benchmark.hpp"
 #include "app/controls.hpp"
+#include "app/simulation.hpp"
 #include "core/game.hpp"
 #include "input/input.hpp"
+#include "ui/board_view.hpp"
 #include "ui/layout.hpp"
+#include "ui/simulation_layout.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <exception>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <omp.h>
 
 namespace conway::app {
 
@@ -20,10 +28,8 @@ namespace {
 constexpr const char* kClearScreen = "\033[2J\033[H";
 constexpr const char* kErrorColor = "\033[1;31m";
 
-// Estado global de la aplicacion. La seleccion de motor se conserva
-// aqui (no en Game) para que cambiar de patron no reinicie la
-// eleccion. Los modulos de Benchmark/Visualizacion (futuros) deberan
-// leer state.engine y llamar game.setEngine(state.engine) en su Game.
+// La seleccion se conserva aqui aunque se cargue otro patron o se salga
+// de los modulos de visualizacion y benchmark.
 struct AppState {
     std::optional<InputData> input;
     std::string path;
@@ -197,25 +203,7 @@ bool loadInto(AppState& state, const std::string& path, std::string& message) {
     }
 }
 
-bool showPlaceholder(const std::string& title, const AppState& state) {
-    std::cout << kClearScreen;
-    ui::renderLayout(
-        title,
-        "Modulo en construccion",
-        makeInputInfo(state),
-        {{"0", "Volver al menu"}},
-        0
-    );
-    std::cout << "\nPresiona Enter para volver al menu.\n" << std::flush;
-
-    if (controls::isInteractive()) {
-        return controls::readKey().has_value();
-    }
-
-    return controls::readLine("").has_value();
-}
-
-bool openSection(const std::string& title, AppState& state, std::string& message) {
+bool ensureInput(AppState& state, std::string& message) {
     if (!state.input) {
         const PathRequest request = askPath();
 
@@ -228,12 +216,10 @@ bool openSection(const std::string& title, AppState& state, std::string& message
             return true;
         }
 
-        if (!loadInto(state, request.path, message)) {
-            return true;
-        }
+        loadInto(state, request.path, message);
     }
 
-    return showPlaceholder(title, state);
+    return true;
 }
 
 bool changeInput(AppState& state, std::string& message) {
@@ -347,6 +333,158 @@ MenuAction actionFromIndex(std::size_t index) {
     }
 }
 
+void renderSimulation(const AppState& state, const SimulationSession& session) {
+        const Game& game = session.game();
+        ui::SimulationHeaderInfo header;
+        header.mode = engineName(state.engine);
+        header.filename = state.path;
+        header.boardWidth = game.width();
+        header.boardHeight = game.height();
+        header.statusText = session.isRunning() ? "En ejecución" : "Pausado";
+
+        ui::ExecutionInfo execution;
+        execution.generation = game.generation();
+        execution.aliveCount = game.aliveCount();
+        execution.stepProgress = "100%";
+        execution.workersInfo = (state.engine == Engine::OpenMP)
+            ? "Motor: OpenMP; hilos solicitados: " + std::to_string(omp_get_max_threads())
+            : "Motor: Secuencial";
+
+        ui::BoardPanelData current{"CURRENT", ui::boardLines(game)};
+        ui::BoardPanelData next{"NEXT", ui::nextBoardLines(game)};
+        ui::renderSimulationLayout(header, execution, current, next);
+}
+
+bool applySimulationCommand(char command, SimulationSession& session) {
+        switch (command) {
+            case 'n':
+            case 'N':
+                session.step();
+                return true;
+            case ' ':
+            case 'p':
+            case 'P':
+                session.toggleRunning();
+                return true;
+            case 'r':
+            case 'R':
+                session.reset();
+                return true;
+            case 'x':
+            case 'X':
+            case 'q':
+            case 'Q':
+            case 27:
+                return false;
+            default:
+                return true;
+        }
+}
+
+bool runVisualization(AppState& state) {
+        SimulationSession session(*state.input, state.engine);
+        const bool interactive = controls::isInteractive();
+
+        while (true) {
+            std::cout << kClearScreen;
+            renderSimulation(state, session);
+            std::cout << std::flush;
+
+            if (interactive) {
+                const auto timeout = session.isRunning()
+                    ? std::chrono::milliseconds(150)
+                    : std::chrono::milliseconds(250);
+                const controls::TimedKeyPress reading = controls::readKeyFor(timeout);
+                if (!reading.ready) {
+                    session.advanceIfRunning();
+                    continue;
+                }
+                if (!reading.key) {
+                    return false;
+                }
+                const char command = reading.key->type == controls::Key::Char
+                    ? reading.key->value
+                    : '\0';
+                if (!applySimulationCommand(command, session)) {
+                    return true;
+                }
+                if (command != 'n' && command != 'N') {
+                    session.advanceIfRunning();
+                }
+                continue;
+            }
+
+            const auto line = controls::readLine("");
+            if (!line) {
+                return false;
+            }
+            const char command = line->empty() ? '\0' : (*line)[0];
+            if (!applySimulationCommand(command, session)) {
+                return true;
+            }
+            if (command != 'n' && command != 'N') {
+                session.advanceIfRunning();
+            }
+        }
+}
+
+bool waitForModuleReturn(bool interactive) {
+        std::cout << "\nPresiona una tecla para volver al menu.\n" << std::flush;
+        if (interactive) {
+            return controls::readKey().has_value();
+        }
+        return controls::readLine("").has_value();
+}
+
+bool runBenchmarkUI(AppState& state, std::string& message) {
+        if (!ensureInput(state, message)) {
+            return false;
+        }
+        if (!state.input) {
+            return true;
+        }
+
+        constexpr int kGenerations = 20;
+        constexpr int kRepetitions = 5;
+        const BenchmarkResult result = runBenchmark(
+            *state.input, kGenerations, kRepetitions, benchmarkThreadCount());
+
+        std::cout << kClearScreen
+                  << "BENCHMARK: Secuencial vs OpenMP\n"
+                  << "Entrada: " << state.path << " (" << state.input->width << " x "
+                  << state.input->height << ")\n"
+                  << "Generaciones: " << result.generations
+                  << " | Repeticiones medidas: " << result.repetitions
+                  << " | Hilos OpenMP solicitados: " << result.requestedThreads << "\n"
+                  << "Hilos OpenMP efectivos: ";
+        if (result.effectiveThreadCountStable) {
+            std::cout << result.minEffectiveThreads << '\n';
+        } else {
+            std::cout << result.minEffectiveThreads << " - " << result.maxEffectiveThreads
+                      << " (variaron entre regiones)\n";
+        }
+        std::cout << std::fixed << std::setprecision(3)
+                  << "Mediana Secuencial: " << result.sequentialMedianMs << " ms\n"
+                  << "Mediana OpenMP: " << result.openMPMedianMs << " ms\n"
+                  << "Speedup: " << result.speedup << "x\n"
+                  << "Eficiencia OpenMP: ";
+        if (result.efficiencyValid) {
+            std::cout << (result.efficiency * 100.0) << "%\n";
+        } else {
+            std::cout << "no disponible (hilos efectivos variables o resultado no equivalente)\n";
+        }
+        std::cout << "Estados equivalentes: " << (result.equivalent ? "SI" : "NO") << '\n'
+                  << std::flush;
+
+        if (!waitForModuleReturn(controls::isInteractive())) {
+            return false;
+        }
+        if (!result.equivalent) {
+            message = "Error: los motores produjeron estados distintos.";
+        }
+        return true;
+}
+
 std::optional<MenuAction> pollMenuAction(bool interactive) {
     if (interactive) {
         const auto key = controls::readKey();
@@ -444,13 +582,19 @@ int runLoop() {
                 selected = (selected + 1) % optionCount;
                 break;
             case MenuAction::Benchmark:
-                if (!openSection("BENCHMARK", state, message)) {
+                if (!runBenchmarkUI(state, message)) {
                     return 0;
                 }
                 break;
             case MenuAction::Visualization:
-                if (!openSection("VISUALIZACION", state, message)) {
+                if (!ensureInput(state, message)) {
                     return 0;
+                }
+                if (state.input && !runVisualization(state)) {
+                    return 0;
+                }
+                if (state.input) {
+                    message = "Visualizacion finalizada.";
                 }
                 break;
             case MenuAction::SelectEngine:

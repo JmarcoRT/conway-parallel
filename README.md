@@ -69,13 +69,15 @@ conway-parallel/
 
 Proyecto en desarrollo.
 
-Actualmente se encuentra implementada la base del motor secuencial y la interfaz de usuario:
+Actualmente se encuentran implementados los motores secuencial y OpenMP, la selección persistente de motor y los flujos funcionales de visualización y benchmark:
 
 - carga y validación de tableros desde archivos `.txt`;
 - representación del tablero en memoria contigua;
 - halo de una celda alrededor del tablero lógico;
 - doble buffer mediante `current` y `next`;
 - evolución secuencial de generaciones;
-- Menú Principal v1 y Layout Base reutilizable en la terminal (S5).
+- Menú principal y selección persistente de motor Secuencial/OpenMP;
+- visualización interactiva de CURRENT/NEXT con avance, reproducción, pausa y reinicio;
+- benchmark reproducible entre motores con mediana, speedup, hilos OpenMP solicitados/efectivos, eficiencia válida y comprobación de equivalencia. La eficiencia no se informa si varía el equipo efectivo.
 
-Las versiones OpenMP, Pthreads y MPI se integrarán progresivamente sobre esta base común.
+Pthreads y MPI todavía no están disponibles como motores de la aplicación.

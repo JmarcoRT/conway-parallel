@@ -19,6 +19,8 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     "$root/src/main.cpp" \
     "$root/src/app/app.cpp" \
     "$root/src/app/controls.cpp" \
+    "$root/src/app/simulation.cpp" \
+    "$root/src/app/benchmark.cpp" \
     "$root/src/input/input.cpp" \
     "$root/src/core/game.cpp" \
     "$root/src/core/engines/sequential.cpp" \
@@ -26,6 +28,8 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     "$root/src/core/bs23.cpp" \
     "$root/src/ui/layout.cpp" \
     "$root/src/ui/menu.cpp" \
+    "$root/src/ui/board_view.cpp" \
+    "$root/src/ui/simulation_layout.cpp" \
     -o "$work/conway"
 mkdir -p "$work/app/patterns"
 

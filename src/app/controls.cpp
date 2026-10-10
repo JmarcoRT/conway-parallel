@@ -1,10 +1,16 @@
 #include "app/controls.hpp"
 
 #include <csignal>
+#include <cerrno>
+#include <poll.h>
+#include <system_error>
 #include <unistd.h>
 #include <termios.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 
 namespace conway::app::controls {
 
@@ -12,6 +18,56 @@ namespace {
 
 termios g_originalTermios{};
 bool g_rawEnabled = false;
+
+bool readByteWithTimeout(unsigned char& byte) {
+    pollfd input{STDIN_FILENO, POLLIN, 0};
+    int result = 0;
+    do {
+        result = ::poll(&input, 1, 50);
+    } while (result < 0 && errno == EINTR);
+    if (result < 0) {
+        throw std::system_error(errno, std::generic_category(), "No se pudo leer la secuencia de teclado");
+    }
+    if (result == 0) {
+        return false;
+    }
+
+    return ::read(STDIN_FILENO, &byte, 1) == 1;
+}
+
+std::optional<KeyPress> readKeyByte() {
+    unsigned char byte = 0;
+    if (::read(STDIN_FILENO, &byte, 1) != 1) {
+        return std::nullopt;
+    }
+
+    if (byte == 0x1B) {
+        unsigned char marker = 0;
+        if (!readByteWithTimeout(marker) || (marker != '[' && marker != 'O')) {
+            return KeyPress{Key::Char, 27};
+        }
+
+        unsigned char code = 0;
+        if (!readByteWithTimeout(code)) {
+            return KeyPress{Key::Char, 27};
+        }
+
+        switch (code) {
+            case 'A':
+                return KeyPress{Key::Up, '\0'};
+            case 'B':
+                return KeyPress{Key::Down, '\0'};
+            default:
+                return KeyPress{Key::Char, '\0'};
+        }
+    }
+
+    if (byte == '\r' || byte == '\n') {
+        return KeyPress{Key::Enter, '\0'};
+    }
+
+    return KeyPress{Key::Char, static_cast<char>(byte)};
+}
 
 void restoreFromSignal(int sig) {
     disableRawMode();
@@ -78,38 +134,32 @@ std::optional<KeyPress> readKey() {
     }
 
     enableRawMode();
+    return readKeyByte();
+}
 
-    unsigned char byte = 0;
-    if (::read(STDIN_FILENO, &byte, 1) != 1) {
-        return std::nullopt;
+TimedKeyPress readKeyFor(std::chrono::milliseconds timeout) {
+    if (!isInteractive()) {
+        return {};
     }
 
-    if (byte == 0x1B) {
-        unsigned char marker = 0;
-        if (::read(STDIN_FILENO, &marker, 1) != 1 || (marker != '[' && marker != 'O')) {
-            return KeyPress{Key::Char, '\0'};
-        }
+    enableRawMode();
+    pollfd input{STDIN_FILENO, POLLIN, 0};
+    const auto timeoutCount = timeout.count();
+    const int timeoutMs = static_cast<int>(std::clamp<std::int64_t>(
+        timeoutCount, 0, std::numeric_limits<int>::max()));
+    int result = 0;
+    do {
+        result = ::poll(&input, 1, timeoutMs);
+    } while (result < 0 && errno == EINTR);
 
-        unsigned char code = 0;
-        if (::read(STDIN_FILENO, &code, 1) != 1) {
-            return KeyPress{Key::Char, '\0'};
-        }
-
-        switch (code) {
-            case 'A':
-                return KeyPress{Key::Up, '\0'};
-            case 'B':
-                return KeyPress{Key::Down, '\0'};
-            default:
-                return KeyPress{Key::Char, '\0'};
-        }
+    if (result < 0) {
+        throw std::system_error(errno, std::generic_category(), "No se pudo esperar entrada del teclado");
+    }
+    if (result == 0) {
+        return {};
     }
 
-    if (byte == '\r' || byte == '\n') {
-        return KeyPress{Key::Enter, '\0'};
-    }
-
-    return KeyPress{Key::Char, static_cast<char>(byte)};
+    return {true, readKeyByte()};
 }
 
 std::optional<std::string> readLine(const std::string& prompt) {
@@ -120,8 +170,25 @@ std::optional<std::string> readLine(const std::string& prompt) {
     }
 
     std::string line;
-    if (!std::getline(std::cin, line)) {
-        return std::nullopt;
+    while (true) {
+        char byte = '\0';
+        const ssize_t count = ::read(STDIN_FILENO, &byte, 1);
+        if (count == 1) {
+            if (byte == '\n') {
+                break;
+            }
+            line += byte;
+            continue;
+        }
+        if (count == 0) {
+            if (line.empty()) {
+                return std::nullopt;
+            }
+            break;
+        }
+        if (errno != EINTR) {
+            throw std::system_error(errno, std::generic_category(), "No se pudo leer la entrada");
+        }
     }
 
     return trim(line);

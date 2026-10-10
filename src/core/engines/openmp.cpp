@@ -5,8 +5,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <omp.h>
 
 namespace conway::core {
+
+namespace {
+
+thread_local int g_lastOpenMPTeamSize = 1;
+
+} // namespace
+
+int last_openmp_team_size() noexcept {
+    return g_lastOpenMPTeamSize;
+}
 
 void step_openmp(GameState& s) {
     // Punteros y dimensiones en variables locales const: todos los hilos
@@ -26,17 +37,23 @@ void step_openmp(GameState& s) {
     // `r`, `row` y `c` son privadas por estar declaradas dentro del bucle.
     // aliveCount se acumula con reduction(+): cada hilo lleva una copia
     // privada y OpenMP las suma al cerrar la region paralela.
-    #pragma omp parallel for schedule(static) reduction(+ : nextAlive)
-    for (std::ptrdiff_t r = 1; r <= height; ++r) {
-        const std::size_t row = static_cast<std::size_t>(r);
-        for (std::size_t c = 1; c <= width; ++c) {
-            const std::uint8_t cell = next_cell_state(pIn, stride, row, c);
-            pOut[row * stride + c] = cell;
-            nextAlive += cell;
+#pragma omp parallel reduction(+ : nextAlive)
+    {
+#pragma omp master
+        g_lastOpenMPTeamSize = omp_get_num_threads();
+
+#pragma omp for schedule(static)
+        for (std::ptrdiff_t r = 1; r <= height; ++r) {
+            const std::size_t row = static_cast<std::size_t>(r);
+            for (std::size_t c = 1; c <= width; ++c) {
+                const std::uint8_t cell = next_cell_state(pIn, stride, row, c);
+                pOut[row * stride + c] = cell;
+                nextAlive += cell;
+            }
         }
     }
-    // Barrera implicita al final de "parallel for": todos los hilos terminaron
-    // de escribir `next` antes del swap (requisito de ARCHITECTURE.md).
+    // La barrera implicita al final de la region asegura que todos los hilos
+    // terminaron de escribir `next` antes del swap.
 
     s.aliveCount = nextAlive;
     swap_buffers(s);

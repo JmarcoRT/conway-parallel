@@ -13,4 +13,8 @@ namespace conway::core {
 // omp_set_num_threads() desde quien llama; este motor no lo fija.
 void step_openmp(GameState& s);
 
+// Número de hilos observado en la región paralela del último step_openmp
+// ejecutado por el hilo que consulta esta función.
+int last_openmp_team_size() noexcept;
+
 } // namespace conway::core
