@@ -1,5 +1,6 @@
 #include "core/game.hpp"
 
+#include "core/engines/openmp.hpp"
 #include "core/engines/sequential.hpp"
 
 #include <algorithm>
@@ -100,7 +101,23 @@ std::size_t Game::index(
 }
 
 void Game::step() {
-    core::step_sequential(state_);
+    switch (engine_) {
+        case Engine::Sequential:
+            core::step_sequential(state_);
+            return;
+        case Engine::OpenMP:
+            core::step_openmp(state_);
+            return;
+    }
+    throw std::logic_error("Motor de ejecucion desconocido");
+}
+
+void Game::setEngine(Engine engine) noexcept {
+    engine_ = engine;
+}
+
+Engine Game::engine() const noexcept {
+    return engine_;
 }
 
 } // namespace conway

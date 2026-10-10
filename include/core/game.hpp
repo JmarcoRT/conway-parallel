@@ -9,11 +9,20 @@
 
 namespace conway {
 
+// Motor que usa Game::step() para calcular la siguiente generacion.
+// Todos operan sobre la misma core::GameState y producen el mismo resultado
+// observable (mismas dimensiones, misma generacion, mismo aliveCount y mismas
+// celdas), lo cual es verificado por tests/game_engine_tests.cpp.
+enum class Engine {
+    Sequential,  // core::step_sequential (referencia de correccion; por defecto)
+    OpenMP       // core::step_openmp (numero de hilos: OMP_NUM_THREADS / omp_set_num_threads)
+};
+
 // Fachada que mantiene la API publica intacta y delega su representacion
-// interna en core::GameState. Game NO depende de OpenMP / MPI / Pthreads.
-// El calculo de la siguiente generacion se delega en core::step_sequential
-// (motor secuencial); los futuros motores (OpenMP, Pthreads, MPI) daran
-// implementaciones alternativas que operaran sobre la misma GameState.
+// interna en core::GameState. Game NO incluye omp.h ni usa pragmas: solo
+// elige a que motor (core::step_sequential o core::step_openmp) delega step().
+// El motor por defecto es Engine::Sequential; los futuros motores (Pthreads,
+// MPI) se anadiran como valores adicionales de Engine.
 class Game {
 public:
     explicit Game(const InputData& input);
@@ -30,8 +39,14 @@ public:
 
     void step();
 
+    // Selecciona el motor usado por step(). No modifica el tablero, la
+    // generacion ni aliveCount: se puede cambiar entre generaciones.
+    void setEngine(Engine engine) noexcept;
+    Engine engine() const noexcept;
+
 private:
     core::GameState state_;
+    Engine engine_{Engine::Sequential};
 
     std::size_t index(std::size_t row, std::size_t col) const;
 };
