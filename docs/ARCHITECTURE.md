@@ -183,6 +183,14 @@ construcción del juego, las comprobaciones de equivalencia y la salida quedan
 fuera del intervalo medido; se usa `steady_clock`, calentamiento y mediana de
 repeticiones medidas. El resultado final se compara celda por celda.
 
+El benchmark distingue los hilos solicitados de los efectivos. El motor
+registra el tamaño del equipo con `omp_get_num_threads()` dentro de cada
+región paralela de evolución; se resume el mínimo y máximo observados durante
+el calentamiento y las repeticiones. La eficiencia se calcula como
+`speedup / hilos efectivos` solo si el conteo se mantuvo estable y los motores
+produjeron estados equivalentes. Si varía, la eficiencia se muestra como no
+disponible, no como una cifra basada en los hilos solicitados.
+
 Estos patrones pueden almacenarse como archivos de entrada y no sustituyen al módulo `input`.
 
 ### renderer
@@ -229,7 +237,7 @@ Métricas previstas:
 - tiempo total;
 - tiempo por generación;
 - speedup;
-- eficiencia;
+- eficiencia calculada con los hilos OpenMP efectivos, si el equipo es estable;
 - throughput.
 
 La validación no debe contaminar la región temporizada del benchmark.

@@ -48,7 +48,7 @@ bool equalBoards(const conway::Game& lhs, const conway::Game& rhs) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     using conway::Engine;
     using conway::Game;
     using conway::app::SimulationSession;
@@ -89,10 +89,22 @@ int main() {
           "reset_restores_original_board_and_engine");
 
     omp_set_dynamic(0);
-    const auto result = conway::app::runBenchmark(input, 8, 3, 2);
+    const bool threadLimitCase = argc > 1 && std::string(argv[1]) == "--thread-limit-one";
+    const int requestedThreads = threadLimitCase ? 4 : 2;
+    const int expectedEffectiveThreads = threadLimitCase ? 1 : 2;
+    const auto result = conway::app::runBenchmark(input, 8, 3, requestedThreads);
     check(result.equivalent && result.generations == 8 && result.repetitions == 3 &&
-              result.threads == 2,
+              result.requestedThreads == requestedThreads,
           "benchmark_reports_valid_equivalent_results");
+    check(result.effectiveThreadCountStable &&
+              result.minEffectiveThreads == expectedEffectiveThreads &&
+              result.maxEffectiveThreads == expectedEffectiveThreads,
+          threadLimitCase
+              ? "benchmark_reports_effective_thread_limit"
+              : "benchmark_reports_actual_multi_thread_team");
+    check(result.efficiencyValid &&
+              result.efficiency == result.speedup / static_cast<double>(expectedEffectiveThreads),
+          "benchmark_efficiency_uses_effective_threads");
     check(result.sequentialMedianMs >= 0.0 && result.openMPMedianMs >= 0.0 &&
               result.speedup >= 0.0 && result.efficiency >= 0.0,
           "benchmark_reports_nonnegative_metrics");

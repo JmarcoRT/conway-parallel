@@ -11,7 +11,11 @@ struct BenchmarkResult {
     double openMPMedianMs{0.0};
     double speedup{0.0};
     double efficiency{0.0};
-    int threads{1};
+    int requestedThreads{1};
+    int minEffectiveThreads{1};
+    int maxEffectiveThreads{1};
+    bool effectiveThreadCountStable{true};
+    bool efficiencyValid{false};
     int generations{0};
     int repetitions{0};
     bool equivalent{false};

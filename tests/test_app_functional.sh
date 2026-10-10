@@ -47,6 +47,7 @@ check engine_selection_survives_visualization "Motor actual: OpenMP" "$work/clea
 check benchmark_reports_both_medians "Mediana Secuencial:" "$work/clean.txt"
 check benchmark_reports_openmp_median "Mediana OpenMP:" "$work/clean.txt"
 check benchmark_reports_speedup "Speedup:" "$work/clean.txt"
+check benchmark_reports_effective_threads "Hilos OpenMP efectivos:" "$work/clean.txt"
 check benchmark_reports_efficiency "Eficiencia OpenMP:" "$work/clean.txt"
 check benchmark_checks_equivalence "Estados equivalentes: SI" "$work/clean.txt"
 if [[ "$status" -eq 0 ]]; then

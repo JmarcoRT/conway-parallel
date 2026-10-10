@@ -1,5 +1,7 @@
 #include "app/benchmark.hpp"
 
+#include "core/engines/openmp.hpp"
+
 #include <omp.h>
 
 #include <algorithm>
@@ -18,6 +20,8 @@ using Clock = std::chrono::steady_clock;
 struct TimedRun {
     double elapsedMs;
     Game finalGame;
+    int minEffectiveThreads;
+    int maxEffectiveThreads;
 };
 
 TimedRun runOnce(const InputData& input, Engine engine, int threads, int generations) {
@@ -28,14 +32,23 @@ TimedRun runOnce(const InputData& input, Engine engine, int threads, int generat
     }
 
     const auto start = Clock::now();
+    int minEffectiveThreads = std::numeric_limits<int>::max();
+    int maxEffectiveThreads = 0;
     for (int generation = 0; generation < generations; ++generation) {
         game.step();
+        if (engine == Engine::OpenMP) {
+            const int actualThreads = core::last_openmp_team_size();
+            minEffectiveThreads = std::min(minEffectiveThreads, actualThreads);
+            maxEffectiveThreads = std::max(maxEffectiveThreads, actualThreads);
+        }
     }
     const auto finish = Clock::now();
 
     return {
         std::chrono::duration<double, std::milli>(finish - start).count(),
-        std::move(game)
+        std::move(game),
+        engine == Engine::OpenMP ? minEffectiveThreads : 1,
+        engine == Engine::OpenMP ? maxEffectiveThreads : 1
     };
 }
 
@@ -80,15 +93,25 @@ std::vector<double> measure(
     int generations,
     int repetitions,
     const Game& reference,
-    bool& equivalent
+    bool& equivalent,
+    int& minEffectiveThreads,
+    int& maxEffectiveThreads
 ) {
-    (void)runOnce(input, engine, threads, generations);
+    const TimedRun warmup = runOnce(input, engine, threads, generations);
+    if (engine == Engine::OpenMP) {
+        minEffectiveThreads = std::min(minEffectiveThreads, warmup.minEffectiveThreads);
+        maxEffectiveThreads = std::max(maxEffectiveThreads, warmup.maxEffectiveThreads);
+    }
     std::vector<double> times;
     times.reserve(static_cast<std::size_t>(repetitions));
     for (int repetition = 0; repetition < repetitions; ++repetition) {
         TimedRun run = runOnce(input, engine, threads, generations);
         times.push_back(run.elapsedMs);
         equivalent = equivalent && sameState(run.finalGame, reference);
+        if (engine == Engine::OpenMP) {
+            minEffectiveThreads = std::min(minEffectiveThreads, run.minEffectiveThreads);
+            maxEffectiveThreads = std::max(maxEffectiveThreads, run.maxEffectiveThreads);
+        }
     }
     return times;
 }
@@ -119,21 +142,35 @@ BenchmarkResult runBenchmark(
 
     bool equivalent = true;
     const TimedRun sequential = runOnce(input, Engine::Sequential, 1, generations);
+    int minEffectiveThreads = std::numeric_limits<int>::max();
+    int maxEffectiveThreads = 0;
     const auto sequentialTimes = measure(
-        input, Engine::Sequential, 1, generations, repetitions, sequential.finalGame, equivalent);
+        input, Engine::Sequential, 1, generations, repetitions, sequential.finalGame, equivalent,
+        minEffectiveThreads, maxEffectiveThreads);
     const auto openMPTimes = measure(
-        input, Engine::OpenMP, threads, generations, repetitions, sequential.finalGame, equivalent);
+        input, Engine::OpenMP, threads, generations, repetitions, sequential.finalGame, equivalent,
+        minEffectiveThreads, maxEffectiveThreads);
 
     const double sequentialMedian = median(sequentialTimes);
     const double openMPMedian = median(openMPTimes);
     const double speedup = openMPMedian > 0.0 ? sequentialMedian / openMPMedian : 0.0;
+    const bool threadCountStable = minEffectiveThreads == maxEffectiveThreads;
+    const bool efficiencyValid = threadCountStable && minEffectiveThreads > 0 &&
+        openMPMedian > 0.0 && equivalent;
+    const double efficiency = efficiencyValid
+        ? speedup / static_cast<double>(minEffectiveThreads)
+        : 0.0;
 
     return {
         sequentialMedian,
         openMPMedian,
         speedup,
-        speedup / static_cast<double>(threads),
+        efficiency,
         threads,
+        minEffectiveThreads,
+        maxEffectiveThreads,
+        threadCountStable,
+        efficiencyValid,
         generations,
         repetitions,
         equivalent

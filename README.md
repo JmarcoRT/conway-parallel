@@ -78,6 +78,6 @@ Actualmente se encuentran implementados los motores secuencial y OpenMP, la sele
 - evolución secuencial de generaciones;
 - Menú principal y selección persistente de motor Secuencial/OpenMP;
 - visualización interactiva de CURRENT/NEXT con avance, reproducción, pausa y reinicio;
-- benchmark reproducible entre motores con mediana, speedup, eficiencia y comprobación de equivalencia.
+- benchmark reproducible entre motores con mediana, speedup, hilos OpenMP solicitados/efectivos, eficiencia válida y comprobación de equivalencia. La eficiencia no se informa si varía el equipo efectivo.
 
 Pthreads y MPI todavía no están disponibles como motores de la aplicación.

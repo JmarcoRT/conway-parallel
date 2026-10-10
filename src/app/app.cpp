@@ -347,7 +347,7 @@ void renderSimulation(const AppState& state, const SimulationSession& session) {
         execution.aliveCount = game.aliveCount();
         execution.stepProgress = "100%";
         execution.workersInfo = (state.engine == Engine::OpenMP)
-            ? "Motor: OpenMP; hilos configurados: " + std::to_string(omp_get_max_threads())
+            ? "Motor: OpenMP; hilos solicitados: " + std::to_string(omp_get_max_threads())
             : "Motor: Secuencial";
 
         ui::BoardPanelData current{"CURRENT", ui::boardLines(game)};
@@ -455,13 +455,25 @@ bool runBenchmarkUI(AppState& state, std::string& message) {
                   << state.input->height << ")\n"
                   << "Generaciones: " << result.generations
                   << " | Repeticiones medidas: " << result.repetitions
-                  << " | Hilos OpenMP: " << result.threads << "\n"
-                  << std::fixed << std::setprecision(3)
+                  << " | Hilos OpenMP solicitados: " << result.requestedThreads << "\n"
+                  << "Hilos OpenMP efectivos: ";
+        if (result.effectiveThreadCountStable) {
+            std::cout << result.minEffectiveThreads << '\n';
+        } else {
+            std::cout << result.minEffectiveThreads << " - " << result.maxEffectiveThreads
+                      << " (variaron entre regiones)\n";
+        }
+        std::cout << std::fixed << std::setprecision(3)
                   << "Mediana Secuencial: " << result.sequentialMedianMs << " ms\n"
                   << "Mediana OpenMP: " << result.openMPMedianMs << " ms\n"
                   << "Speedup: " << result.speedup << "x\n"
-                  << "Eficiencia OpenMP: " << (result.efficiency * 100.0) << "%\n"
-                  << "Estados equivalentes: " << (result.equivalent ? "SI" : "NO") << '\n'
+                  << "Eficiencia OpenMP: ";
+        if (result.efficiencyValid) {
+            std::cout << (result.efficiency * 100.0) << "%\n";
+        } else {
+            std::cout << "no disponible (hilos efectivos variables o resultado no equivalente)\n";
+        }
+        std::cout << "Estados equivalentes: " << (result.equivalent ? "SI" : "NO") << '\n'
                   << std::flush;
 
         if (!waitForModuleReturn(controls::isInteractive())) {

@@ -157,6 +157,15 @@ if(BUILD_TESTING)
     add_test(NAME app_runtime
         COMMAND app_runtime_tests
     )
+    set_tests_properties(app_runtime PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8"
+    )
+    add_test(NAME app_runtime_thread_limit
+        COMMAND app_runtime_tests --thread-limit-one
+    )
+    set_tests_properties(app_runtime_thread_limit PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1"
+    )
 
     add_test(NAME app_functional_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_app_functional.sh"
@@ -199,6 +208,7 @@ add_executable(conway_view_demo
     src/input/input.cpp
 )
 target_include_directories(conway_view_demo PRIVATE include)
+target_link_libraries(conway_view_demo PRIVATE OpenMP::OpenMP_CXX)
 
 # Layout de simulación (3 paneles: current, next, ejecucion). Semana 6.
 # Es un demo con datos mock — no usa conway::Game, por lo que no necesita
