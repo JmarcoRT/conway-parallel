@@ -1,0 +1,62 @@
+Fecha: 2026-10-10 21:18 UTC
+Compilador: g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Flags: -std=c++20 -O2 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+Nucleos logicos (nproc): 20
+CPU: 12th Gen Intel(R) Core(TM) i7-12700F
+SO: Linux 6.6.87.2-microsoft-standard-WSL2
+Entorno: WSL2 sobre Windows; recursos compartidos con el host (el tiempo
+puede variar entre corridas por la carga del sistema host).
+
+Medicion inicial OpenMP (exploratoria, no es el benchmark final)
+Tablero: 1000x1000 aleatorio, densidad 35%, semilla 2026
+Generaciones por ejecucion: 100
+Repeticiones medidas: 7 (mas 1 de calentamiento sin medir); tiempo representativo = mediana
+Procesadores visibles para OpenMP: 20
+
+motor       hilos     mediana_ms      min_ms      max_ms  identico_al_secuencial
+secuencial  1              658.5       644.7       721.5  SI
+openmp      1              616.8       611.7       636.5  SI
+openmp      2              323.0       318.8       352.3  SI
+openmp      4              165.6       162.2       223.4  SI
+openmp      8              124.7       112.9       135.6  SI
+
+Tiempos de cada repeticion (ms):
+  secuencial hilos=1 tiempos_ms: 650.9 721.5 661.7 652.5 662.3 658.5 644.7
+  openmp hilos=1 tiempos_ms: 618.2 615.6 636.5 616.8 613.0 611.7 618.6
+  openmp hilos=2 tiempos_ms: 346.3 319.4 332.8 323.0 352.3 318.8 319.3
+  openmp hilos=4 tiempos_ms: 162.2 163.9 170.4 223.4 196.3 165.6 164.1
+  openmp hilos=8 tiempos_ms: 122.1 112.9 121.1 131.2 135.6 127.8 124.7
+
+Celulas vivas finales (referencia secuencial): 96983
+Resultado: OK, todos los resultados coinciden con el secuencial
+
+Resumen (speedup y eficiencia frente al secuencial = 658.5 ms)
+
+  hilos   mediana_ms   speedup_x   eficiencia_pct
+  secuencial  658.5        1.00         100.0
+  1         616.8        1.07         106.7
+  2         323.0        2.04         102.0
+  4         165.6        3.98          99.4
+  8         124.7        5.28          66.0
+
+Notas sobre los resultados
+
+- El binario openmp_timing mide 1/2/4/8 hilos (es lo que ejecuta el test CTest
+  openmp_timing_smoke). Para 12/16/20 hilos se hicieron pasadas adicionales
+  (registradas en el comentario de la medicion), pero el binario no las incluye
+  en su bucle por defecto.
+- Speedup > 100 % con 1 y 2 hilos se atribuye a localidad/cache: con N hilos
+  cada hilo toca una franja mas pequena de memoria contigua (cache L1/L2
+  por nucleo), reduciendo misses. No es un beneficio "magico"; es esperado.
+- A partir de 8 hilos la eficiencia baja: WSL2 comparte el tiempo de CPU con
+  el host Windows, y el i7-12700F tiene 12 nucleos P (alto rendimiento) + 8
+  nucleos E (eficiencia), asi que con 8 hilos OpenMP ya esta mezclando P y E y
+  la ganancia marginal cae. El limite real de speedup para este patron con esta
+  matriz es coherente con estos numeros.
+- El primer binario (secuencial, 1 hilo) tiene una variabilidad entre
+  repeticiones del orden de +-5 %, normal en maquinas compartidas. La mediana
+  sigue siendo la metrica representativa.
+- Estos numeros son exploratorios, NO son el benchmark final. Para el
+  benchmark final se debera usar un entorno dedicado y repetir varias veces
+  segun lo indicado en docs/ARCHITECTURE.md seccion 9 (validacion fuera de
+  la region temporizada, maquina con mas memoria y CPUs dedicados).
