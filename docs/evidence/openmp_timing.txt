@@ -1,0 +1,29 @@
+Fecha: 2026-10-07 18:03 UTC
+Compilador: g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Flags: -std=c++20 -O2 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+Nucleos logicos (nproc): 1
+CPU: Intel(R) Xeon(R) Processor @ 2.10GHz
+SO: Linux 6.18.44-fc-v77
+
+Medicion inicial OpenMP (exploratoria, no es el benchmark final)
+Tablero: 1000x1000 aleatorio, densidad 35%, semilla 2026
+Generaciones por ejecucion: 100
+Repeticiones medidas: 5 (mas 1 de calentamiento sin medir); tiempo representativo = mediana
+Procesadores visibles para OpenMP: 1
+
+motor       hilos     mediana_ms      min_ms      max_ms  identico_al_secuencial
+secuencial  1              463.3       450.9       473.2  SI
+openmp      1              409.9       409.1       410.7  SI
+openmp      2              409.3       407.3       413.7  SI
+openmp      4              408.5       404.5       501.1  SI
+openmp      8              418.6       418.4       421.8  SI
+
+Tiempos de cada repeticion (ms):
+  secuencial hilos=1 tiempos_ms: 466.2 463.3 450.9 458.0 473.2
+  openmp hilos=1 tiempos_ms: 409.9 410.4 409.5 410.7 409.1
+  openmp hilos=2 tiempos_ms: 413.7 407.3 409.3 408.7 410.0
+  openmp hilos=4 tiempos_ms: 404.5 412.6 408.5 501.1 407.1
+  openmp hilos=8 tiempos_ms: 421.8 419.2 418.4 418.6 418.5
+
+Celulas vivas finales (referencia secuencial): 96983
+Resultado: OK, todos los resultados coinciden con el secuencial
