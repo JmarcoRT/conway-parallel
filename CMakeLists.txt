@@ -21,6 +21,7 @@ add_executable(conway
     src/ui/menu.cpp
     src/app/app.cpp
     src/app/controls.cpp
+    src/ui/simulation_layout.cpp
 )
 
 target_include_directories(conway PRIVATE include)
@@ -165,3 +166,13 @@ add_executable(conway_view_demo
     src/input/input.cpp
 )
 target_include_directories(conway_view_demo PRIVATE include)
+
+# Layout de simulación (3 paneles: current, next, ejecucion). Semana 6.
+# Es un demo con datos mock — no usa conway::Game, por lo que no necesita
+# enlazar src/core/ ni los motores. El target es standalone.
+add_executable(conway_simulation_demo
+    src/ui/demo_simulation.cpp
+    src/ui/simulation_layout.cpp
+    src/ui/layout.cpp
+)
+target_include_directories(conway_simulation_demo PRIVATE include)
