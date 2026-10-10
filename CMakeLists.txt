@@ -160,6 +160,7 @@ add_executable(conway_view_demo
     src/ui/board_view.cpp
     src/core/game.cpp
     src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
     src/core/bs23.cpp
     src/input/input.cpp
 )
