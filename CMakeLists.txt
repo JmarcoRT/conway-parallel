@@ -21,6 +21,9 @@ add_executable(conway
     src/ui/menu.cpp
     src/app/app.cpp
     src/app/controls.cpp
+    src/app/simulation.cpp
+    src/app/benchmark.cpp
+    src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
 )
 
@@ -137,6 +140,29 @@ if(BUILD_TESTING)
     # persistencia entre cargas de patron.
     add_test(NAME engine_selection_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_selection.sh"
+    )
+
+    add_executable(app_runtime_tests
+        tests/app_runtime_tests.cpp
+        src/app/simulation.cpp
+        src/app/benchmark.cpp
+        src/ui/board_view.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+    )
+    target_include_directories(app_runtime_tests PRIVATE include)
+    target_link_libraries(app_runtime_tests PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME app_runtime
+        COMMAND app_runtime_tests
+    )
+
+    add_test(NAME app_functional_smoke
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_app_functional.sh"
+    )
+    set_tests_properties(app_functional_smoke PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
 add_executable(openmp_vs_sequential

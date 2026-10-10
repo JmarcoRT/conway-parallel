@@ -28,6 +28,9 @@ El proyecto tendrá dos formas principales de uso:
 - `benchmark`: comparar rendimiento entre implementaciones;
 - `visualización`: observar cómo cada implementación construye las generaciones.
 
+La aplicación integra actualmente los modos Secuencial y OpenMP. Pthreads y MPI
+siguen siendo implementaciones independientes, no seleccionables desde la UI.
+
 ---
 
 ## 3. Arquitectura general
@@ -107,7 +110,11 @@ la representación interna será:
 
 Sobre `GameState` opera la fachada pública `conway::Game` (header `include/core/game.hpp`), que mantiene exactamente el contrato estable del proyecto: constructor desde `InputData`, `isAlive`, `setCell`, `clear`, `step`, `width`, `height`, `generation`, `aliveCount`.
 
-`core` no depende de OpenMP / MPI / Pthreads: la regla B3/S23 vive en `core::bs23::next_cell_state(...)` (header `include/core/bs23.hpp`), un helper puro por celda que no incluye, importa ni menciona nada relativo a paralelismo. `Game::step()` simplemente delega en el motor activo — hoy `core::engines::step_sequential`; mañana OpenMP / Pthreads / MPI.
+La regla B3/S23 vive en `core::bs23::next_cell_state(...)` (header
+`include/core/bs23.hpp`), un helper puro por celda que no incluye, importa ni
+menciona nada relativo a paralelismo. `Game::step()` delega en el motor activo;
+hoy están disponibles `step_sequential` y `step_openmp`. Las directivas OpenMP
+permanecen en el módulo de motor, no en la regla ni en la interfaz de `Game`.
 
 No debe contener además:
 
@@ -130,7 +137,10 @@ Implementación de referencia para validar OpenMP, Pthreads y MPI (hoy vive en `
 
 #### openmp
 
-(Futuro.) Implementación paralela con memoria compartida mediante OpenMP. Operará sobre la misma `GameState` que `sequential`; el recorrido será `#pragma omp parallel for collapse(2)` repartiendo filas y columnas entre hilos, todos leyendo desde `state.current` y escribiendo en su región correspondiente de `state.next`. La sincronización implícita en las barreras OpenMP precede al `swap_buffers`.
+Implementación paralela con memoria compartida mediante OpenMP en
+`src/core/engines/openmp.cpp`. Opera sobre la misma `GameState` que
+`sequential`, reparte el recorrido entre hilos y consolida `aliveCount` antes
+de intercambiar los buffers.
 
 #### pthreads
 
@@ -158,6 +168,20 @@ Contendrá entradas conocidas para pruebas y demostraciones, por ejemplo:
 - Beacon;
 - Pulsar;
 - Gosper Glider Gun.
+
+### app y UI
+
+`src/app/` conserva la entrada y el motor seleccionados y coordina los módulos.
+`SimulationSession` administra el estado de reproducción, avance y reinicio sin
+añadir reglas al core. La aplicación usa `ui::board_view` para generar CURRENT
+y NEXT desde copias/lecturas del `Game` real, y `ui::simulation_layout` para
+presentar estado, generación, células vivas, motor y controles. La lectura de
+teclado temporizada permite avanzar la reproducción sin bloquear los controles.
+
+El benchmark compara la misma entrada y generaciones con ambos motores. La
+construcción del juego, las comprobaciones de equivalencia y la salida quedan
+fuera del intervalo medido; se usa `steady_clock`, calentamiento y mediana de
+repeticiones medidas. El resultado final se compara celda por celda.
 
 Estos patrones pueden almacenarse como archivos de entrada y no sustituyen al módulo `input`.
 
