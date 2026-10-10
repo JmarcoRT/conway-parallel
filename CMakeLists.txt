@@ -14,6 +14,7 @@ add_executable(conway
     src/main.cpp
     src/core/game.cpp
     src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
     src/core/bs23.cpp
     src/input/input.cpp
     src/ui/layout.cpp
@@ -49,9 +50,11 @@ if(BUILD_TESTING)
         src/input/input.cpp
         src/core/game.cpp
         src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
         src/core/bs23.cpp
     )
     target_include_directories(input_tests PRIVATE include)
+    target_link_libraries(input_tests PRIVATE OpenMP::OpenMP_CXX)
     add_test(NAME input_functional
         COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}"
     )
@@ -77,16 +80,55 @@ if(BUILD_TESTING)
 
     # Casos de correccion del motor (toad, beacon, pulsar, auto-consistencia
     # del criterio de equivalencia): aritmetica pura, no usa OpenMP/MPI.
+    # game.cpp referencia step_openmp tras S7, asi que este target tambien
+    # debe enlazar openmp.cpp + OpenMP::OpenMP_CXX.
     add_executable(conway_correctness_tests
         tests/conway_correctness_tests.cpp
         src/input/input.cpp
         src/core/game.cpp
         src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
         src/core/bs23.cpp
     )
     target_include_directories(conway_correctness_tests PRIVATE include)
+    target_link_libraries(conway_correctness_tests PRIVATE OpenMP::OpenMP_CXX)
     add_test(NAME conway_correctness
         COMMAND conway_correctness_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    # Semana 7: equivalencia OpenMP vs secuencial a traves de conway::Game
+    # (Engine::OpenMP) con 1, 2, 4 y 8 hilos. Misma firma que el prototipo
+    # S6 (openmp_vs_sequential) pero usando la API publica de Game.
+    add_executable(game_engine_tests
+        tests/game_engine_tests.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+        src/input/input.cpp
+    )
+    target_include_directories(game_engine_tests PRIVATE include)
+    target_link_libraries(game_engine_tests PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME game_openmp_vs_sequential
+        COMMAND game_engine_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    # Semana 7: medicion inicial exploratoria (no es el benchmark final).
+    # El test de CTest solo es un "smoke test" rapido (tablero pequeno); la
+    # medicion real se ejecuta a mano: ./build/openmp_timing o
+    # scripts/measure_openmp.sh (ver docs/OPENMP_INTEGRATION.md).
+    add_executable(openmp_timing
+        tests/openmp_timing.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+        src/input/input.cpp
+    )
+    target_include_directories(openmp_timing PRIVATE include)
+    target_link_libraries(openmp_timing PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME openmp_timing_smoke
+        COMMAND openmp_timing --width 64 --height 64 --generations 5 --repeats 1
     )
 
 add_executable(openmp_vs_sequential

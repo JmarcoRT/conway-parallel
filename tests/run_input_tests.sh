@@ -5,17 +5,19 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/conway-input-suite.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 compiler=${CXX:-g++}
-flags=(-std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+# -fopenmp es necesario porque game.cpp ahora referencia core::step_openmp
+# desde Game::step(); sin el flag hay undefined reference en el enlazado.
+flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
 "$compiler" "${flags[@]}" -I"$root/include" \
     "$root/tests/input_tests.cpp" "$root/src/input/input.cpp" "$root/src/core/game.cpp" \
-    "$root/src/core/engines/sequential.cpp" "$root/src/core/bs23.cpp" \
+    "$root/src/core/engines/sequential.cpp" "$root/src/core/engines/openmp.cpp" "$root/src/core/bs23.cpp" \
     -o "$work/input_tests"
 "$work/input_tests" "$root" "$@"
 
 "$compiler" "${flags[@]}" -I"$root/include" \
     "$root/src/main.cpp" "$root/src/input/input.cpp" "$root/src/core/game.cpp" \
-    "$root/src/core/engines/sequential.cpp" "$root/src/core/bs23.cpp" \
+    "$root/src/core/engines/sequential.cpp" "$root/src/core/engines/openmp.cpp" "$root/src/core/bs23.cpp" \
     -o "$work/conway"
 mkdir -p "$work/app/patterns"
 # main currently uses a fixed relative path. Only the isolated copy is replaced.
