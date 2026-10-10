@@ -16,8 +16,16 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 "$work/input_tests" "$root" "$@"
 
 "$compiler" "${flags[@]}" -I"$root/include" \
-    "$root/src/main.cpp" "$root/src/input/input.cpp" "$root/src/core/game.cpp" \
-    "$root/src/core/engines/sequential.cpp" "$root/src/core/engines/openmp.cpp" "$root/src/core/bs23.cpp" \
+    "$root/src/main.cpp" \
+    "$root/src/app/app.cpp" \
+    "$root/src/app/controls.cpp" \
+    "$root/src/input/input.cpp" \
+    "$root/src/core/game.cpp" \
+    "$root/src/core/engines/sequential.cpp" \
+    "$root/src/core/engines/openmp.cpp" \
+    "$root/src/core/bs23.cpp" \
+    "$root/src/ui/layout.cpp" \
+    "$root/src/ui/menu.cpp" \
     -o "$work/conway"
 mkdir -p "$work/app/patterns"
 # main currently uses a fixed relative path. Only the isolated copy is replaced.
