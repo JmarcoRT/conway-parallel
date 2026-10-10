@@ -1,6 +1,7 @@
 #include "app/app.hpp"
 
 #include "app/controls.hpp"
+#include "core/game.hpp"
 #include "input/input.hpp"
 #include "ui/layout.hpp"
 
@@ -19,9 +20,14 @@ namespace {
 constexpr const char* kClearScreen = "\033[2J\033[H";
 constexpr const char* kErrorColor = "\033[1;31m";
 
+// Estado global de la aplicacion. La seleccion de motor se conserva
+// aqui (no en Game) para que cambiar de patron no reinicie la
+// eleccion. Los modulos de Benchmark/Visualizacion (futuros) deberan
+// leer state.engine y llamar game.setEngine(state.engine) en su Game.
 struct AppState {
     std::optional<InputData> input;
     std::string path;
+    conway::Engine engine{conway::Engine::Sequential};
 };
 
 struct PathRequest {
@@ -36,8 +42,21 @@ enum class MenuAction {
     Select,
     Benchmark,
     Visualization,
+    SelectEngine,     // abre el submenu de seleccion de motor
     ChangeInput,
     Exit,
+    None
+};
+
+// Acciones del submenu de motor (independientes del MenuAction principal
+// para que un cambio en el menu principal no afecte a este flujo).
+enum class EngineMenuAction {
+    Up,
+    Down,
+    Select,
+    SetSequential,    // [S] o Enter sobre la opcion Secuencial
+    SetOpenMP,        // [O] o Enter sobre la opcion OpenMP
+    Back,             // [X] o Enter sobre la opcion Volver
     None
 };
 
@@ -51,8 +70,19 @@ const std::vector<ui::MenuItem>& mainMenuItems() {
     static const std::vector<ui::MenuItem> items = {
         {"1", "Benchmark"},
         {"2", "Visualización"},
+        {"3", "Motor"},
         {"C", "Cambiar entrada"},
         {"0", "Salir"}
+    };
+
+    return items;
+}
+
+const std::vector<ui::MenuItem>& engineMenuItems() {
+    static const std::vector<ui::MenuItem> items = {
+        {"S", "Secuencial"},
+        {"O", "OpenMP"},
+        {"X", "Volver"}
     };
 
     return items;
@@ -76,6 +106,10 @@ ui::ActiveInputInfo makeInputInfo(const AppState& state) {
     return info;
 }
 
+const char* engineName(conway::Engine e) {
+    return (e == conway::Engine::Sequential) ? "Secuencial" : "OpenMP";
+}
+
 void renderMenu(const AppState& state, std::size_t selected, const std::string& message) {
     std::cout << kClearScreen;
     ui::renderLayout(
@@ -95,6 +129,19 @@ void renderMenu(const AppState& state, std::size_t selected, const std::string& 
                   << '\n';
     }
 
+    std::cout << std::flush;
+}
+
+void renderEngineMenu(const AppState& state, std::size_t selected) {
+    std::cout << kClearScreen;
+    const std::string subtitle = std::string("Motor actual: ") + engineName(state.engine);
+    ui::renderLayout(
+        "MOTOR DE EJECUCION",
+        subtitle.c_str(),
+        makeInputInfo(state),
+        engineMenuItems(),
+        selected
+    );
     std::cout << std::flush;
 }
 
@@ -205,6 +252,84 @@ bool changeInput(AppState& state, std::string& message) {
     return true;
 }
 
+// Submenu de seleccion de motor. Devuelve true si el usuario salio
+// normalmente (Volver o EOF), false si no (no se usa en la practica
+// porque el submenu siempre vuelve). El mensaje se rellena con la
+// confirmacion del motor elegido cuando hay cambio.
+bool selectEngineUI(AppState& state, std::string& message) {
+    const bool interactive = controls::isInteractive();
+    constexpr std::size_t kOptionCount = 3;
+    std::size_t selected = 0;
+
+    while (true) {
+        renderEngineMenu(state, selected);
+
+        auto action = controls::readKey();
+        if (!action && interactive) {
+            return true;  // EOF en modo interactivo
+        }
+
+        if (action) {
+            switch (action->type) {
+                case controls::Key::Up:
+                    selected = (selected + kOptionCount - 1) % kOptionCount;
+                    continue;
+                case controls::Key::Down:
+                    selected = (selected + 1) % kOptionCount;
+                    continue;
+                case controls::Key::Enter:
+                    if (selected == 0) {
+                        state.engine = conway::Engine::Sequential;
+                        message = "Motor seleccionado: Secuencial";
+                        return true;
+                    } else if (selected == 1) {
+                        state.engine = conway::Engine::OpenMP;
+                        message = "Motor seleccionado: OpenMP";
+                        return true;
+                    } else {
+                        return true;  // Volver
+                    }
+                case controls::Key::Char:
+                    break;
+            }
+            switch (action->value) {
+                case 's': case 'S':
+                    state.engine = conway::Engine::Sequential;
+                    message = "Motor seleccionado: Secuencial";
+                    return true;
+                case 'o': case 'O':
+                    state.engine = conway::Engine::OpenMP;
+                    message = "Motor seleccionado: OpenMP";
+                    return true;
+                case 'x': case 'X': case 27:  // 27 = Esc
+                    return true;
+                default:
+                    continue;
+            }
+        }
+
+        // Modo no interactivo: leer una linea y mapear.
+        auto line = controls::readLine("");
+        if (!line) {
+            return true;  // EOF
+        }
+        if (*line == "s" || *line == "S") {
+            state.engine = conway::Engine::Sequential;
+            message = "Motor seleccionado: Secuencial";
+            return true;
+        }
+        if (*line == "o" || *line == "O") {
+            state.engine = conway::Engine::OpenMP;
+            message = "Motor seleccionado: OpenMP";
+            return true;
+        }
+        if (*line == "x" || *line == "X" || *line == "0") {
+            return true;
+        }
+        // Cualquier otra entrada: ignorar y redibujar.
+    }
+}
+
 MenuAction actionFromIndex(std::size_t index) {
     switch (index) {
         case 0:
@@ -212,8 +337,10 @@ MenuAction actionFromIndex(std::size_t index) {
         case 1:
             return MenuAction::Visualization;
         case 2:
-            return MenuAction::ChangeInput;
+            return MenuAction::SelectEngine;
         case 3:
+            return MenuAction::ChangeInput;
+        case 4:
             return MenuAction::Exit;
         default:
             return MenuAction::None;
@@ -244,6 +371,8 @@ std::optional<MenuAction> pollMenuAction(bool interactive) {
                 return MenuAction::Benchmark;
             case '2':
                 return MenuAction::Visualization;
+            case '3':
+                return MenuAction::SelectEngine;
             case 'c':
             case 'C':
                 return MenuAction::ChangeInput;
@@ -266,6 +395,10 @@ std::optional<MenuAction> pollMenuAction(bool interactive) {
 
     if (*line == "2") {
         return MenuAction::Visualization;
+    }
+
+    if (*line == "3") {
+        return MenuAction::SelectEngine;
     }
 
     if (*line == "c" || *line == "C") {
@@ -317,6 +450,11 @@ int runLoop() {
                 break;
             case MenuAction::Visualization:
                 if (!openSection("VISUALIZACION", state, message)) {
+                    return 0;
+                }
+                break;
+            case MenuAction::SelectEngine:
+                if (!selectEngineUI(state, message)) {
                     return 0;
                 }
                 break;

@@ -132,6 +132,13 @@ if(BUILD_TESTING)
         COMMAND openmp_timing --width 64 --height 64 --generations 5 --repeats 1
     )
 
+    # Semana 7 (continuacion): smoke test del submenu de seleccion de
+    # motor desde la aplicacion. Verifica navegacion, cambio a OpenMP y
+    # persistencia entre cargas de patron.
+    add_test(NAME engine_selection_smoke
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_selection.sh"
+    )
+
 add_executable(openmp_vs_sequential
     tests/openmp_vs_sequential.cpp
     src/core/engines/openmp.cpp
