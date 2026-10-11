@@ -20,6 +20,7 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     "$root/src/app/app.cpp" \
     "$root/src/app/controls.cpp" \
     "$root/src/app/simulation.cpp" \
+    "$root/src/app/thread_config.cpp" \
     "$root/src/app/benchmark.cpp" \
     "$root/src/input/input.cpp" \
     "$root/src/core/game.cpp" \

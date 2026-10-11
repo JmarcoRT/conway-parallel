@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <chrono>
@@ -23,7 +24,16 @@ struct TimedKeyPress {
     std::optional<KeyPress> key;
 };
 
+struct TerminalSize {
+    std::size_t columns{80};
+    std::size_t rows{24};
+
+    bool operator==(const TerminalSize&) const = default;
+};
+
 bool isInteractive();
+bool supportsAnsiColors();
+TerminalSize terminalSize();
 
 void enableRawMode();
 void disableRawMode();

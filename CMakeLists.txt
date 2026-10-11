@@ -22,6 +22,7 @@ add_executable(conway
     src/app/app.cpp
     src/app/controls.cpp
     src/app/simulation.cpp
+    src/app/thread_config.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
@@ -145,7 +146,9 @@ if(BUILD_TESTING)
     add_executable(app_runtime_tests
         tests/app_runtime_tests.cpp
         src/app/simulation.cpp
+        src/app/thread_config.cpp
         src/app/benchmark.cpp
+        src/ui/simulation_layout.cpp
         src/ui/board_view.cpp
         src/core/game.cpp
         src/core/engines/sequential.cpp

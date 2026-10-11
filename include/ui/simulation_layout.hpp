@@ -3,6 +3,7 @@
 #include "ui/layout.hpp"
 
 #include <string>
+#include <ostream>
 #include <vector>
 #include <cstddef>
 
@@ -36,6 +37,7 @@ struct BoardPanelData {
 struct SimulationLayoutConfig {
     std::size_t width{82};                // Ancho total del marco exterior en caracteres
     std::size_t innerPanelHeight{8};      // Alto de líneas para el interior de cada panel de tablero
+    bool colorEnabled{true};
 };
 
 /**
@@ -46,6 +48,15 @@ struct SimulationLayoutConfig {
  *
  * Mantiene la consistencia visual y paleta ANSI definida en la Semana 5.
  */
+void renderSimulationLayout(
+    const SimulationHeaderInfo& header,
+    const ExecutionInfo& execution,
+    const BoardPanelData& currentPanel,
+    const BoardPanelData& nextPanel,
+    const SimulationLayoutConfig& config,
+    std::ostream& out
+);
+
 void renderSimulationLayout(
     const SimulationHeaderInfo& header,
     const ExecutionInfo& execution,

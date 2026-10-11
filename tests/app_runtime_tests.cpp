@@ -1,13 +1,17 @@
 #include "app/benchmark.hpp"
 #include "app/simulation.hpp"
+#include "app/thread_config.hpp"
 #include "core/game.hpp"
 #include "input/input.hpp"
 #include "ui/board_view.hpp"
+#include "ui/simulation_layout.hpp"
 
 #include <omp.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -46,6 +50,22 @@ bool equalBoards(const conway::Game& lhs, const conway::Game& rhs) {
     return true;
 }
 
+std::size_t maximumLineWidth(const std::string& text) {
+    std::istringstream lines(text);
+    std::string line;
+    std::size_t maximum = 0;
+    while (std::getline(lines, line)) {
+        std::size_t width = 0;
+        for (const unsigned char character : line) {
+            if ((character & 0xc0) != 0x80) {
+                ++width;
+            }
+        }
+        maximum = std::max(maximum, width);
+    }
+    return maximum;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -67,6 +87,66 @@ int main(int argc, char** argv) {
     check(conway::ui::nextBoardLines(session.game()) == conway::ui::boardLines(expectedNext) &&
               session.game().generation() == 0,
           "next_view_matches_real_next_generation");
+
+    const auto monochrome = conway::ui::renderBoardLines(
+        session.game(), conway::ui::BoardRenderOptions{3, 3, false});
+    check(monochrome.size() == 5 && monochrome[0] == "[ ][ ][ ]" &&
+              monochrome[2].find("[#]") != std::string::npos,
+          "board_view_renders_distinct_grid_cells_and_clips_large_boards");
+    check(monochrome[3].find("columnas omitidas") != std::string::npos &&
+              monochrome[4].find("filas omitidas") != std::string::npos,
+          "board_view_reports_hidden_dimensions");
+    const auto colored = conway::ui::renderBoardLines(
+        session.game(), conway::ui::BoardRenderOptions{5, 5, true});
+    check(colored[2].find("\033[1;32m[#]\033[0m") != std::string::npos,
+          "board_view_can_render_ansi_colors");
+
+    std::ostringstream wideLayout;
+    conway::ui::renderSimulationLayout(
+        {}, {}, {"CURRENT", monochrome}, {"NEXT", monochrome},
+        conway::ui::SimulationLayoutConfig{82, 4, false}, wideLayout);
+    check(wideLayout.str().find("\033[") == std::string::npos &&
+              wideLayout.str().find("CURRENT") != std::string::npos &&
+              wideLayout.str().find("NEXT") != std::string::npos,
+          "simulation_layout_supports_monochrome_output");
+    const auto currentTitle = wideLayout.str().find("CURRENT");
+    const auto nextTitle = wideLayout.str().find("NEXT", currentTitle);
+    check(currentTitle != std::string::npos && nextTitle != std::string::npos &&
+              nextTitle - currentTitle > 8,
+          "simulation_layout_aligns_current_and_next_panels");
+    std::ostringstream narrowLayout;
+    conway::ui::renderSimulationLayout(
+        {}, {}, {"CURRENT", monochrome}, {"NEXT", monochrome},
+        conway::ui::SimulationLayoutConfig{50, 2, false}, narrowLayout);
+    check(narrowLayout.str().find("CURRENT") != std::string::npos &&
+              narrowLayout.str().find("NEXT") != std::string::npos,
+          "simulation_layout_adapts_to_narrow_terminal");
+    std::ostringstream veryNarrowLayout;
+    conway::ui::renderSimulationLayout(
+        {}, {}, {"CURRENT", monochrome}, {"NEXT", monochrome},
+        conway::ui::SimulationLayoutConfig{24, 2, false}, veryNarrowLayout);
+    check(maximumLineWidth(veryNarrowLayout.str()) <= 24,
+          "simulation_layout_does_not_exceed_very_narrow_terminal");
+    std::ostringstream tinyLayout;
+    conway::ui::renderSimulationLayout(
+        {}, {}, {"CURRENT", monochrome}, {"NEXT", monochrome},
+        conway::ui::SimulationLayoutConfig{1, 2, false}, tinyLayout);
+    check(maximumLineWidth(tinyLayout.str()) <= 1,
+          "simulation_layout_handles_tiny_terminal_without_overflow");
+
+    check(conway::app::parseOpenMPThreadCount("1") == 1 &&
+              conway::app::parseOpenMPThreadCount("2") == 2 &&
+              conway::app::parseOpenMPThreadCount("4") == 4 &&
+              conway::app::parseOpenMPThreadCount("8") == 8 &&
+              conway::app::parseOpenMPThreadCount("12") == 12 &&
+              conway::app::parseOpenMPThreadCount("64") == 64,
+          "thread_configuration_accepts_presets_and_custom_values");
+    check(!conway::app::parseOpenMPThreadCount("0") &&
+              !conway::app::parseOpenMPThreadCount("65") &&
+              !conway::app::parseOpenMPThreadCount("-2") &&
+              !conway::app::parseOpenMPThreadCount("two") &&
+              !conway::app::parseOpenMPThreadCount("4x"),
+          "thread_configuration_rejects_invalid_values");
 
     session.step();
     check(session.game().generation() == 1 && session.game().aliveCount() == 3 &&

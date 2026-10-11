@@ -46,9 +46,12 @@ cmake --build build
 
 # Ejecutar la demostración de la interfaz de terminal (Menú Principal y Layout Base)
 ./build/conway_ui_demo
+
+# Ejecutar la aplicación interactiva
+./build/conway
 ```
 
-> **Nota:** La interfaz requiere una terminal con soporte para secuencias de colores ANSI y UTF-8 (ej. WSL, Linux/macOS Terminal, Windows Terminal moderno).
+> **Nota:** La interfaz usa caracteres UTF-8 para el tablero y los bordes. El color ANSI se activa cuando la salida está conectada a una terminal compatible; en otros casos se usa una presentación monocromática. Define `NO_COLOR` para desactivar el color.
 
 ## Estructura actual
 
@@ -81,3 +84,19 @@ Actualmente se encuentran implementados los motores secuencial y OpenMP, la sele
 - benchmark reproducible entre motores con mediana, speedup, hilos OpenMP solicitados/efectivos, eficiencia válida y comprobación de equivalencia. La eficiencia no se informa si varía el equipo efectivo.
 
 Pthreads y MPI todavía no están disponibles como motores de la aplicación.
+
+### Controles para una demostración
+
+- En el menú, selecciona `4` para configurar OpenMP: 1, 2, 4, 8 o un valor
+  personalizado entre 1 y 64. La opción se conserva durante la sesión y se
+  aplica a visualización y benchmark.
+- La aplicación informa los procesadores lógicos disponibles; no los presenta
+  como núcleos físicos. El equipo efectivo puede ser menor al solicitado por
+  límites del runtime o del entorno.
+- En visualización: `N` avanza, espacio pausa/reanuda, `R` reinicia y `Esc`
+  vuelve al menú. La pantalla pausada no se vuelve a imprimir sin cambios.
+- La cuadrícula y el marco se adaptan al ancho del terminal y limitan las celdas visibles; las
+  dimensiones omitidas se indican. Los colores se usan en terminales ANSI y
+  pueden desactivarse estableciendo `NO_COLOR`.
+- El benchmark presenta medianas en milisegundos, speedup, eficiencia cuando
+  el equipo efectivo es estable y una advertencia para tableros pequeños.

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <poll.h>
 #include <system_error>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <termios.h>
 
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <cstdlib>
 
 namespace conway::app::controls {
 
@@ -89,6 +91,25 @@ std::string trim(const std::string& text) {
 
 bool isInteractive() {
     return isatty(STDIN_FILENO) == 1;
+}
+
+bool supportsAnsiColors() {
+    const char* noColor = std::getenv("NO_COLOR");
+    const char* term = std::getenv("TERM");
+    return isatty(STDOUT_FILENO) == 1 && !(noColor && *noColor != '\0') &&
+        term && std::string(term) != "dumb";
+}
+
+TerminalSize terminalSize() {
+    winsize size{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+        size.ws_col > 0 && size.ws_row > 0) {
+        return {
+            static_cast<std::size_t>(size.ws_col),
+            static_cast<std::size_t>(size.ws_row)
+        };
+    }
+    return {};
 }
 
 void enableRawMode() {

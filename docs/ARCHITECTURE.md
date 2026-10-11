@@ -177,11 +177,27 @@ añadir reglas al core. La aplicación usa `ui::board_view` para generar CURRENT
 y NEXT desde copias/lecturas del `Game` real, y `ui::simulation_layout` para
 presentar estado, generación, células vivas, motor y controles. La lectura de
 teclado temporizada permite avanzar la reproducción sin bloquear los controles.
+La interfaz consulta dimensiones del terminal, limita el viewport del tablero y
+usa una cuadrícula de celdas UTF-8 con color ANSI solo cuando la salida lo admite;
+en terminales estrechos reduce el marco para evitar desbordamientos horizontales.
+Mientras está pausada, la pantalla se redibuja únicamente tras una acción o un
+cambio de dimensiones; el sondeo temporizado de teclado no vuelve a emitir el
+mismo cuadro.
+
+La configuración de hilos OpenMP pertenece al estado de la aplicación y se
+conserva entre módulos. Ofrece valores comunes y un valor personalizado entre
+1 y 64; el número de procesadores lógicos disponibles se muestra como dato del
+runtime, no como cantidad de núcleos físicos. El número solicitado se aplica a
+la visualización y al benchmark, que conserva por separado los hilos efectivos
+observados dentro de sus regiones paralelas.
 
 El benchmark compara la misma entrada y generaciones con ambos motores. La
 construcción del juego, las comprobaciones de equivalencia y la salida quedan
 fuera del intervalo medido; se usa `steady_clock`, calentamiento y mediana de
-repeticiones medidas. El resultado final se compara celda por celda.
+repeticiones medidas. El resultado final se compara celda por celda. La UI
+presenta primero el estado de cálculo, compara las medianas en milisegundos,
+muestra speedup/eficiencia con sus unidades e indica que tableros pequeños
+pueden no representar cargas mayores.
 
 El benchmark distingue los hilos solicitados de los efectivos. El motor
 registra el tamaño del equipo con `omp_get_num_threads()` dentro de cada
