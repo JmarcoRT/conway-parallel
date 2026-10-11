@@ -20,6 +20,7 @@ namespace {
 
 termios g_originalTermios{};
 bool g_rawEnabled = false;
+bool g_alternateScreenEnabled = false;
 
 bool readByteWithTimeout(unsigned char& byte) {
     pollfd input{STDIN_FILENO, POLLIN, 0};
@@ -72,7 +73,15 @@ std::optional<KeyPress> readKeyByte() {
 }
 
 void restoreFromSignal(int sig) {
-    disableRawMode();
+    if (g_rawEnabled) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_originalTermios);
+        g_rawEnabled = false;
+    }
+    if (g_alternateScreenEnabled) {
+        constexpr char restore[] = "\033[0m\033[?25h\033[?1049l";
+        (void)::write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+        g_alternateScreenEnabled = false;
+    }
     std::signal(sig, SIG_DFL);
     std::raise(sig);
 }
@@ -112,6 +121,30 @@ TerminalSize terminalSize() {
     return {};
 }
 
+void beginTerminalSession() {
+    if (!isInteractive() || !isatty(STDOUT_FILENO)) {
+        return;
+    }
+    constexpr char enter[] = "\033[?1049h\033[?25l\033[2J\033[H";
+    if (::write(STDOUT_FILENO, enter, sizeof(enter) - 1) >= 0) {
+        g_alternateScreenEnabled = true;
+    }
+    std::signal(SIGINT, restoreFromSignal);
+    std::signal(SIGTERM, restoreFromSignal);
+}
+
+void endTerminalSession() noexcept {
+    disableRawMode();
+    if (!g_alternateScreenEnabled) {
+        return;
+    }
+    constexpr char restore[] = "\033[0m\033[?25h\033[?1049l";
+    (void)::write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+    g_alternateScreenEnabled = false;
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
+}
+
 void enableRawMode() {
     if (!isInteractive() || g_rawEnabled) {
         return;
@@ -133,8 +166,10 @@ void enableRawMode() {
 
     g_rawEnabled = true;
 
-    std::signal(SIGINT, restoreFromSignal);
-    std::signal(SIGTERM, restoreFromSignal);
+    if (!g_alternateScreenEnabled) {
+        std::signal(SIGINT, restoreFromSignal);
+        std::signal(SIGTERM, restoreFromSignal);
+    }
 }
 
 void disableRawMode() {

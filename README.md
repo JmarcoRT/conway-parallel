@@ -9,12 +9,11 @@ Simulador del **Juego de la Vida de Conway** desarrollado en C++ para estudiar y
 
 El proyecto busca comprobar que las implementaciones paralelas y distribuidas produzcan los mismos resultados que la versión secuencial, y analizar su rendimiento mediante métricas como tiempo de ejecución, speedup y eficiencia.
 
-Además, el simulador contará con:
+La aplicación interactiva incluye:
 
-- carga de tableros desde archivos `.txt`;
-- modo de visualización de la evolución del tablero;
-- visualización del trabajo realizado por threads y procesos;
-- modo benchmark sin renderizado para realizar mediciones comparables.
+- catálogo dinámico de patrones `.txt` en `patterns/`, además de carga manual;
+- visualización de CURRENT/NEXT con avance, pausa, reinicio y selección de motor;
+- benchmark Secuencial/OpenMP con medianas, speedup, eficiencia y equivalencia.
 
 ## Tecnologías
 
@@ -51,7 +50,7 @@ cmake --build build
 ./build/conway
 ```
 
-> **Nota:** La interfaz usa caracteres UTF-8 para el tablero y los bordes. El color ANSI se activa cuando la salida está conectada a una terminal compatible; en otros casos se usa una presentación monocromática. Define `NO_COLOR` para desactivar el color.
+> **Nota:** En una TTY, la aplicación usa la pantalla alternativa y restaura la pantalla y el modo de terminal al salir. El layout se adapta al tamaño reportado por Linux/WSL. Las celdas usan bloques UTF-8; los colores ANSI de fondo se activan en terminales compatibles y `NO_COLOR=1` los desactiva.
 
 ## Estructura actual
 
@@ -87,6 +86,10 @@ Pthreads y MPI todavía no están disponibles como motores de la aplicación.
 
 ### Controles para una demostración
 
+- En el menú, usa flechas y Enter o los atajos visibles. `C` abre el catálogo
+  dinámico de `patterns/*.txt`; selecciona una entrada con flechas y Enter.
+  Los archivos `.txt` nuevos aparecen automáticamente. La opción de ruta
+  manual conserva la compatibilidad con patrones fuera de ese directorio.
 - En el menú, selecciona `4` para configurar OpenMP: 1, 2, 4, 8 o un valor
   personalizado entre 1 y 64. La opción se conserva durante la sesión y se
   aplica a visualización y benchmark.
@@ -95,8 +98,10 @@ Pthreads y MPI todavía no están disponibles como motores de la aplicación.
   límites del runtime o del entorno.
 - En visualización: `N` avanza, espacio pausa/reanuda, `R` reinicia y `Esc`
   vuelve al menú. La pantalla pausada no se vuelve a imprimir sin cambios.
-- La cuadrícula y el marco se adaptan al ancho del terminal y limitan las celdas visibles; las
-  dimensiones omitidas se indican. Los colores se usan en terminales ANSI y
-  pueden desactivarse estableciendo `NO_COLOR`.
+- La cuadrícula y los paneles CURRENT/NEXT se centran y ajustan al tamaño del
+  terminal. Los tableros grandes usan un viewport y declaran las filas o
+  columnas no mostradas; las células no se recortan silenciosamente.
+- Si la aplicación recibe entrada por pipe (no TTY), mantiene la carga de ruta
+  por línea para permitir automatización y scripts existentes.
 - El benchmark presenta medianas en milisegundos, speedup, eficiencia cuando
   el equipo efectivo es estable y una advertencia para tableros pequeños.

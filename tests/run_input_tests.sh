@@ -21,6 +21,7 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     "$root/src/app/controls.cpp" \
     "$root/src/app/simulation.cpp" \
     "$root/src/app/thread_config.cpp" \
+    "$root/src/app/pattern_catalog.cpp" \
     "$root/src/app/benchmark.cpp" \
     "$root/src/input/input.cpp" \
     "$root/src/core/game.cpp" \
@@ -49,7 +50,7 @@ exe_failures=0
 #   - "0"           -> Salir
 # En modo no interactivo el runloop termina al recibir EOF o "0".
 # Tras cargar/fallar, la app imprime el menu otra vez con un mensaje
-# (verde si exito, rojo si error) y la cabecera "Entrada activa:".
+#     (verde si exito, rojo si error) y el patron activo.
 run_conway() {
     local status=0
     (cd "$work/app" && "$work/conway") > "$work/actual.txt" 2> "$work/stderr.txt" || status=$?
@@ -68,10 +69,10 @@ patterns/test.txt
 STDIN
 strip_ansi < "$work/actual.txt" > "$clean"
 if [[ "$status" -eq 0 ]] \
-   && grep -q 'Entrada activa:.*test\.txt' "$clean" \
-   && grep -q '4 x 4' "$clean" \
+   && grep -q 'Patrón actual:.*test\.txt' "$clean" \
+   && grep -q '4 × 4' "$clean" \
    && grep -q 'Entrada cargada:.*test\.txt' "$clean"; then
-    echo 'PASS executable_loads_valid_pattern (rc=0, entrada activa, 4 x 4, mensaje de carga)'
+    echo 'PASS executable_loads_valid_pattern (rc=0, patron activo, 4 x 4, mensaje de carga)'
 else
     echo "FAIL executable_loads_valid_pattern (rc=$status)"
     exe_failures=$((exe_failures + 1))

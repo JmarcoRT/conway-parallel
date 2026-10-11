@@ -34,7 +34,9 @@ struct MenuItem {
 
 // Configuración general del layout base reutilizable
 struct LayoutConfig {
-    std::size_t width{78}; // Ancho total del marco en caracteres
+    std::size_t width{78};
+    std::size_t height{24};
+    bool colorEnabled{true};
 };
 
 /**
@@ -47,7 +49,16 @@ void renderLayout(
     const ActiveInputInfo& inputInfo,
     const std::vector<MenuItem>& options,
     std::size_t selectedIndex,
-    const LayoutConfig& config = LayoutConfig{}
+    const LayoutConfig& config = LayoutConfig{},
+    const std::string& notice = {}
+);
+
+void renderScreen(
+    const std::string& title,
+    const std::string& subtitle,
+    const std::vector<std::string>& body,
+    const std::string& footer,
+    const LayoutConfig& config
 );
 
 } // namespace conway::ui

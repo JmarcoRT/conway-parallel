@@ -177,12 +177,27 @@ añadir reglas al core. La aplicación usa `ui::board_view` para generar CURRENT
 y NEXT desde copias/lecturas del `Game` real, y `ui::simulation_layout` para
 presentar estado, generación, células vivas, motor y controles. La lectura de
 teclado temporizada permite avanzar la reproducción sin bloquear los controles.
-La interfaz consulta dimensiones del terminal, limita el viewport del tablero y
-usa una cuadrícula de celdas UTF-8 con color ANSI solo cuando la salida lo admite;
-en terminales estrechos reduce el marco para evitar desbordamientos horizontales.
-Mientras está pausada, la pantalla se redibuja únicamente tras una acción o un
-cambio de dimensiones; el sondeo temporizado de teclado no vuelve a emitir el
-mismo cuadro.
+La interfaz consulta las dimensiones reales de la TTY con `ioctl(TIOCGWINSZ)`.
+Los layouts de menú y simulación centran el contenido y reservan zonas de
+encabezado, contenido y controles, con una variante compacta para terminales
+pequeñas. La sesión interactiva utiliza la pantalla alternativa; los controles
+restauran el modo de terminal y la pantalla al salir. La navegación y la
+simulación detectan redimensionamientos mediante sondeo temporizado.
+
+`app::discoverPatterns` enumera los archivos `.txt` de `patterns/`, valida sus
+metadatos a través del cargador existente y muestra dimensiones/categorías. Los
+archivos inválidos permanecen visibles con el error asociado; una carga fallida
+no reemplaza la entrada actual. En modo no TTY se conserva el ingreso de rutas
+por línea para compatibilidad con pruebas y automatización.
+
+`ui::board_view` representa cada estado como bloques de celdas UTF-8 o fondos
+ANSI, con fallback monocromático y viewport explícito para tableros grandes.
+`ui::simulation_layout` alinea CURRENT y NEXT, centra el tablero en los paneles
+y distribuye la pantalla según sus dimensiones.
+
+Mientras está pausada, la simulación se redibuja únicamente tras una acción o
+un cambio de dimensiones; el sondeo temporizado no vuelve a emitir el mismo
+cuadro.
 
 La configuración de hilos OpenMP pertenece al estado de la aplicación y se
 conserva entre módulos. Ofrece valores comunes y un valor personalizado entre

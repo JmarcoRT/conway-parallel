@@ -1,70 +1,75 @@
-# Módulo de Interfaz de Usuario (UI) y Layout Base
+# Interfaz de terminal
 
-Este documento describe la arquitectura, componentes y forma de uso del módulo de interfaz de terminal para `conway-parallel`.
+## Diseño
 
----
+La TUI separa responsabilidades:
 
-## 1. Arquitectura y Principios de Diseño
+- `src/app/controls.cpp`: lectura de teclas, modo raw, dimensiones con
+  `TIOCGWINSZ`, detección ANSI y ciclo de vida de la pantalla alternativa.
+- `src/app/pattern_catalog.cpp`: descubrimiento de `.txt`, validación a través
+  de `loadInput` y metadatos de patrones.
+- `src/ui/layout.cpp`: menú adaptable y pantallas informativas.
+- `src/ui/board_view.cpp`: representación acotada de células reales del `Game`.
+- `src/ui/simulation_layout.cpp`: layout de CURRENT/NEXT y estado de ejecución.
+- `src/app/app.cpp`: navegación y coordinación de los módulos.
 
-El módulo UI sigue estrictamente los principios definidos en `docs/ARCHITECTURE.md`:
-- **Renderizado Puro y Desacoplado:** Las funciones de UI son funciones puras e inmutables que reciben el estado actual (índice seleccionado, información de la entrada activa) y renderizan la interfaz en terminal. **No contienen loops de navegación ni lecturas de teclado.**
-- **Sin Lógica de Simulación:** La UI no calcula estados del Juego de la Vida ni modifica buffers de células.
-- **Layout Base Reutilizable:** Proporciona un marco con bordes de caja, título centrado entre separadores, línea de estado para la entrada activa, zona de opciones destacadas y footer de ayuda de navegación fijo.
+Los renderers no leen teclado ni modifican el estado de Conway. La sesión
+interactiva se dibuja sobre la pantalla alternativa y devuelve al terminal su
+pantalla y configuración al salir. En una entrada no TTY se mantiene la carga
+de rutas por línea para soportar pruebas y automatización.
 
----
+## Patrones
 
-## 2. Componentes Principales
+En una TTY, `C` abre el catálogo descubierto desde `patterns/*.txt`. Se puede
+navegar con flechas, seleccionar con Enter o usar `M` para indicar una ruta
+manual. Cada entrada indica dimensiones y categoría si se reconoce. Los
+archivos inválidos aparecen como tales y no sustituyen el patrón activo.
+Agregar un archivo `.txt` compatible a `patterns/` lo incorpora al siguiente
+escaneo del catálogo.
 
-- `conway::ui::ActiveInputInfo`: Estructura para consultar el estado de la entrada activa (nombre de archivo, dimensiones, células vivas).
-- `conway::ui::MenuItem`: Estructura para representar opciones del menú (`key`, `label`).
-- `conway::ui::renderLayout(...)`: Función principal que renderiza el marco reutilizable y las opciones.
-- `conway::ui::renderMainMenu(...)`: Función específica para renderizar la vista del **Menú Principal v1** (`[1] Benchmark`, `[2] Visualización`, `[0] Salir`).
+El cargador conserva su formato: alto y ancho en la primera línea, seguidos por
+una fila de `0`/`1` por línea.
 
----
+## Tablero y simulación
 
-## 3. Prerrequisitos del Sistema
+Las células vivas y muertas se dibujan como superficies rectangulares usando
+bloques Unicode en modo monocromático o color de fondo ANSI cuando la salida es
+una TTY compatible. `NO_COLOR` desactiva el color. Los paneles se disponen lado
+a lado en terminales anchas y verticalmente en las estrechas. Los tableros que
+no caben usan un viewport con filas/columnas omitidas indicadas.
 
-Se requiere un entorno Linux o compatible con C++20, CMake y Open MPI.
+Controles de simulación:
+
+- Espacio: pausar/reanudar.
+- `N`: avanzar una generación.
+- `R`: reiniciar el patrón.
+- `Esc`: regresar al menú.
+
+La pausa no genera redibujados periódicos; el bucle espera teclas con timeout y
+detecta cambios del tamaño de terminal.
+
+## Configuración y benchmark
+
+La configuración OpenMP de la sesión se aplica a la visualización y al
+benchmark. Se muestra por separado el valor solicitado y el equipo efectivo;
+los procesadores lógicos detectados no se presentan como núcleos físicos.
+
+El benchmark conserva calentamiento, repeticiones, medianas, equivalencia y
+métricas con `steady_clock`. La medición se realiza sin renderizado. La
+eficiencia se informa solo con resultados equivalentes y tamaño de equipo
+efectivo estable; un tablero pequeño muestra una advertencia de overhead.
+
+## Ejecución y pruebas
+
+Desde la raíz del repositorio:
 
 ```bash
-sudo apt update
-sudo apt install -y libopenmpi-dev openmpi-bin cmake g++
-```
-
-> **Nota de compatibilidad visual:** La interfaz utiliza secuencias de escape ANSI para colores (Cian, Verde, Gris, Blanco) y caracteres de dibujo de caja UTF-8 (`┌`, `─`, `┐`, `│`, `└`, `┘`). Se requiere una terminal con soporte para secuencias ANSI y UTF-8 (ej. WSL, Ubuntu/Linux terminal, macOS Terminal o Windows Terminal moderno).
-
----
-
-## 4. Compilación y Ejecución con CMake
-
-Para compilar y ejecutar el target de demostración del Menú Principal y Layout Base (`conway_ui_demo`):
-
-```bash
-# 1. Configurar el proyecto
 cmake -B build -S .
-
-# 2. Compilar los ejecutables
 cmake --build build
-
-# 3. Ejecutar la demostración de la UI
-./build/conway_ui_demo
+./build/conway
+ctest --test-dir build --output-on-failure
+bash tests/test_app_functional.sh
 ```
 
----
-
-## 5. Integración para Integrantes del Equipo
-
-Los compañeros encargados de la navegación (ej. Manuel) o de pantallas futuras (Benchmark, Visualización) pueden reutilizar el layout base importando `include/ui/layout.hpp` o `include/ui/menu.hpp`:
-
-```cpp
-#include "ui/menu.hpp"
-
-// Renderizar Menú Principal con opción 0 (Benchmark) seleccionada
-conway::ui::ActiveInputInfo inputInfo;
-inputInfo.hasInput = true;
-inputInfo.filename = "tablero.txt";
-inputInfo.width = 1000;
-inputInfo.height = 1000;
-
-conway::ui::renderMainMenu(0, inputInfo);
-```
+La suite funcional utiliza `script`/PTY cuando está disponible para comprobar
+teclas, retorno al menú, redimensionamiento y restauración de terminal.

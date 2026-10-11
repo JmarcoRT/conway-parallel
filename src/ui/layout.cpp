@@ -1,73 +1,77 @@
 #include "ui/layout.hpp"
+#include "ui/terminal_text.hpp"
 
-#include <iostream>
-#include <string>
-#include <vector>
-#include <sstream>
 #include <algorithm>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <utility>
 
 namespace conway::ui {
 
 namespace {
 
-// Helper para repetir una cadena N veces
-std::string repeatStr(const std::string& str, std::size_t times) {
-    std::string result;
-    result.reserve(str.size() * times);
-    for (std::size_t i = 0; i < times; ++i) {
-        result += str;
+std::string frame(const std::string& text, std::size_t width, bool centered, bool colors) {
+    if (width < 3) {
+        return terminal_text::truncate(text, width);
     }
-    return result;
+    return std::string(colors ? color::WHITE : "") + "│" +
+        (colors ? color::RESET : "") + terminal_text::fit(text, width - 2, centered) +
+        (colors ? color::WHITE : "") + "│" + (colors ? color::RESET : "");
 }
 
-// Helper para calcular longitud visual en caracteres UTF-8 (1 codepoint = 1 celda de terminal)
-std::size_t utf8Length(const std::string& str) {
-    std::size_t len = 0;
-    for (std::size_t i = 0; i < str.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(str[i]);
-        if ((c & 0xC0) != 0x80) {
-            len++;
-        }
-    }
-    return len;
-}
-
-/**
- * Imprime una línea dentro del cuadro exterior garantizando matemáticamente
- * que el espacio interior entre los bordes '│' es exactamente 'innerWidth' caracteres.
- */
-void printFrameLine(
-    const std::string& rawText,
-    const std::string& formattedText,
-    std::size_t innerWidth,
-    std::size_t leftMargin = 0,
-    bool center = false
+std::string rule(
+    std::size_t width,
+    bool colors,
+    const std::string& left,
+    const std::string& right
 ) {
-    std::size_t textVisualLen = utf8Length(rawText);
-    std::size_t leftPadding = 0;
-    std::size_t rightPadding = 0;
-
-    if (textVisualLen >= innerWidth) {
-        leftPadding = 0;
-        rightPadding = 0;
-    } else if (center) {
-        leftPadding = (innerWidth - textVisualLen) / 2;
-        rightPadding = innerWidth - textVisualLen - leftPadding;
-    } else {
-        leftPadding = std::min(leftMargin, innerWidth - textVisualLen);
-        rightPadding = innerWidth - textVisualLen - leftPadding;
+    if (width < 3) {
+        return std::string(width, '-');
     }
-
-    std::cout << color::WHITE << "│" << color::RESET
-              << repeatStr(" ", leftPadding)
-              << formattedText
-              << repeatStr(" ", rightPadding)
-              << color::WHITE << "│" << color::RESET << "\n";
+    std::string output = colors ? color::WHITE : "";
+    output += left;
+    for (std::size_t column = 0; column < width - 2; ++column) {
+        output += "─";
+    }
+    output += right;
+    output += colors ? color::RESET : "";
+    return output;
 }
 
-// Imprime una línea vacía de la caja
-void printEmptyLine(std::size_t innerWidth) {
-    printFrameLine("", "", innerWidth, 0, false);
+std::vector<std::string> visibleOptions(
+    const std::vector<MenuItem>& options,
+    std::size_t selected,
+    std::size_t limit,
+    bool colors
+) {
+    std::vector<std::string> lines;
+    if (options.empty() || limit == 0) {
+        return lines;
+    }
+    selected = std::min(selected, options.size() - 1);
+    const std::size_t itemLimit = limit > 2 ? limit - 2 : 1;
+    const std::size_t start = selected >= itemLimit ? selected - itemLimit + 1 : 0;
+    const std::size_t end = std::min(options.size(), start + itemLimit);
+    if (start > 0) {
+        lines.emplace_back("…");
+    }
+    for (std::size_t index = start; index < end; ++index) {
+        const bool active = index == selected;
+        const auto& option = options[index];
+        const std::string prefix = active ? "› " : "  ";
+        std::string value = prefix + "[" + option.key + "]  " + option.label;
+        if (active && colors) {
+            value = std::string(color::CYAN) + color::BOLD + prefix +
+                "[" + option.key + "]" + color::RESET + color::WHITE +
+                color::BOLD + "  " + option.label + color::RESET;
+        }
+        lines.push_back(std::move(value));
+    }
+    if (end < options.size()) {
+        lines.emplace_back("…");
+    }
+    return lines;
 }
 
 } // namespace
@@ -78,107 +82,157 @@ void renderLayout(
     const ActiveInputInfo& inputInfo,
     const std::vector<MenuItem>& options,
     std::size_t selectedIndex,
+    const LayoutConfig& config,
+    const std::string& notice
+) {
+    const std::size_t width = std::max<std::size_t>(1, config.width);
+    const std::size_t height = std::max<std::size_t>(1, config.height);
+    const bool colors = config.colorEnabled;
+    std::vector<std::string> content;
+
+    if (width < 24 || height < 12) {
+        content.push_back(colors ? std::string(color::CYAN) + color::BOLD + title + color::RESET : title);
+        if (!subtitle.empty()) {
+            content.push_back(subtitle);
+        }
+        if (!notice.empty()) {
+            content.push_back(notice);
+        }
+        content.push_back(inputInfo.hasInput
+            ? "Actual: " + inputInfo.filename + " (" + std::to_string(inputInfo.width) +
+                " x " + std::to_string(inputInfo.height) + ")"
+            : "Patrón: ninguno");
+        const std::size_t optionLimit = height > content.size() + 1
+            ? height - content.size() - 1
+            : 1;
+        auto optionsLines = visibleOptions(options, selectedIndex, optionLimit, colors);
+        content.insert(content.end(), optionsLines.begin(), optionsLines.end());
+        content.push_back("↑/↓ mover  Enter elegir  Esc volver");
+    } else {
+        content.push_back(rule(width, colors, "┌", "┐"));
+        content.push_back(frame("", width, false, colors));
+        const std::string heading = colors
+            ? std::string(color::CYAN) + color::BOLD + title + color::RESET
+            : title;
+        content.push_back(frame(heading, width, true, colors));
+        if (!subtitle.empty()) {
+            content.push_back(frame(colors
+                ? std::string(color::GRAY) + subtitle + color::RESET
+                : subtitle, width, true, colors));
+        }
+        content.push_back(frame(inputInfo.hasInput
+            ? "Patrón actual: " + inputInfo.filename + "  ·  " +
+                std::to_string(inputInfo.width) + " × " + std::to_string(inputInfo.height) +
+                "  ·  " + std::to_string(inputInfo.aliveCells) + " vivas"
+            : "Patrón actual: ninguno", width, true, colors));
+        if (!notice.empty()) {
+            const bool isError = notice.rfind("Error", 0) == 0;
+            content.push_back(frame(colors
+                ? std::string(isError ? "\033[1;31m" : color::GREEN) +
+                    notice + color::RESET
+                : notice, width, true, colors));
+        }
+        content.push_back(rule(width, colors, "├", "┤"));
+
+        const std::size_t fixedRows = content.size() + 4;
+        const std::size_t availableRows = height > fixedRows
+            ? height - fixedRows
+            : 1;
+        const std::size_t visibleOptionCount = std::min(
+            options.size(), std::max<std::size_t>(1, availableRows));
+        const std::size_t optionSpacing = visibleOptionCount > 1
+            ? std::min<std::size_t>(
+                2, (availableRows - visibleOptionCount) / (visibleOptionCount + 1))
+            : 0;
+        const std::size_t optionLimit = availableRows -
+            optionSpacing * (visibleOptionCount > 0 ? visibleOptionCount - 1 : 0);
+        const auto optionsLines = visibleOptions(options, selectedIndex, optionLimit, colors);
+        for (std::size_t index = 0; index < optionsLines.size(); ++index) {
+            content.push_back(frame(optionsLines[index], width, true, colors));
+            if (index + 1 < optionsLines.size()) {
+                for (std::size_t blank = 0; blank < optionSpacing; ++blank) {
+                    content.push_back(frame("", width, false, colors));
+                }
+            }
+        }
+        content.push_back(rule(width, colors, "├", "┤"));
+        content.push_back(frame("↑ ↓ Navegar    Enter Seleccionar    Esc Volver", width, true, colors));
+        content.push_back(rule(width, colors, "└", "┘"));
+    }
+
+    for (auto& line : content) {
+        line = terminal_text::fit(line, width, true);
+    }
+    if (content.size() > height) {
+        content.resize(height);
+    }
+    const std::size_t verticalPadding = height - content.size();
+    const std::size_t topPadding = verticalPadding / 2;
+    for (std::size_t row = 0; row < topPadding; ++row) {
+        std::cout << '\n';
+    }
+    for (const auto& line : content) {
+        std::cout << line << '\n';
+    }
+    for (std::size_t row = topPadding + content.size(); row < height; ++row) {
+        std::cout << '\n';
+    }
+}
+
+void renderScreen(
+    const std::string& title,
+    const std::string& subtitle,
+    const std::vector<std::string>& body,
+    const std::string& footer,
     const LayoutConfig& config
 ) {
-    const std::size_t frameWidth = std::max<std::size_t>(config.width, 60);
-    const std::size_t innerWidth = frameWidth - 2;
-
-    // 1. Borde superior del marco exterior: ┌────────────────────┐
-    std::cout << color::WHITE << "┌" << repeatStr("─", innerWidth) << "┐" << color::RESET << "\n";
-
-    printEmptyLine(innerWidth);
-
-    // 2. Título centrado entre separadores: ──── TITULO ────
-    std::string titleRaw = "──── " + title + " ────";
-    std::ostringstream titleFormatted;
-    titleFormatted << color::CYAN << color::BOLD << "──── " << title << " ────" << color::RESET;
-    printFrameLine(titleRaw, titleFormatted.str(), innerWidth, 0, true);
-
-    // Subtítulo (opcional)
-    if (!subtitle.empty()) {
-        std::ostringstream subFormatted;
-        subFormatted << color::GRAY << subtitle << color::RESET;
-        printFrameLine(subtitle, subFormatted.str(), innerWidth, 0, true);
-    }
-
-    printEmptyLine(innerWidth);
-
-    // 3. Línea de estado de la entrada activa
-    std::string inputStatusRaw = "Entrada activa: ";
-    std::ostringstream inputStatusFormatted;
-    inputStatusFormatted << color::WHITE << "Entrada activa: " << color::RESET;
-
-    if (inputInfo.hasInput) {
-        std::ostringstream val;
-        val << inputInfo.filename << " (" << inputInfo.width << " x " << inputInfo.height << ")";
-        inputStatusRaw += val.str();
-        inputStatusFormatted << color::GREEN << val.str() << color::RESET;
+    const std::size_t width = std::max<std::size_t>(1, config.width);
+    const std::size_t height = std::max<std::size_t>(1, config.height);
+    const bool colors = config.colorEnabled;
+    std::vector<std::string> lines;
+    if (width >= 24 && height >= 10) {
+        lines.push_back(rule(width, colors, "┌", "┐"));
+        lines.push_back(frame(colors
+            ? std::string(color::CYAN) + color::BOLD + title + color::RESET
+            : title, width, true, colors));
+        if (!subtitle.empty()) {
+            lines.push_back(frame(subtitle, width, true, colors));
+        }
+        lines.push_back(rule(width, colors, "├", "┤"));
+        const std::size_t bodyLimit = height > lines.size() + 4
+            ? height - lines.size() - 4
+            : 1;
+        for (std::size_t index = 0; index < std::min(body.size(), bodyLimit); ++index) {
+            lines.push_back(frame(body[index], width, true, colors));
+        }
+        lines.push_back(rule(width, colors, "├", "┤"));
+        lines.push_back(frame(footer, width, true, colors));
+        lines.push_back(rule(width, colors, "└", "┘"));
     } else {
-        inputStatusRaw += "ninguna";
-        inputStatusFormatted << color::GREEN << "ninguna" << color::RESET;
+        lines.push_back(terminal_text::truncate(title, width));
+        if (!subtitle.empty()) {
+            lines.push_back(terminal_text::truncate(subtitle, width));
+        }
+        for (const auto& line : body) {
+            lines.push_back(terminal_text::truncate(line, width));
+        }
+        lines.push_back(terminal_text::truncate(footer, width));
     }
 
-    printFrameLine(inputStatusRaw, inputStatusFormatted.str(), innerWidth, 3, false);
-
-    // Separador horizontal superior: ├────────────────────┤
-    std::cout << color::WHITE << "├" << repeatStr("─", innerWidth) << "┤" << color::RESET << "\n";
-
-    printEmptyLine(innerWidth);
-
-    // 4. Zona de opciones
-    for (std::size_t i = 0; i < options.size(); ++i) {
-        bool isSelected = (i == selectedIndex);
-        const auto& opt = options[i];
-
-        // Texto base de la opción: [1]  Benchmark
-        std::string optTextRaw = "[" + opt.key + "]  " + opt.label;
-
-        if (isSelected) {
-            std::size_t textVisualLen = utf8Length(optTextRaw);
-            std::size_t boxInnerWidth = textVisualLen + 4; // 2 espacios a cada lado
-
-            std::string topBoxRaw = "┌" + repeatStr("─", boxInnerWidth) + "┐";
-            std::ostringstream topBoxFormatted;
-            topBoxFormatted << color::GRAY << topBoxRaw << color::RESET;
-            printFrameLine(topBoxRaw, topBoxFormatted.str(), innerWidth, 0, true);
-
-            std::string midBoxRaw = "│  " + optTextRaw + "  │";
-            std::ostringstream midBoxFormatted;
-            midBoxFormatted << color::GRAY << "│  " << color::RESET
-                            << color::CYAN << color::BOLD << "[" << opt.key << "]" << color::RESET
-                            << color::WHITE << color::BOLD << "  " << opt.label << color::RESET
-                            << color::GRAY << "  │" << color::RESET;
-            printFrameLine(midBoxRaw, midBoxFormatted.str(), innerWidth, 0, true);
-
-            std::string botBoxRaw = "└" + repeatStr("─", boxInnerWidth) + "┘";
-            std::ostringstream botBoxFormatted;
-            botBoxFormatted << color::GRAY << botBoxRaw << color::RESET;
-            printFrameLine(botBoxRaw, botBoxFormatted.str(), innerWidth, 0, true);
-        } else {
-            std::ostringstream optFormatted;
-            optFormatted << color::CYAN << "[" << opt.key << "]" << color::RESET
-                         << color::WHITE << "  " << opt.label << color::RESET;
-            printFrameLine(optTextRaw, optFormatted.str(), innerWidth, 0, true);
-        }
-
-        if (i + 1 < options.size()) {
-            printEmptyLine(innerWidth);
-        }
+    if (lines.size() > height) {
+        lines.resize(height);
     }
-
-    printEmptyLine(innerWidth);
-
-    // Separador horizontal inferior: ├────────────────────┤
-    std::cout << color::WHITE << "├" << repeatStr("─", innerWidth) << "┤" << color::RESET << "\n";
-
-    // 5. Footer de ayuda de navegación fijo
-    std::string footerRaw = "↑ ↓ Navegar   Enter Seleccionar";
-    std::ostringstream footerFormatted;
-    footerFormatted << color::GRAY << "↑ ↓ Navegar   Enter Seleccionar" << color::RESET;
-    printFrameLine(footerRaw, footerFormatted.str(), innerWidth, 0, true);
-
-    // Borde inferior del marco exterior: └────────────────────┘
-    std::cout << color::WHITE << "└" << repeatStr("─", innerWidth) << "┘" << color::RESET << "\n";
+    const std::size_t padding = height - lines.size();
+    const std::size_t top = padding / 2;
+    for (std::size_t row = 0; row < top; ++row) {
+        std::cout << '\n';
+    }
+    for (const auto& line : lines) {
+        std::cout << terminal_text::fit(line, width, true) << '\n';
+    }
+    for (std::size_t row = top + lines.size(); row < height; ++row) {
+        std::cout << '\n';
+    }
 }
 
 } // namespace conway::ui

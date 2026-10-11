@@ -38,6 +38,7 @@ struct SimulationLayoutConfig {
     std::size_t width{82};                // Ancho total del marco exterior en caracteres
     std::size_t innerPanelHeight{8};      // Alto de líneas para el interior de cada panel de tablero
     bool colorEnabled{true};
+    std::size_t terminalHeight{24};
 };
 
 /**

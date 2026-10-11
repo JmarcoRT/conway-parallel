@@ -23,6 +23,7 @@ add_executable(conway
     src/app/controls.cpp
     src/app/simulation.cpp
     src/app/thread_config.cpp
+    src/app/pattern_catalog.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
@@ -147,13 +148,16 @@ if(BUILD_TESTING)
         tests/app_runtime_tests.cpp
         src/app/simulation.cpp
         src/app/thread_config.cpp
+        src/app/pattern_catalog.cpp
         src/app/benchmark.cpp
+        src/ui/layout.cpp
         src/ui/simulation_layout.cpp
         src/ui/board_view.cpp
         src/core/game.cpp
         src/core/engines/sequential.cpp
         src/core/engines/openmp.cpp
         src/core/bs23.cpp
+        src/input/input.cpp
     )
     target_include_directories(app_runtime_tests PRIVATE include)
     target_link_libraries(app_runtime_tests PRIVATE OpenMP::OpenMP_CXX)

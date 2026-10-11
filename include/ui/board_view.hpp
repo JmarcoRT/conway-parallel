@@ -16,6 +16,8 @@ struct BoardRenderOptions {
     std::size_t maxColumns{24};
     std::size_t maxRows{12};
     bool colorEnabled{false};
+    std::size_t cellWidth{2};
+    std::size_t cellHeight{1};
 };
 
 std::vector<std::string> boardLines(const conway::Game& game);

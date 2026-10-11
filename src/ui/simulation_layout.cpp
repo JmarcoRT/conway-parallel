@@ -1,141 +1,181 @@
 #include "ui/simulation_layout.hpp"
+#include "ui/terminal_text.hpp"
 
 #include <algorithm>
 #include <iostream>
-#include <ostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace conway::ui {
 
 namespace {
 
-std::string repeat(const std::string& text, std::size_t count) {
-    std::string result;
-    result.reserve(text.size() * count);
-    for (std::size_t i = 0; i < count; ++i) {
-        result += text;
+std::string line(const std::string& text, std::size_t width, bool colors, bool centered = false) {
+    if (width < 3) {
+        return terminal_text::truncate(text, width);
     }
-    return result;
+    return std::string(colors ? color::WHITE : "") + "│" +
+        (colors ? color::RESET : "") + terminal_text::fit(text, width - 2, centered) +
+        (colors ? color::WHITE : "") + "│" + (colors ? color::RESET : "");
 }
 
-std::size_t visualLength(const std::string& text) {
-    std::size_t length = 0;
-    bool escape = false;
-    for (const unsigned char character : text) {
-        if (escape) {
-            if ((character >= 'A' && character <= 'Z') ||
-                (character >= 'a' && character <= 'z')) {
-                escape = false;
-            }
-        } else if (character == 0x1b) {
-            escape = true;
-        } else if ((character & 0xc0) != 0x80) {
-            ++length;
-        }
+std::string rule(
+    std::size_t width,
+    bool colors,
+    const std::string& left,
+    const std::string& right
+) {
+    if (width < 3) {
+        return std::string(width, '-');
     }
-    return length;
+    std::string output = colors ? color::WHITE : "";
+    output += left;
+    for (std::size_t column = 0; column < width - 2; ++column) {
+        output += "─";
+    }
+    output += right;
+    output += colors ? color::RESET : "";
+    return output;
 }
 
-std::string truncate(const std::string& text, std::size_t width) {
-    if (visualLength(text) <= width) {
-        return text;
-    }
-    if (width == 0) {
-        return {};
-    }
-
-    std::string result;
-    std::size_t visible = 0;
-    bool escape = false;
-    for (const unsigned char character : text) {
-        if (escape) {
-            result += static_cast<char>(character);
-            if ((character >= 'A' && character <= 'Z') ||
-                (character >= 'a' && character <= 'z')) {
-                escape = false;
-            }
-        } else if (character == 0x1b) {
-            escape = true;
-            result += static_cast<char>(character);
-        } else {
-            if ((character & 0xc0) != 0x80) {
-                if (visible == width - 1) {
-                    break;
-                }
-                ++visible;
-            }
-            result += static_cast<char>(character);
-        }
-    }
-    if (escape) {
-        result += color::RESET;
-    }
-    result += "…";
-    return result;
-}
-
-std::string fit(const std::string& text, std::size_t width, bool center = false) {
-    const std::string clipped = truncate(text, width);
-    const std::size_t length = visualLength(clipped);
-    const std::size_t padding = width > length ? width - length : 0;
-    const std::size_t left = center ? padding / 2 : 0;
-    return repeat(" ", left) + clipped + repeat(" ", padding - left);
-}
-
-void frameLine(std::ostream& out, const std::string& text, std::size_t width, bool colors) {
-    out << (colors ? color::WHITE : "") << "│" << (colors ? color::RESET : "")
-        << fit(text, width)
-        << (colors ? color::WHITE : "") << "│" << (colors ? color::RESET : "") << '\n';
-}
-
-void frameWrapped(std::ostream& out, const std::string& text, std::size_t width, bool colors) {
-    std::istringstream words(text);
-    std::string word;
-    std::string line;
-    while (words >> word) {
-        if (!line.empty() && visualLength(line) + 1 + visualLength(word) > width) {
-            frameLine(out, line, width, colors);
-            line.clear();
-        }
-        if (!line.empty()) {
-            line += ' ';
-        }
-        line += word;
-    }
-    frameLine(out, line, width, colors);
-}
-
-void rule(std::ostream& out, std::size_t width, bool colors, bool middle = true) {
-    const std::string edge = middle ? "├" : "┌";
-    const std::string end = middle ? "┤" : "┐";
-    out << (colors ? color::WHITE : "") << edge << repeat("─", width) << end
-        << (colors ? color::RESET : "") << '\n';
-}
-
-void panel(
-    std::ostream& out,
+std::vector<std::string> panelLines(
     const BoardPanelData& data,
     std::size_t width,
     std::size_t height,
     bool colors
 ) {
-    if (width < 4) {
-        frameLine(out, data.title, width, colors);
-        return;
+    std::vector<std::string> output;
+    output.reserve(height + 4);
+    if (width < 3) {
+        output.push_back(terminal_text::truncate(data.title, width));
+        for (std::size_t row = 0; row < height; ++row) {
+            const std::size_t visibleRows = std::min(height, data.lines.size());
+            const std::size_t topPadding = (height - visibleRows) / 2;
+            const bool hasContent = row >= topPadding && row - topPadding < visibleRows;
+            output.push_back(hasContent
+                ? terminal_text::truncate(data.lines[row - topPadding], width)
+                : "");
+        }
+        return output;
     }
-    const std::size_t inside = width - 2;
-    out << (colors ? color::GRAY : "") << "┌" << repeat("─", inside) << "┐"
-        << (colors ? color::RESET : "") << '\n';
-    frameLine(out, data.title, inside, colors);
-    out << (colors ? color::GRAY : "") << "├" << repeat("─", inside) << "┤"
-        << (colors ? color::RESET : "") << '\n';
-    for (std::size_t line = 0; line < height; ++line) {
-        const std::string content = line < data.lines.size() ? data.lines[line] : "";
-        frameLine(out, content, inside, colors);
+
+    const std::size_t visibleRows = std::min(height, data.lines.size());
+    const std::size_t topPadding = (height - visibleRows) / 2;
+    output.push_back(rule(width, colors, "┌", "┐"));
+    output.push_back(line(data.title, width, colors, true));
+    output.push_back(rule(width, colors, "├", "┤"));
+    for (std::size_t row = 0; row < height; ++row) {
+        const bool hasContent = row >= topPadding && row - topPadding < visibleRows;
+        const std::string content = hasContent ? data.lines[row - topPadding] : "";
+        output.push_back(line(content, width, colors, true));
     }
-    out << (colors ? color::GRAY : "") << "└" << repeat("─", inside) << "┘"
-        << (colors ? color::RESET : "") << '\n';
+    output.push_back(rule(width, colors, "└", "┘"));
+    return output;
+}
+
+std::size_t preferredPanelWidth(const BoardPanelData& data, std::size_t maximum) {
+    std::size_t contentWidth = terminal_text::visibleWidth(data.title);
+    for (const auto& text : data.lines) {
+        contentWidth = std::max(contentWidth, terminal_text::visibleWidth(text));
+    }
+    return std::min(maximum, contentWidth + 4);
+}
+
+std::vector<std::string> renderRows(
+    const SimulationHeaderInfo& header,
+    const ExecutionInfo& execution,
+    const BoardPanelData& currentPanel,
+    const BoardPanelData& nextPanel,
+    const SimulationLayoutConfig& config
+) {
+    const std::size_t width = std::max<std::size_t>(1, config.width);
+    const bool colors = config.colorEnabled;
+    const std::size_t inner = width > 2 ? width - 2 : width;
+    const bool sideBySide = inner >= 84;
+    const std::size_t panelHeight = std::min(config.innerPanelHeight, std::size_t{100});
+    std::vector<std::string> rows;
+
+    if (width < 86 || config.terminalHeight < 18) {
+        const auto isViewportNotice = [](const std::string& text) {
+            return text.rfind("Viewport:", 0) == 0;
+        };
+        const std::size_t maxBoardRows = std::max<std::size_t>(
+            1, config.terminalHeight > 6 ? (config.terminalHeight - 6) / 2 : 1);
+        std::vector<std::string> compact;
+        auto appendLimited = [&](const BoardPanelData& data) {
+            const std::size_t availableBoardRows = static_cast<std::size_t>(std::count_if(
+                data.lines.begin(), data.lines.end(),
+                [&](const std::string& text) { return !isViewportNotice(text); }));
+            const bool partial = availableBoardRows > maxBoardRows ||
+                std::any_of(data.lines.begin(), data.lines.end(), isViewportNotice);
+            compact.push_back(data.title + (partial ? "  (vista parcial)" : ""));
+            std::size_t included = 0;
+            for (const auto& boardLine : data.lines) {
+                if (isViewportNotice(boardLine)) {
+                    continue;
+                }
+                if (included == maxBoardRows) {
+                    break;
+                }
+                compact.push_back(terminal_text::truncate(boardLine, width));
+                ++included;
+            }
+        };
+        compact.push_back("JUEGO DE LA VIDA | Patrón: " + header.filename + " (" +
+            std::to_string(header.boardWidth) + " × " + std::to_string(header.boardHeight) +
+            ") | Motor: " + header.mode);
+        compact.push_back("Generación: " + std::to_string(execution.generation) +
+            "  |  Vivas: " + std::to_string(execution.aliveCount) +
+            "  |  Estado: " + header.statusText);
+        appendLimited(currentPanel);
+        appendLimited(nextPanel);
+        compact.push_back(execution.workersInfo);
+        compact.push_back("Espacio Pausa  N Paso  R Reiniciar  Esc Menú");
+        return compact;
+    }
+
+    rows.push_back(rule(width, colors, "┌", "┐"));
+    rows.push_back(line(colors ? std::string(color::CYAN) + color::BOLD +
+        "JUEGO DE LA VIDA  ·  SIMULACIÓN" + color::RESET : "JUEGO DE LA VIDA  ·  SIMULACIÓN",
+        width, colors, true));
+    rows.push_back(line("Patrón: " + header.filename + " (" +
+        std::to_string(header.boardWidth) + " × " + std::to_string(header.boardHeight) +
+        ")  |  Motor: " + header.mode, width, colors, true));
+    rows.push_back(rule(width, colors, "├", "┤"));
+
+    if (sideBySide) {
+        const std::size_t panelWidth = std::max<std::size_t>(
+            3, std::min(preferredPanelWidth(currentPanel, (inner - 4) / 2),
+                        preferredPanelWidth(nextPanel, (inner - 4) / 2)));
+        const auto left = panelLines(currentPanel, panelWidth, panelHeight, colors);
+        const auto right = panelLines(nextPanel, panelWidth, panelHeight, colors);
+        for (std::size_t index = 0; index < std::min(left.size(), right.size()); ++index) {
+            rows.push_back(terminal_text::fit(left[index] + "    " + right[index], width, true));
+        }
+    } else {
+        const std::size_t panelWidth = std::max<std::size_t>(
+            3, std::min(preferredPanelWidth(currentPanel, inner),
+                        preferredPanelWidth(nextPanel, inner)));
+        const auto current = panelLines(currentPanel, panelWidth, panelHeight, colors);
+        for (const auto& panelLine : current) {
+            rows.push_back(terminal_text::fit(panelLine, width, true));
+        }
+        const auto next = panelLines(nextPanel, panelWidth, panelHeight, colors);
+        for (const auto& panelLine : next) {
+            rows.push_back(terminal_text::fit(panelLine, width, true));
+        }
+    }
+
+    rows.push_back(rule(width, colors, "├", "┤"));
+    rows.push_back(line("Generación: " + std::to_string(execution.generation) +
+        "  |  Vivas: " + std::to_string(execution.aliveCount) +
+        "  |  Estado: " + header.statusText, width, colors, true));
+    rows.push_back(line(execution.workersInfo, width, colors, true));
+    rows.push_back(line("Viva: bloque sólido    Muerta: trama    Espacio Pausa/Reanudar    N Paso    R Reiniciar    Esc Menú",
+        width, colors, true));
+    rows.push_back(rule(width, colors, "└", "┘"));
+    return rows;
 }
 
 } // namespace
@@ -148,66 +188,23 @@ void renderSimulationLayout(
     const SimulationLayoutConfig& config,
     std::ostream& out
 ) {
-    const std::size_t frameWidth = std::min(config.width, std::size_t{240});
-    if (frameWidth < 3) {
-        if (frameWidth == 0) {
-            return;
-        }
-        out << truncate(" CONWAY | SIMULACIÓN ", frameWidth) << '\n'
-            << truncate("Motor: " + header.mode + " | Estado: " + header.statusText,
-                        frameWidth) << '\n'
-            << truncate("Generación: " + std::to_string(execution.generation) +
-                            " | Vivas: " + std::to_string(execution.aliveCount),
-                        frameWidth) << '\n';
-        return;
+    const std::size_t width = std::max<std::size_t>(1, config.width);
+    const std::size_t height = std::max<std::size_t>(1, config.terminalHeight);
+    auto rows = renderRows(header, execution, currentPanel, nextPanel, config);
+    if (rows.size() > height) {
+        rows.resize(height);
     }
-    const std::size_t inside = frameWidth - 2;
-    const std::size_t panelHeight = std::min(config.innerPanelHeight, std::size_t{40});
-    const bool colors = config.colorEnabled;
-
-    out << (colors ? color::WHITE : "") << "┌" << repeat("─", inside) << "┐"
-        << (colors ? color::RESET : "") << '\n';
-    frameLine(out, colors ? std::string(color::CYAN) + color::BOLD +
-        " CONWAY | SIMULACIÓN " + color::RESET : " CONWAY | SIMULACIÓN ", inside, colors);
-    frameLine(out, "Motor: " + header.mode + " | Estado: " + header.statusText, inside, colors);
-    frameLine(out, "Patrón: " + header.filename + " (" +
-        std::to_string(header.boardWidth) + " x " + std::to_string(header.boardHeight) + ")",
-        inside, colors);
-    rule(out, inside, colors);
-
-    const std::size_t panelWidth = inside >= 70 ? (inside - 4) / 2 : inside;
-    const bool sideBySide = inside >= 70;
-    if (sideBySide) {
-        const std::size_t leftWidth = panelWidth;
-        const std::size_t rightWidth = inside - leftWidth - 4;
-        const std::size_t boardHeight = std::max(
-            std::min(currentPanel.lines.size(), panelHeight),
-            std::min(nextPanel.lines.size(), panelHeight));
-        std::ostringstream left;
-        std::ostringstream right;
-        panel(left, currentPanel, leftWidth, boardHeight, colors);
-        panel(right, nextPanel, rightWidth, boardHeight, colors);
-        std::istringstream leftLines(left.str());
-        std::istringstream rightLines(right.str());
-        std::string leftLine;
-        std::string rightLine;
-        while (std::getline(leftLines, leftLine) && std::getline(rightLines, rightLine)) {
-            out << fit(leftLine, leftWidth) << "    " << fit(rightLine, rightWidth) << '\n';
-        }
-    } else {
-        panel(out, currentPanel, panelWidth, panelHeight, colors);
-        panel(out, nextPanel, panelWidth, panelHeight, colors);
+    const std::size_t verticalPadding = height - rows.size();
+    const std::size_t topPadding = verticalPadding / 2;
+    for (std::size_t index = 0; index < topPadding; ++index) {
+        out << '\n';
     }
-
-    rule(out, inside, colors);
-    frameLine(out, "Generación: " + std::to_string(execution.generation) +
-        " | Vivas: " + std::to_string(execution.aliveCount) +
-        " | " + execution.stepProgress, inside, colors);
-    frameWrapped(out, execution.workersInfo, inside, colors);
-    frameLine(out, "[Espacio] Pausa/Reanudar  [N] Paso  [R] Reiniciar  [Esc] Menú",
-        inside, colors);
-    out << (colors ? color::WHITE : "") << "└" << repeat("─", inside) << "┘"
-        << (colors ? color::RESET : "") << '\n';
+    for (const auto& row : rows) {
+        out << terminal_text::fit(row, width, true) << '\n';
+    }
+    for (std::size_t index = topPadding + rows.size(); index < height; ++index) {
+        out << '\n';
+    }
 }
 
 void renderSimulationLayout(

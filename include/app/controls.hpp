@@ -34,6 +34,8 @@ struct TerminalSize {
 bool isInteractive();
 bool supportsAnsiColors();
 TerminalSize terminalSize();
+void beginTerminalSession();
+void endTerminalSession() noexcept;
 
 void enableRawMode();
 void disableRawMode();
