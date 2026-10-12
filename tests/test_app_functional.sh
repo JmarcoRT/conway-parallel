@@ -3,7 +3,8 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-binary="$root/build/conway"
+binary="${1:-$root/build/conway}"
+binary_cmd=$(printf '%q' "$binary")
 work=$(mktemp -d "${TMPDIR:-/tmp}/conway-functional-app.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
@@ -35,7 +36,6 @@ status=0
 printf 'C\npatterns/blinker.txt\n3\nO\n2\nn\np\np\nr\nx\n3\n0\n1\n\n0\n' \
     | "$binary" > "$work/output.txt" 2>&1 || status=$?
 strip_ansi < "$work/output.txt" > "$work/clean.txt"
-
 check visualization_uses_current_and_next "CURRENT" "$work/clean.txt"
 check visualization_uses_real_next_panel "NEXT" "$work/clean.txt"
 check visualization_shows_generation_zero "Generación: 0" "$work/clean.txt"
@@ -68,11 +68,11 @@ check failed_pattern_load_preserves_selected_pattern \
     "Patrón actual: patterns/blinker.txt" "$work/preserve-clean.txt"
 check failed_pattern_load_reports_preservation \
     "(se conserva la entrada anterior)" "$work/preserve-clean.txt"
-if [[ "$preserve_status" -ne 0 ]]; then
+if [[ "$preserve_status" -eq 0 ]]; then
+    echo "PASS: failed_pattern_load_flow_exits_cleanly"
+else
     echo "FAIL: failed_pattern_load_flow_exits_cleanly (rc=$preserve_status)"
     failures=$((failures + 1))
-else
-    echo "PASS: failed_pattern_load_flow_exits_cleanly"
 fi
 checks=$((checks + 1))
 
@@ -116,47 +116,62 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf 'C'
         sleep 0.2
-        printf '\033[B\r'
-        sleep 0.2
-        printf '3'
-        sleep 0.2
-        printf 'O'
+        printf '\r'
         sleep 0.2
         printf '2'
-        sleep 0.2
+        sleep 0.3
         printf 'n'
         sleep 0.2
         printf 'p'
         sleep 0.4
         printf 'p'
-        sleep 0.2
-        printf 'r'
-        sleep 0.2
+        sleep 0.3
+        wc -c < "$work/pty.txt" > "$work/paused-before.txt"
+        sleep 0.6
+        wc -c < "$work/pty.txt" > "$work/paused-after.txt"
         printf '\033'
         sleep 0.2
         printf '0'
     } | timeout 15 script -qfec \
-        'initial=$(stty -g); NO_COLOR=1 ./build/conway; app_status=$?; final=$(stty -g); if [[ "$initial" == "$final" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit "$app_status"' \
+        "initial=\$(stty -g); NO_COLOR=1 $binary_cmd; app_status=\$?; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
         /dev/null > "$work/pty.txt" 2>&1 || pty_status=$?
     strip_ansi < "$work/pty.txt" > "$work/pty-clean.txt"
-    check interactive_catalog_selects_discovered_blinker \
-        "Patrón: patterns/blinker.txt" "$work/pty-clean.txt"
-    check interactive_board_renders_live_cells_without_ansi "██" "$work/pty-clean.txt"
-    check interactive_board_renders_dead_cells_without_ansi "░░" "$work/pty-clean.txt"
-    main_menu_count=$(grep -cF "[3]" "$work/pty-clean.txt" || true)
-    if [[ "$main_menu_count" -ge 4 ]]; then
-        echo "PASS: interactive_escape_returns_to_menu ($main_menu_count main-menu renders)"
+    check interactive_catalog_is_rendered "CATÁLOGO DE PATRONES" "$work/pty-clean.txt"
+    check interactive_simulation_is_rendered "SIMULACIÓN" "$work/pty-clean.txt"
+    check interactive_current_and_next_are_rendered "CURRENT" "$work/pty-clean.txt"
+    check interactive_next_generation_is_rendered "NEXT" "$work/pty-clean.txt"
+    check interactive_step_advances_generation "Generación 1" "$work/pty-clean.txt"
+    check interactive_board_uses_live_cell_blocks "██" "$work/pty-clean.txt"
+    check interactive_board_uses_dead_cell_blocks "░░" "$work/pty-clean.txt"
+    header_writes=$(grep -ao "CONWAY PARALLEL" "$work/pty.txt" | wc -l)
+    if [[ "$header_writes" -eq 1 ]]; then
+        echo "PASS: unchanged_header_is_not_rewritten"
     else
-        echo "FAIL: interactive_escape_returns_to_menu ($main_menu_count main-menu renders, expected >= 4)"
+        echo "FAIL: unchanged_header_is_not_rewritten ($header_writes writes)"
         failures=$((failures + 1))
     fi
     checks=$((checks + 1))
+    if [[ "$(cat "$work/paused-before.txt")" == "$(cat "$work/paused-after.txt")" ]]; then
+        echo "PASS: paused_state_emits_no_periodic_screen_updates"
+    else
+        echo "FAIL: paused_state_emits_no_periodic_screen_updates"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    check interactive_escape_returns_to_main_menu "MENÚ PRINCIPAL" "$work/pty-clean.txt"
     check interactive_terminal_state_restored "TERMINAL_RESTORED" "$work/pty-clean.txt"
     if grep -qF $'\033[?1049h' "$work/pty.txt" &&
         grep -qF $'\033[?1049l' "$work/pty.txt"; then
         echo "PASS: interactive_session_uses_and_restores_alternate_screen"
     else
         echo "FAIL: interactive_session_uses_and_restores_alternate_screen"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    if ! grep -qF $'\033[2J' "$work/pty.txt"; then
+        echo "PASS: interactive_session_does_not_clear_entire_screen"
+    else
+        echo "FAIL: interactive_session_does_not_clear_entire_screen"
         failures=$((failures + 1))
     fi
     checks=$((checks + 1))
@@ -168,58 +183,79 @@ if command -v script >/dev/null 2>&1; then
     fi
     checks=$((checks + 1))
 
-    menu_resize_status=0
+    benchmark_status=0
     {
-        sleep 1
+        sleep 0.2
+        printf '4'
+        sleep 0.2
+        printf '\033[B\033[B\033[B\r'
+        sleep 0.2
+        printf '3'
+        sleep 0.2
+        printf 'O'
+        sleep 0.2
+        printf 'C'
+        sleep 0.2
+        printf '\r'
+        sleep 0.2
+        printf '1'
+        sleep 2
+        printf '\033'
+        sleep 0.2
         printf '0'
-    } | timeout 8 script -qfec \
-        'stty cols 80 rows 24; initial=$(stty -g); { sleep 0.5; stty cols 120 rows 40 </dev/tty; } & resize_pid=$!; ./build/conway; app_status=$?; wait "$resize_pid"; final=$(stty -g); if [[ "$initial" == "$final" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit "$app_status"' \
-        /dev/null > "$work/menu-resize-pty.txt" 2>&1 || menu_resize_status=$?
-    strip_ansi < "$work/menu-resize-pty.txt" > "$work/menu-resize-pty-clean.txt"
-    resized_menus=$(grep -cF "CONWAY PARALLEL" "$work/menu-resize-pty-clean.txt" || true)
-    if [[ "$resized_menus" -eq 2 ]]; then
-        echo "PASS: main_menu_refreshes_after_resize"
+    } | timeout 10 script -qfec \
+        "OMP_THREAD_LIMIT=1 $binary_cmd" /dev/null \
+        > "$work/benchmark-pty.txt" 2>&1 || benchmark_status=$?
+    strip_ansi < "$work/benchmark-pty.txt" > "$work/benchmark-pty-clean.txt"
+    check interactive_thread_selection_applies_to_openmp \
+        "OpenMP solicitado: 8" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_shows_sequential_median \
+        "Mediana secuencial:" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_shows_openmp_median \
+        "Mediana OpenMP:" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_reports_effective_threads \
+        "Hilos efectivos:" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_uses_actual_thread_limit \
+        "Hilos efectivos:     1" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_reports_equivalence \
+        "Equivalencia:" "$work/benchmark-pty-clean.txt"
+    check interactive_benchmark_warns_about_small_patterns \
+        "Nota: tablero pequeño" "$work/benchmark-pty-clean.txt"
+    if [[ "$benchmark_status" -eq 0 ]]; then
+        echo "PASS: interactive_benchmark_session_exits_cleanly"
     else
-        echo "FAIL: main_menu_refreshes_after_resize ($resized_menus renders, expected 2)"
+        echo "FAIL: interactive_benchmark_session_exits_cleanly (rc=$benchmark_status)"
         failures=$((failures + 1))
     fi
-    check menu_resize_terminal_state_restored "TERMINAL_RESTORED" \
-        "$work/menu-resize-pty-clean.txt"
-    if [[ "$menu_resize_status" -eq 0 ]]; then
-        echo "PASS: resized_menu_session_exits_cleanly"
-    else
-        echo "FAIL: resized_menu_session_exits_cleanly (rc=$menu_resize_status)"
-        failures=$((failures + 1))
-    fi
-    checks=$((checks + 2))
+    checks=$((checks + 1))
 
-    paused_status=0
+    cp "$root/patterns/blinker.txt" "$work/external-pattern.txt"
+    manual_path_status=0
+    manual_path="$work/external-pattern.txt"
     {
         sleep 0.2
         printf 'C'
         sleep 0.2
-        printf '\033[B\r'
-        sleep 0.2
-        printf '2'
-        sleep 1
-        printf '\033'
-        sleep 0.2
-        printf '0'
-    } | timeout 10 script -qfec './build/conway' /dev/null \
-        > "$work/paused-pty.txt" 2>&1 || paused_status=$?
-    strip_ansi < "$work/paused-pty.txt" > "$work/paused-pty-clean.txt"
-    simulation_renders=$(grep -cF "JUEGO DE LA VIDA" "$work/paused-pty-clean.txt" || true)
-    if [[ "$simulation_renders" -eq 1 ]]; then
-        echo "PASS: paused_state_is_not_redrawn"
+        printf 'm'
+        sleep 0.8
+        for ((index = 0; index < ${#manual_path}; ++index)); do
+            printf '%s' "${manual_path:index:1}"
+            sleep 0.03
+        done
+        sleep 0.8
+        printf '\r'
+        sleep 0.8
+        printf 'q'
+    } | timeout 10 script -qfec \
+        "NO_COLOR=1 $binary_cmd" /dev/null \
+        > "$work/manual-path-pty.txt" 2>&1 || manual_path_status=$?
+    strip_ansi < "$work/manual-path-pty.txt" > "$work/manual-path-pty-clean.txt"
+    check interactive_manual_path_loads_external_pattern \
+        "$work/external-pattern.txt  ·  5 × 5" "$work/manual-path-pty-clean.txt"
+    if [[ "$manual_path_status" -eq 0 ]]; then
+        echo "PASS: interactive_manual_path_session_exits_cleanly"
     else
-        echo "FAIL: paused_state_is_not_redrawn ($simulation_renders renders, expected 1)"
-        failures=$((failures + 1))
-    fi
-    checks=$((checks + 1))
-    if [[ "$paused_status" -eq 0 ]]; then
-        echo "PASS: paused_terminal_session_exits_cleanly"
-    else
-        echo "FAIL: paused_terminal_session_exits_cleanly (rc=$paused_status)"
+        echo "FAIL: interactive_manual_path_session_exits_cleanly (rc=$manual_path_status)"
         failures=$((failures + 1))
     fi
     checks=$((checks + 1))
@@ -229,32 +265,26 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf 'C'
         sleep 0.2
-        printf '\033[B\r'
-        sleep 0.2
+        printf '\r'
+        sleep 0.3
         printf '2'
-        sleep 1.5
+        sleep 1.2
         printf '\033'
         sleep 0.2
         printf '0'
     } | timeout 10 script -qfec \
-        'initial=$(stty -g); { sleep 0.9; stty cols 100 rows 30 </dev/tty; } & resize_pid=$!; ./build/conway; app_status=$?; wait "$resize_pid"; final=$(stty -g); if [[ "$initial" == "$final" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit "$app_status"' \
+        "stty cols 80 rows 24; initial=\$(stty -g); { sleep 0.9; stty cols 100 rows 30 </dev/tty; } & resize_pid=\$!; $binary_cmd; app_status=\$?; wait \"\$resize_pid\"; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
         /dev/null > "$work/resize-pty.txt" 2>&1 || resize_status=$?
     strip_ansi < "$work/resize-pty.txt" > "$work/resize-pty-clean.txt"
-    resized_renders=$(grep -cF "JUEGO DE LA VIDA" "$work/resize-pty-clean.txt" || true)
-    if [[ "$resized_renders" -eq 2 ]]; then
-        echo "PASS: paused_screen_refreshes_after_resize"
-    else
-        echo "FAIL: paused_screen_refreshes_after_resize ($resized_renders renders, expected 2)"
-        failures=$((failures + 1))
-    fi
+    check simulation_resize_keeps_screen_rendered "CURRENT" "$work/resize-pty-clean.txt"
     check resize_terminal_state_restored "TERMINAL_RESTORED" "$work/resize-pty-clean.txt"
     if [[ "$resize_status" -eq 0 ]]; then
-        echo "PASS: resize_terminal_session_exits_cleanly"
+        echo "PASS: resized_terminal_session_exits_cleanly"
     else
-        echo "FAIL: resize_terminal_session_exits_cleanly (rc=$resize_status)"
+        echo "FAIL: resized_terminal_session_exits_cleanly (rc=$resize_status)"
         failures=$((failures + 1))
     fi
-    checks=$((checks + 2))
+    checks=$((checks + 1))
 else
     echo "SKIP: interactive_pty_checks (script utility unavailable)"
 fi

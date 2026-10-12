@@ -15,24 +15,11 @@ flags=(-std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
     -o "$work/input_tests"
 "$work/input_tests" "$root" "$@"
 
-"$compiler" "${flags[@]}" -I"$root/include" \
-    "$root/src/main.cpp" \
-    "$root/src/app/app.cpp" \
-    "$root/src/app/controls.cpp" \
-    "$root/src/app/simulation.cpp" \
-    "$root/src/app/thread_config.cpp" \
-    "$root/src/app/pattern_catalog.cpp" \
-    "$root/src/app/benchmark.cpp" \
-    "$root/src/input/input.cpp" \
-    "$root/src/core/game.cpp" \
-    "$root/src/core/engines/sequential.cpp" \
-    "$root/src/core/engines/openmp.cpp" \
-    "$root/src/core/bs23.cpp" \
-    "$root/src/ui/layout.cpp" \
-    "$root/src/ui/menu.cpp" \
-    "$root/src/ui/board_view.cpp" \
-    "$root/src/ui/simulation_layout.cpp" \
-    -o "$work/conway"
+cmake -S "$root" -B "$work/build" \
+    -DBUILD_TESTING=OFF \
+    -DCMAKE_CXX_COMPILER="$compiler"
+cmake --build "$work/build" --target conway --parallel 2
+binary="$work/build/conway"
 mkdir -p "$work/app/patterns"
 
 # Quita los codigos ANSI del output para poder comparar texto plano
@@ -53,7 +40,7 @@ exe_failures=0
 #     (verde si exito, rojo si error) y el patron activo.
 run_conway() {
     local status=0
-    (cd "$work/app" && "$work/conway") > "$work/actual.txt" 2> "$work/stderr.txt" || status=$?
+    (cd "$work/app" && "$binary") > "$work/actual.txt" 2> "$work/stderr.txt" || status=$?
     strip_ansi < "$work/actual.txt" > "$clean"
     return "$status"
 }

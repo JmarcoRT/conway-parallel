@@ -6,6 +6,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(FetchContent)
+
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS_FUZZER OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+    GIT_TAG cdf28903a7781f97ba94d30b79c3a4b0c97ccce7
+    GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(ftxui)
+
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
 
@@ -24,6 +38,7 @@ add_executable(conway
     src/app/simulation.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
+    src/app/ftxui_app.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
@@ -34,6 +49,9 @@ target_include_directories(conway PRIVATE include)
 target_link_libraries(conway PRIVATE
     OpenMP::OpenMP_CXX
     MPI::MPI_CXX
+    ftxui::component
+    ftxui::dom
+    ftxui::screen
 )
 
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
@@ -142,6 +160,7 @@ if(BUILD_TESTING)
     # persistencia entre cargas de patron.
     add_test(NAME engine_selection_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_selection.sh"
+                "$<TARGET_FILE:conway>"
     )
 
     add_executable(app_runtime_tests
@@ -176,6 +195,7 @@ if(BUILD_TESTING)
 
     add_test(NAME app_functional_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_app_functional.sh"
+                "$<TARGET_FILE:conway>"
     )
     set_tests_properties(app_functional_smoke PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"

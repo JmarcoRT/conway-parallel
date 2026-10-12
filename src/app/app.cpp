@@ -2,6 +2,7 @@
 
 #include "app/benchmark.hpp"
 #include "app/controls.hpp"
+#include "app/ftxui_app.hpp"
 #include "app/pattern_catalog.hpp"
 #include "app/simulation.hpp"
 #include "app/thread_config.hpp"
@@ -1063,6 +1064,10 @@ int runLoop() {
 int run() {
     try {
         (void)std::setlocale(LC_CTYPE, "");
+        if (controls::isInteractive() && controls::isOutputInteractive() &&
+            controls::terminalSize().columns > 0) {
+            return runFtxuiApp();
+        }
         return runLoop();
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << '\n';

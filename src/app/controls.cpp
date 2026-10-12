@@ -102,6 +102,10 @@ bool isInteractive() {
     return isatty(STDIN_FILENO) == 1;
 }
 
+bool isOutputInteractive() {
+    return isatty(STDOUT_FILENO) == 1;
+}
+
 bool supportsAnsiColors() {
     const char* noColor = std::getenv("NO_COLOR");
     const char* term = std::getenv("TERM");

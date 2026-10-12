@@ -14,7 +14,7 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-binary="$root/build/conway"
+binary="${1:-$root/build/conway}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/conway-engine-selection.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 clean="$work/actual_clean.txt"

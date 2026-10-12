@@ -173,16 +173,26 @@ Contendrá entradas conocidas para pruebas y demostraciones, por ejemplo:
 
 `src/app/` conserva la entrada y el motor seleccionados y coordina los módulos.
 `SimulationSession` administra el estado de reproducción, avance y reinicio sin
-añadir reglas al core. La aplicación usa `ui::board_view` para generar CURRENT
-y NEXT desde copias/lecturas del `Game` real, y `ui::simulation_layout` para
-presentar estado, generación, células vivas, motor y controles. La lectura de
-teclado temporizada permite avanzar la reproducción sin bloquear los controles.
-La interfaz consulta las dimensiones reales de la TTY con `ioctl(TIOCGWINSZ)`.
-Los layouts de menú y simulación centran el contenido y reservan zonas de
-encabezado, contenido y controles, con una variante compacta para terminales
-pequeñas. La sesión interactiva utiliza la pantalla alternativa; los controles
-restauran el modo de terminal y la pantalla al salir. La navegación y la
-simulación detectan redimensionamientos mediante sondeo temporizado.
+añadir reglas al core. En una TTY, `app.cpp` inicia la UI FTXUI definida en
+`src/app/ftxui_app.cpp`; en una entrada no interactiva conserva la ruta previa
+basada en líneas para pruebas y automatización. El catálogo usa
+`app::discoverPatterns`, mientras que benchmark y simulación delegan la
+evolución y las mediciones a sus servicios existentes.
+
+La TUI genera CURRENT desde el `Game` activo y NEXT desde una copia, con un
+viewport que se ajusta a las dimensiones de la terminal. `ScreenInteractive`
+gestiona navegación, entradas, ciclo de eventos y pantalla alternativa. Como
+FTXUI v5.0.0 serializa un frame completo por redibujado, `DifferentialOutputBuffer`
+rasteriza el árbol FTXUI a una pantalla y compara sus filas con las del frame
+anterior; solo las filas modificadas se emiten. Al cambiar el tamaño se
+repinta el frame completo para limpiar residuos. Se usan secuencias ANSI
+estándar de cursor, sin salida sincronizada experimental.
+
+La reproducción publica eventos temporizados al bucle FTXUI cada 150 ms, sin
+bloquear la entrada y sin mantener un refresco activo en pausa. La salida
+restaura la pantalla alternativa y el estado de terminal de FTXUI. Las demos
+conservan `ui::board_view` y `ui::simulation_layout`; el core no depende de
+FTXUI.
 
 `app::discoverPatterns` enumera los archivos `.txt` de `patterns/`, valida sus
 metadatos a través del cargador existente y muestra dimensiones/categorías. Los
@@ -192,12 +202,8 @@ por línea para compatibilidad con pruebas y automatización.
 
 `ui::board_view` representa cada estado como bloques de celdas UTF-8 o fondos
 ANSI, con fallback monocromático y viewport explícito para tableros grandes.
-`ui::simulation_layout` alinea CURRENT y NEXT, centra el tablero en los paneles
-y distribuye la pantalla según sus dimensiones.
-
-Mientras está pausada, la simulación se redibuja únicamente tras una acción o
-un cambio de dimensiones; el sondeo temporizado no vuelve a emitir el mismo
-cuadro.
+`ui::simulation_layout` alinea CURRENT y NEXT para las demos existentes. La
+TUI interactiva presenta esas mismas superficies del dominio mediante FTXUI.
 
 La configuración de hilos OpenMP pertenece al estado de la aplicación y se
 conserva entre módulos. Ofrece valores comunes y un valor personalizado entre
@@ -224,22 +230,12 @@ disponible, no como una cifra basada en los hilos solicitados.
 
 Estos patrones pueden almacenarse como archivos de entrada y no sustituyen al módulo `input`.
 
-### renderer
+### UI
 
-Responsable exclusivamente de representar el estado de la simulación.
-
-Podrá mostrar:
-
-- generación actual;
-- construcción de `next`;
-- regiones procesadas por hilos;
-- regiones MPI;
-- intercambio de halos;
-- información suministrada por otros módulos.
-
-La simulación debe poder funcionar sin `renderer`.
-
-El renderer no mide rendimiento ni implementa reglas de Conway.
+La UI es una capa de presentación, no un motor ni una fuente de reglas de
+Conway. La interfaz interactiva usa componentes FTXUI; las demos conservan los
+renderers de `src/ui/`. La presentación consume estado y servicios de la
+aplicación y no mide rendimiento.
 
 ### app / controls
 
@@ -449,8 +445,7 @@ Un módulo no debe conocer detalles que no necesita.
 - `core` no depende de OpenMP.
 - `core` no depende de Pthreads.
 - `core` no depende de la interfaz.
-- `renderer` no implementa reglas de Conway.
-- `renderer` no mide rendimiento.
+- La UI no implementa reglas de Conway ni mide rendimiento.
 - los motores de ejecución no contienen código de renderizado.
 - `benchmark` puede ejecutar la simulación sin interfaz.
 - `main` coordina módulos, pero no concentra su implementación.
@@ -471,6 +466,8 @@ El entorno de referencia del proyecto es:
 - CMake 3.20 o superior;
 - OpenMP mediante GCC (`libgomp`);
 - Open MPI 5.0.10 compilado con GCC 14.
+- FTXUI v5.0.0, obtenido por CMake `FetchContent` desde el commit fijado
+  `cdf28903a7781f97ba94d30b79c3a4b0c97ccce7`.
 
 La instalación de referencia de Open MPI se encuentra en:
 
@@ -482,6 +479,7 @@ El proyecto utiliza CMake para localizar y enlazar:
 
 - `OpenMP::OpenMP_CXX`;
 - `MPI::MPI_CXX`.
+- `ftxui::component`, `ftxui::dom` y `ftxui::screen`.
 
 Las pruebas oficiales de rendimiento deberán ejecutarse en este entorno o documentando cualquier diferencia.
 
@@ -507,7 +505,6 @@ No se deben introducir dependencias nuevas sin coordinación.
 Las siguientes decisiones pueden evolucionar:
 
 - detalles de la estrategia MPI;
-- biblioteca definitiva para la interfaz de terminal;
 - representación visual de hilos y procesos;
 - controles interactivos de visualización;
 - tamaños finales de benchmark;

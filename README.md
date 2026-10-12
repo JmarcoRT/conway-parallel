@@ -26,6 +26,7 @@ cuando esos motores se integren en la aplicación.
 - Pthreads
 - Open MPI
 - CMake
+- FTXUI v5.0.0 (pinned commit, fetched by CMake)
 
 Entorno de referencia: **Ubuntu 24.04 LTS**.
 
@@ -35,7 +36,7 @@ En Ubuntu / Debian / WSL:
 
 ```bash
 sudo apt update
-sudo apt install -y libopenmpi-dev openmpi-bin cmake g++
+sudo apt install -y libopenmpi-dev openmpi-bin cmake g++ git
 ```
 
 ## Compilación y Ejecución
@@ -54,7 +55,7 @@ cmake --build build
 ./build/conway_view_demo patterns/blinker.txt 2
 ```
 
-> **Nota:** En una TTY, la aplicación usa la pantalla alternativa y restaura la pantalla y el modo de terminal al salir. El layout se adapta al tamaño reportado por Linux/WSL. Las celdas usan bloques UTF-8; los colores ANSI de fondo se activan en terminales compatibles y `NO_COLOR=1` los desactiva. Se requiere una terminal con soporte UTF-8; ANSI solo se usa para color y control de pantalla.
+> **Nota:** En la primera configuración, CMake descarga FTXUI v5.0.0 desde un commit fijado. En una TTY, la aplicación usa la pantalla alternativa, actualiza únicamente las filas modificadas y restaura el estado de la terminal al salir. Un cambio de dimensiones fuerza un repintado completo para borrar residuos. El layout se adapta al tamaño reportado por Linux/WSL. Las celdas usan bloques UTF-8; `NO_COLOR=1` desactiva el color. Se requiere una terminal con soporte UTF-8 y secuencias ANSI de control.
 
 ## Estructura actual
 
@@ -68,7 +69,7 @@ conway-parallel/
 ```
 
 - La arquitectura del sistema está definida en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-- La documentación del módulo de UI y Layout Base está en [`docs/UI.md`](docs/UI.md).
+- La documentación de la interfaz FTXUI está en [`docs/UI.md`](docs/UI.md).
 - El formato de entrada y los patrones de demo están en [`docs/INPUT_TESTS.md`](docs/INPUT_TESTS.md).
 - Las reglas para contribuir al proyecto están en [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 
@@ -102,7 +103,9 @@ Pthreads y MPI todavía no están disponibles como motores de la aplicación.
   como núcleos físicos. El equipo efectivo puede ser menor al solicitado por
   límites del runtime o del entorno.
 - En visualización: `N` avanza, espacio pausa/reanuda, `R` reinicia y `Esc`
-  vuelve al menú. La pantalla pausada no se vuelve a imprimir sin cambios.
+  vuelve al menú. La reproducción publica eventos temporizados; en pausa no hay
+  actualizaciones periódicas. El render diferencial escribe solo las filas
+  modificadas.
 - La cuadrícula y los paneles CURRENT/NEXT se centran y ajustan al tamaño del
   terminal. Los tableros grandes usan un viewport y declaran las filas o
   columnas no mostradas; las células no se recortan silenciosamente.

@@ -32,6 +32,7 @@ struct TerminalSize {
 };
 
 bool isInteractive();
+bool isOutputInteractive();
 bool supportsAnsiColors();
 TerminalSize terminalSize();
 void beginTerminalSession();
