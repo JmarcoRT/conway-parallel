@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/game_state.hpp"
+#include "core/step_trace.hpp"
 #include "input/input.hpp"
 
 #include <cstddef>
@@ -38,6 +39,11 @@ public:
     void clear();
 
     void step();
+
+    // Sobrecarga opcional: si sink != conway::core::kNoTrace, el motor
+    // delegado construye una StepTrace observada y la entrega al sink al
+    // final del step. Sin sink, el comportamiento es idéntico a step().
+    void step(core::StepTraceSink* sink);
 
     // Selecciona el motor usado por step(). No modifica el tablero, la
     // generacion ni aliveCount: se puede cambiar entre generaciones.

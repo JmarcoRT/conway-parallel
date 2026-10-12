@@ -112,6 +112,18 @@ void Game::step() {
     throw std::logic_error("Motor de ejecucion desconocido");
 }
 
+void Game::step(core::StepTraceSink* sink) {
+    switch (engine_) {
+        case Engine::Sequential:
+            core::step_sequential(state_, sink);
+            return;
+        case Engine::OpenMP:
+            core::step_openmp(state_, sink);
+            return;
+    }
+    throw std::logic_error("Motor de ejecucion desconocido");
+}
+
 void Game::setEngine(Engine engine) noexcept {
     engine_ = engine;
 }

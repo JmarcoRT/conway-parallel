@@ -217,6 +217,23 @@ target_link_libraries(openmp_vs_sequential PRIVATE OpenMP::OpenMP_CXX)
 add_test(NAME openmp_vs_sequential
     COMMAND openmp_vs_sequential "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+# Tests de la instrumentación opcional de motores (StepTrace / WorkerRecord
+# / StepTraceSink). Cubre: equivalencia con/sin sink, cobertura sin
+# solapes, sinks concurrentes, no residual, height == 0, hilos ociosos.
+add_executable(step_trace_tests
+    tests/step_trace_tests.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(step_trace_tests PRIVATE include)
+target_link_libraries(step_trace_tests PRIVATE OpenMP::OpenMP_CXX)
+add_test(NAME step_trace
+    COMMAND step_trace_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+)
 endif()
 
 # Target independiente de demostración para la UI (Semana 5)
