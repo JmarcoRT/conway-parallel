@@ -55,9 +55,10 @@ En el menú principal:
 - `0` o `Q`: salir.
 
 En el catálogo se muestran dinámicamente los archivos `.txt` de `patterns/`.
-Flechas y Enter seleccionan; `M` permite introducir una ruta manual y `Esc`
-regresa. La selección de motor y de patrón se conserva entre pantallas cuando
-corresponde.
+Los submenús de catálogo, motor e hilos comparten el mismo selector FTXUI:
+flechas arriba/abajo cambian la opción resaltada, Enter confirma y Esc regresa.
+`M` permite introducir una ruta manual desde el catálogo. La selección de
+motor y de patrón se conserva entre pantallas cuando corresponde.
 
 En la simulación:
 
@@ -67,12 +68,14 @@ En la simulación:
 - `Esc`, `X` o `Q`: regresar al menú.
 
 Los paneles CURRENT/NEXT se organizan lado a lado en terminales amplias y
-verticalmente en las estrechas. Las células son bloques rectangulares; si el
-tablero supera el viewport, la interfaz indica las filas y columnas visibles.
-La presentación informa generación, células vivas, motor y estado. En OpenMP
-muestra los hilos solicitados y el tamaño de equipo observado en una evolución.
-La disponibilidad reportada corresponde a procesadores lógicos, no a núcleos
-físicos.
+verticalmente en las estrechas. Cada celda se delimita con bordes verticales y
+líneas horizontales con uniones consistentes. Las células vivas y muertas usan
+superficies diferenciables; en modo monocromático se conservan bloques
+distintos. Si el tablero supera el viewport, la interfaz indica las filas y
+columnas visibles. La presentación informa generación, células vivas, motor y
+estado. En OpenMP muestra los hilos solicitados y el tamaño de equipo observado
+en una evolución. La disponibilidad reportada corresponde a procesadores
+lógicos, no a núcleos físicos.
 
 ## Benchmark
 
@@ -105,5 +108,6 @@ bash tests/test_app_functional.sh build/conway
 ```
 
 Las pruebas funcionales usan una PTY cuando está disponible para comprobar
-renderizado monocromático, avance, pausa sin escrituras periódicas,
+renderizado monocromático y la grilla, navegación por submenús con flechas y
+Enter, cambio de patrón, avance, pausa sin escrituras periódicas,
 redimensionamiento y restauración del terminal.

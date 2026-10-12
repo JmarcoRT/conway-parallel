@@ -31,6 +31,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <streambuf>
 #include <thread>
 #include <utility>
@@ -204,10 +205,27 @@ Element panel(std::string title, Element body) {
 
 Element cellElement(bool alive, bool colors) {
     if (!colors) {
-        return ftxui::text(alive ? "██" : "░░");
+        return ftxui::text(alive ? "▓▓" : "░░");
     }
     return ftxui::text("  ") |
         ftxui::bgcolor(alive ? ftxui::Color::Green : ftxui::Color::GrayDark);
+}
+
+std::string gridBorder(
+    std::size_t columns,
+    std::string_view junction,
+    std::string_view left,
+    std::string_view right
+) {
+    std::string output(left);
+    for (std::size_t column = 0; column < columns; ++column) {
+        output += "──";
+        if (column + 1 < columns) {
+            output += junction;
+        }
+    }
+    output += right;
+    return output;
 }
 
 std::vector<Element> boardRows(
@@ -219,17 +237,28 @@ std::vector<Element> boardRows(
     std::vector<Element> output;
     const std::size_t visibleRows = std::min(rows, game.height());
     const std::size_t visibleColumns = std::min(columns, game.width());
-    output.reserve(visibleRows + 1);
+    if (visibleRows == 0 || visibleColumns == 0) {
+        return output;
+    }
+    output.reserve(visibleRows * 2 + 3);
+    output.push_back(ftxui::text(
+        gridBorder(visibleColumns, "┬", "┌", "┐")));
     for (std::size_t row = 0; row < visibleRows; ++row) {
         std::vector<Element> cells;
-        cells.reserve(visibleColumns * 2);
+        cells.reserve(visibleColumns * 2 + 1);
+        cells.push_back(ftxui::text("│"));
         for (std::size_t column = 0; column < visibleColumns; ++column) {
             cells.push_back(cellElement(game.isAlive(row, column), colors));
-            if (column + 1 < visibleColumns) {
-                cells.push_back(ftxui::text(" "));
-            }
+            cells.push_back(ftxui::text("│"));
         }
         output.push_back(ftxui::hbox(std::move(cells)));
+        if (row + 1 < visibleRows) {
+            output.push_back(ftxui::text(
+                gridBorder(visibleColumns, "┼", "├", "┤")));
+        } else {
+            output.push_back(ftxui::text(
+                gridBorder(visibleColumns, "┴", "└", "┘")));
+        }
     }
     if (visibleRows < game.height() || visibleColumns < game.width()) {
         output.push_back(ftxui::text(
@@ -239,6 +268,17 @@ std::vector<Element> boardRows(
             " columnas") | ftxui::dim);
     }
     return output;
+}
+
+std::size_t visibleBoardRows(
+    std::size_t screenHeight,
+    std::size_t boardHeight,
+    bool compact
+) {
+    const std::size_t rowBudget = screenHeight > 17 ? screenHeight - 17 : 1;
+    const std::size_t boardRowBudget = compact ? rowBudget / 4 : rowBudget / 2;
+    return std::max<std::size_t>(
+        1, std::min(boardHeight, boardRowBudget));
 }
 
 std::string benchmarkReport(const BenchmarkResult& result) {
@@ -324,7 +364,7 @@ public:
 
     Element Render() override {
         const auto size = controls::terminalSize();
-        const bool compact = size.columns < 86 || size.rows < 18;
+        const bool compact = size.columns < 64 || size.rows < 18;
         Element content;
         switch (state_.page) {
             case Page::Main:
@@ -404,6 +444,20 @@ public:
             goBack();
             return true;
         }
+        if (isMenuPage(state_.page)) {
+            if (event == Event::ArrowUp) {
+                moveMenuSelection(-1);
+                return true;
+            }
+            if (event == Event::ArrowDown) {
+                moveMenuSelection(1);
+                return true;
+            }
+            if (event == Event::Return) {
+                selectMenuItem();
+                return true;
+            }
+        }
         if (event.is_character()) {
             const std::string key = event.character();
             if (handleShortcut(key)) {
@@ -457,6 +511,68 @@ private:
     static constexpr unsigned kPlaybackEvent = 1U;
     static constexpr unsigned kBenchmarkEvent = 2U;
 
+    static bool isMenuPage(Page page) {
+        return page == Page::Main || page == Page::Patterns ||
+            page == Page::Engines || page == Page::Threads;
+    }
+
+    int& menuSelection() {
+        switch (state_.page) {
+            case Page::Main: return state_.mainSelection;
+            case Page::Patterns: return state_.patternSelection;
+            case Page::Engines: return state_.engineSelection;
+            case Page::Threads: return state_.threadSelection;
+            case Page::PathInput:
+            case Page::ThreadInput:
+            case Page::Simulation:
+            case Page::Benchmark:
+                break;
+        }
+        return state_.mainSelection;
+    }
+
+    std::size_t menuSize() const {
+        switch (state_.page) {
+            case Page::Main: return mainItems_.size();
+            case Page::Patterns: return patternItems_.size();
+            case Page::Engines: return engineItems_.size();
+            case Page::Threads: return threadItems_.size();
+            case Page::PathInput:
+            case Page::ThreadInput:
+            case Page::Simulation:
+            case Page::Benchmark:
+                break;
+        }
+        return 0;
+    }
+
+    void moveMenuSelection(int direction) {
+        const std::size_t size = menuSize();
+        if (size == 0) {
+            return;
+        }
+        int& selection = menuSelection();
+        const auto current = static_cast<std::size_t>(std::max(0, selection));
+        const std::size_t next = direction < 0
+            ? (current + size - 1) % size
+            : (current + 1) % size;
+        selection = static_cast<int>(next);
+    }
+
+    void selectMenuItem() {
+        switch (state_.page) {
+            case Page::Main: selectMain(); break;
+            case Page::Patterns: selectPattern(); break;
+            case Page::Engines: selectEngine(); break;
+            case Page::Threads: selectThreadOption(); break;
+            case Page::PathInput:
+            case Page::ThreadInput:
+            case Page::Simulation:
+            case Page::Benchmark:
+                break;
+        }
+    }
+
     void schedulePlaybackTick() {
         playbackTimer_.request_stop();
         playbackTimer_ = std::jthread([this](std::stop_token stopToken) {
@@ -474,6 +590,20 @@ private:
         std::function<void()> onEnter
     ) {
         ftxui::MenuOption option;
+        option.entries_option.transform = [](const ftxui::EntryState& state) {
+            Element entry = ftxui::text(
+                std::string(state.active ? "> " : "  ") + state.label);
+            if (state.active) {
+                entry = entry | ftxui::bold;
+                if (colorsEnabled()) {
+                    entry = entry | ftxui::color(ftxui::Color::Cyan);
+                }
+            }
+            if (state.focused) {
+                entry = entry | ftxui::inverted;
+            }
+            return entry;
+        };
         option.on_enter = std::move(onEnter);
         return ftxui::Menu(&items, &selection, std::move(option));
     }
@@ -884,15 +1014,13 @@ private:
             state_.effectiveThreads = state_.engine == Engine::OpenMP
                 ? core::last_openmp_team_size() : 1;
         }
+        const std::size_t rows = visibleBoardRows(height, game.height(), compact);
         const std::size_t panelWidth = compact
             ? std::max<std::size_t>(1, width > 8 ? width - 8 : 1)
-            : std::max<std::size_t>(1, (width - 10) / 2);
+            : std::max<std::size_t>(
+                  1, (width - std::min<std::size_t>(width, 10)) / 2);
         const std::size_t columns = std::max<std::size_t>(
-            1, std::min(game.width(), panelWidth / 3));
-        const std::size_t rowBudget = height > 17 ? height - 17 : 1;
-        const std::size_t rows = compact
-            ? std::max<std::size_t>(1, std::min(game.height(), rowBudget / 2))
-            : std::max<std::size_t>(1, std::min(game.height(), rowBudget));
+            1, std::min(game.width(), panelWidth / 4));
         const bool colors = colorsEnabled();
         Element current = panel("CURRENT · generación " +
             std::to_string(game.generation()),

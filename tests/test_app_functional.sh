@@ -116,7 +116,7 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf 'C'
         sleep 0.2
-        printf '\r'
+        printf '\033[B\r'
         sleep 0.2
         printf '2'
         sleep 0.3
@@ -141,8 +141,11 @@ if command -v script >/dev/null 2>&1; then
     check interactive_current_and_next_are_rendered "CURRENT" "$work/pty-clean.txt"
     check interactive_next_generation_is_rendered "NEXT" "$work/pty-clean.txt"
     check interactive_step_advances_generation "Generación 1" "$work/pty-clean.txt"
-    check interactive_board_uses_live_cell_blocks "██" "$work/pty-clean.txt"
+    check interactive_board_uses_live_cell_blocks "▓▓" "$work/pty-clean.txt"
     check interactive_board_uses_dead_cell_blocks "░░" "$work/pty-clean.txt"
+    check interactive_board_has_horizontal_grid_lines "─" "$work/pty-clean.txt"
+    check interactive_board_has_crossed_cell_junctions "┼" "$work/pty-clean.txt"
+    check interactive_board_has_vertical_grid_lines "│" "$work/pty-clean.txt"
     header_writes=$(grep -ao "CONWAY PARALLEL" "$work/pty.txt" | wc -l)
     if [[ "$header_writes" -eq 1 ]]; then
         echo "PASS: unchanged_header_is_not_rewritten"
@@ -179,6 +182,65 @@ if command -v script >/dev/null 2>&1; then
         echo "PASS: interactive_terminal_session_exits_cleanly"
     else
         echo "FAIL: interactive_terminal_session_exits_cleanly (rc=$pty_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
+    navigation_status=0
+    {
+        sleep 0.3
+        printf '\033[B\033[B\r'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.3
+        printf '4'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.3
+        printf 'C'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.4
+        printf '2'
+        sleep 0.5
+        printf 'n'
+        sleep 0.3
+        printf '\033'
+        sleep 0.3
+        printf '1'
+        sleep 2
+        printf '\033'
+        sleep 0.3
+        printf 'q'
+    } | timeout 12 script -qfec \
+        "NO_COLOR=1 $binary_cmd" /dev/null \
+        > "$work/navigation-pty.txt" 2>&1 || navigation_status=$?
+    strip_ansi < "$work/navigation-pty.txt" > "$work/navigation-pty-clean.txt"
+    check engine_submenu_arrow_selects_openmp \
+        "Motor: OpenMP" "$work/navigation-pty-clean.txt"
+    check engine_submenu_highlights_arrow_selection \
+        "> OpenMP" "$work/navigation-pty-clean.txt"
+    check thread_submenu_arrow_selects_two_threads \
+        "OpenMP solicitados: 2" "$work/navigation-pty-clean.txt"
+    check thread_submenu_highlights_arrow_selection \
+        "> 2 hilos" "$work/navigation-pty-clean.txt"
+    check pattern_catalog_arrow_selects_blinker \
+        "patterns/blinker.txt  ·  5 × 5" "$work/navigation-pty-clean.txt"
+    check submenu_returns_to_main_menu "MENÚ PRINCIPAL" "$work/navigation-pty-clean.txt"
+    check arrow_navigation_keeps_ftxui_menu_rendering "> Seleccionar motor" \
+        "$work/navigation-pty-clean.txt"
+    check submenu_flow_runs_simulation_and_benchmark "Mediana secuencial:" \
+        "$work/navigation-pty-clean.txt"
+    if [[ "$navigation_status" -eq 0 ]]; then
+        echo "PASS: ftxui_submenu_navigation_session_exits_cleanly"
+    else
+        echo "FAIL: ftxui_submenu_navigation_session_exits_cleanly (rc=$navigation_status)"
         failures=$((failures + 1))
     fi
     checks=$((checks + 1))
