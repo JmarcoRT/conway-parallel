@@ -2,6 +2,7 @@
 
 #include "app/benchmark.hpp"
 #include "app/controls.hpp"
+#include "app/didactic_session.hpp"
 #include "app/pattern_catalog.hpp"
 #include "app/pattern_preview.hpp"
 #include "app/simulation.hpp"
@@ -46,6 +47,28 @@ using namespace std::chrono_literals;
 using ftxui::Element;
 using ftxui::Event;
 
+// Forward declarations: los helpers de tablero se usan antes de su
+// definicion (didacticBoardRows, didacticCurrentRows) y se mantienen
+// en el mismo namespace anonimo.
+Element cellElement(bool alive, bool colors);
+Element gridElement(std::string value, bool colors);
+std::string gridBorder(
+    std::size_t columns,
+    std::string_view junction,
+    std::string_view left,
+    std::string_view right);
+std::size_t visibleBoardRows(
+    std::size_t screenHeight,
+    std::size_t boardHeight,
+    bool compact);
+std::vector<Element> boardRows(
+    const conway::Game& game,
+    std::size_t rows,
+    std::size_t columns,
+    bool colors);
+ftxui::Color workerColor(int index);
+class DifferentialOutputBuffer;
+
 enum class Page {
     Main,
     Patterns,
@@ -54,7 +77,8 @@ enum class Page {
     PathInput,
     ThreadInput,
     Simulation,
-    Benchmark
+    Benchmark,
+    Didactic
 };
 
 struct InteractiveState {
@@ -75,6 +99,7 @@ struct InteractiveState {
     std::string pathDraft;
     std::string threadDraft;
     std::unique_ptr<SimulationSession> simulation;
+    std::unique_ptr<DidacticController> didactic;
     std::optional<BenchmarkResult> benchmark;
     bool benchmarkRunning{false};
 };
@@ -217,6 +242,140 @@ Element cellElement(bool alive, bool colors) {
     return ftxui::text("  ") | ftxui::bgcolor(background);
 }
 
+// Color de un worker para la visualizacion didactica. Mantiene el
+// verde #62E889 para celulas vivas (no se usa aqui) y elige una
+// paleta distinguible para el resto: cada worker tiene un color
+// propio que se aplica a sus celdas reveladas (muertas) y a su
+// marca en la lista inferior.
+ftxui::Color workerColor(int index) {
+    static const ftxui::Color palette[] = {
+        ftxui::Color::RGB(0xE8, 0x9E, 0x5A),  // T0 naranja
+        ftxui::Color::RGB(0x5A, 0x8F, 0xE8),  // T1 azul
+        ftxui::Color::RGB(0xB4, 0x5A, 0xE8),  // T2 morado
+        ftxui::Color::RGB(0xE8, 0xD8, 0x5A),  // T3 amarillo
+        ftxui::Color::RGB(0x5A, 0xE8, 0xC8),  // T4 verde-azulado
+        ftxui::Color::RGB(0xE8, 0x5A, 0x9E),  // T5 rosa
+        ftxui::Color::RGB(0xE8, 0x5A, 0x5A),  // T6 rojo
+        ftxui::Color::RGB(0x8A, 0x6A, 0xE8),  // T7 indigo
+    };
+    if (index < 0) return ftxui::Color::RGB(0x1F, 0x2A, 0x30);
+    return palette[index % 8];
+}
+
+// Celda didactica. alive siempre se pinta verde (#62E889). Las celdas
+// muertas usan el color del worker que las revelo (o dim gris si
+// no han sido reveladas). Asi el reparto se ve en las celdas
+// muertas; las celdas vivas se distinguen por su color canonico.
+Element didacticCellElement(bool alive, bool revealed,
+                             std::int8_t worker_index, bool colors) {
+    if (!revealed) {
+        return ftxui::text("  ") |
+            ftxui::bgcolor(ftxui::Color::RGB(0x1F, 0x2A, 0x30));
+    }
+    if (!colors) {
+        return ftxui::text(alive ? "▓▓" : "░░");
+    }
+    if (alive) {
+        return ftxui::text("  ") | ftxui::bgcolor(ftxui::Color::RGB(98, 232, 137));
+    }
+    return ftxui::text("  ") | ftxui::bgcolor(workerColor(worker_index));
+}
+
+// Construye el tablero NEXT del panel didactico, usando la mascara
+// de revelado del frame. Las celdas no reveladas se pintan dim;
+// las reveladas usan el color del worker.
+std::vector<Element> didacticBoardRows(
+    const DidacticFrame& frame,
+    std::size_t visibleRows,
+    std::size_t visibleColumns,
+    bool colors
+) {
+    std::vector<Element> output;
+    if (!frame.has_data || frame.width == 0 || frame.height == 0) {
+        return output;
+    }
+    if (visibleRows == 0 || visibleColumns == 0) {
+        return output;
+    }
+    const std::size_t rows = std::min(visibleRows, frame.height);
+    const std::size_t columns = std::min(visibleColumns, frame.width);
+    output.reserve(rows * 2 + 3);
+    output.push_back(gridElement(
+        gridBorder(columns, "┬", "┌", "┐"), colors));
+    for (std::size_t row = 0; row < rows; ++row) {
+        std::vector<Element> cells;
+        cells.reserve(columns * 2 + 1);
+        cells.push_back(gridElement("│", colors));
+        for (std::size_t column = 0; column < columns; ++column) {
+            const std::size_t idx = row * frame.width + column;
+            const bool alive = frame.next_alive_map[idx] != 0;
+            const bool revealed = frame.revealed[idx] != 0;
+            const std::int8_t wid =
+                revealed ? frame.worker_id[idx] : std::int8_t{-1};
+            cells.push_back(didacticCellElement(alive, revealed, wid, colors));
+            cells.push_back(gridElement("│", colors));
+        }
+        output.push_back(ftxui::hbox(std::move(cells)));
+        if (row + 1 < rows) {
+            output.push_back(gridElement(
+                gridBorder(columns, "┼", "├", "┤"), colors));
+        } else {
+            output.push_back(gridElement(
+                gridBorder(columns, "┴", "└", "┘"), colors));
+        }
+    }
+    if (rows < frame.height || columns < frame.width) {
+        output.push_back(ftxui::text(
+            "Viewport: " + std::to_string(rows) + "/" +
+            std::to_string(frame.height) + " filas, " +
+            std::to_string(columns) + "/" + std::to_string(frame.width) +
+            " columnas") | ftxui::dim);
+    }
+    return output;
+}
+
+// CURRENT del panel didactico. Mismas dimensiones que la salida de
+// didacticBoardRows, pero sin mascara: todo esta siempre visible.
+std::vector<Element> didacticCurrentRows(
+    const DidacticFrame& frame,
+    std::size_t visibleRows,
+    std::size_t visibleColumns,
+    bool colors
+) {
+    std::vector<Element> output;
+    if (!frame.has_data || frame.width == 0 || frame.height == 0) {
+        return output;
+    }
+    if (visibleRows == 0 || visibleColumns == 0) {
+        return output;
+    }
+    const std::size_t rows = std::min(visibleRows, frame.height);
+    const std::size_t columns = std::min(visibleColumns, frame.width);
+    output.reserve(rows * 2 + 3);
+    output.push_back(gridElement(
+        gridBorder(columns, "┬", "┌", "┐"), colors));
+    for (std::size_t row = 0; row < rows; ++row) {
+        std::vector<Element> cells;
+        cells.reserve(columns * 2 + 1);
+        cells.push_back(gridElement("│", colors));
+        for (std::size_t column = 0; column < columns; ++column) {
+            const std::size_t idx = row * frame.width + column;
+            const bool alive = frame.current_alive_map[idx] != 0;
+            cells.push_back(cellElement(alive, colors));
+            cells.push_back(gridElement("│", colors));
+        }
+        output.push_back(ftxui::hbox(std::move(cells)));
+        if (row + 1 < rows) {
+            output.push_back(gridElement(
+                gridBorder(columns, "┼", "├", "┤"), colors));
+        } else {
+            output.push_back(gridElement(
+                gridBorder(columns, "┴", "└", "┘"), colors));
+        }
+    }
+    return output;
+}
+
 Element gridElement(std::string value, bool colors) {
     Element output = ftxui::text(std::move(value));
     return colors
@@ -357,12 +516,14 @@ public:
         Add(threadInput_);
         Add(simulationView_);
         Add(benchmarkView_);
+        Add(didacticView_);
         mainItems_ = {
             "Benchmark",
             "Visualización",
             "Seleccionar motor",
             "Configurar hilos OpenMP",
             "Catálogo de patrones",
+            "Visualización didáctica",
             "Salir",
         };
         engineItems_ = {"Secuencial", "OpenMP", "Volver"};
@@ -375,6 +536,9 @@ public:
 
     ~InteractiveApp() override {
         playbackTimer_.request_stop();
+        // Destruir el didactic antes que el worker thread termine,
+        // para que joinWorker() se ejecute y no quede colgando.
+        state_.didactic.reset();
         if (benchmarkWorker_.joinable()) {
             benchmarkWorker_.join();
         }
@@ -411,6 +575,9 @@ public:
                 break;
             case Page::Benchmark:
                 content = renderBenchmark();
+                break;
+            case Page::Didactic:
+                content = renderDidactic(size.columns, size.rows, compact);
                 break;
         }
 
@@ -453,12 +620,22 @@ public:
             if ((pending & kBenchmarkEvent) != 0) {
                 receiveBenchmarkResult();
             }
-            if ((pending & kPlaybackEvent) != 0 && state_.page == Page::Simulation &&
-                state_.simulation && state_.simulation->isRunning()) {
-                state_.simulation->advanceIfRunning();
-                state_.effectiveThreads = state_.engine == Engine::OpenMP
-                    ? core::last_openmp_team_size() : 1;
-                schedulePlaybackTick();
+            if ((pending & kPlaybackEvent) != 0) {
+                if (state_.page == Page::Simulation &&
+                    state_.simulation && state_.simulation->isRunning()) {
+                    state_.simulation->advanceIfRunning();
+                    state_.effectiveThreads = state_.engine == Engine::OpenMP
+                        ? core::last_openmp_team_size() : 1;
+                    schedulePlaybackTick();
+                } else if (state_.page == Page::Didactic && state_.didactic &&
+                           state_.didactic->isPlaying()) {
+                    // El tick avanza el reloj de reproduccion
+                    // didactica con 150 ms de tiempo simulado.
+                    state_.didactic->tick(std::chrono::milliseconds(150));
+                    if (state_.didactic->isPlaying()) {
+                        schedulePlaybackTick();
+                    }
+                }
             }
             return true;
         }
@@ -500,6 +677,45 @@ public:
             if (key == "r" || key == "R") {
                 state_.simulation->reset();
                 state_.effectiveThreads = 0;
+                return true;
+            }
+        }
+        if (state_.page == Page::Didactic && event.is_character()) {
+            const std::string key = event.character();
+            if (key == "x" || key == "X" || key == "q" || key == "Q") {
+                goBack();
+                return true;
+            }
+            if (key == "n" || key == "N") {
+                if (state_.didactic && state_.didactic->isReady()) {
+                    state_.didactic->advanceGeneration();
+                }
+                return true;
+            }
+            if (key == " " || key == "p" || key == "P") {
+                if (state_.didactic && state_.didactic->isReady()) {
+                    state_.didactic->togglePlay();
+                    if (state_.didactic->isPlaying()) {
+                        schedulePlaybackTick();
+                    } else {
+                        playbackTimer_.request_stop();
+                    }
+                }
+                return true;
+            }
+            if (key == "r" || key == "R") {
+                if (state_.didactic) {
+                    playbackTimer_.request_stop();
+                    state_.didactic->resetToInitial();
+                }
+                return true;
+            }
+            if (key == "+" || key == "=") {
+                if (state_.didactic) state_.didactic->increaseSpeed();
+                return true;
+            }
+            if (key == "-" || key == "_") {
+                if (state_.didactic) state_.didactic->decreaseSpeed();
                 return true;
             }
         }
@@ -573,6 +789,7 @@ private:
             case Page::ThreadInput: return threadInput_;
             case Page::Simulation: return simulationView_;
             case Page::Benchmark: return benchmarkView_;
+            case Page::Didactic: return didacticView_;
         }
         return mainMenu_;
     }
@@ -689,7 +906,8 @@ private:
                 refreshPatterns();
                 state_.page = Page::Patterns;
                 break;
-            case 5: screen_.Exit(); break;
+            case 5: startDidactic(); break;
+            case 6: screen_.Exit(); break;
             default: break;
         }
     }
@@ -713,6 +931,8 @@ private:
                 createSimulation();
             } else if (state_.page == Page::Benchmark) {
                 startBenchmark();
+            } else if (state_.page == Page::Didactic) {
+                createDidactic();
             }
         }
     }
@@ -769,6 +989,8 @@ private:
                 createSimulation();
             } else if (state_.page == Page::Benchmark) {
                 startBenchmark();
+            } else if (state_.page == Page::Didactic) {
+                createDidactic();
             } else {
                 refreshPatterns();
             }
@@ -814,6 +1036,28 @@ private:
         state_.simulation = std::make_unique<SimulationSession>(*state_.input, state_.engine);
         state_.effectiveThreads = 0;
         state_.page = Page::Simulation;
+    }
+
+    void startDidactic() {
+        if (!state_.input) {
+            state_.returnAfterCatalog = Page::Didactic;
+            refreshPatterns();
+            state_.page = Page::Patterns;
+            return;
+        }
+        createDidactic();
+    }
+
+    void createDidactic() {
+        if (!state_.input) return;
+        // El controlador prepara una generacion instrumentada en un
+        // worker (no bloquea la UI). Mientras prepara, la pantalla
+        // muestra "Preparando generacion...".
+        state_.didactic = std::make_unique<DidacticController>();
+        state_.didactic->setInitialInput(*state_.input);
+        state_.didactic->startPreparation(*state_.input, state_.engine,
+                                         state_.requestedThreads);
+        state_.page = Page::Didactic;
     }
 
     void startBenchmark() {
@@ -960,6 +1204,13 @@ private:
                     state_.simulation->toggleRunning();
                 }
                 playbackTimer_.request_stop();
+                state_.page = Page::Main;
+                break;
+            case Page::Didactic:
+                playbackTimer_.request_stop();
+                if (state_.didactic) {
+                    state_.didactic->pause();
+                }
                 state_.page = Page::Main;
                 break;
         }
@@ -1209,6 +1460,232 @@ private:
             ftxui::vbox(std::move(reportRows)));
     }
 
+    // Render del modo didactico. Esta vista NO recalcula reglas de
+    // Conway; solo muestra la StepTrace capturada por el worker y
+    // la revelacion progresiva basada en el reloj de reproduccion.
+    Element renderDidactic(std::size_t width, std::size_t height, bool compact) {
+        if (!state_.didactic) {
+            return panel("VISUALIZACIÓN DIDÁCTICA",
+                ftxui::text("No hay un controlador activo."));
+        }
+        const DidacticFrame frame = state_.didactic->snapshot();
+
+        if (frame.is_preparing) {
+            return panel("VISUALIZACIÓN DIDÁCTICA",
+                ftxui::vbox({
+                    ftxui::text("Preparando generación instrumentada...") |
+                        ftxui::color(ftxui::Color::Yellow),
+                    ftxui::text("La UI permanece receptiva."),
+                }) | ftxui::flex);
+        }
+        if (!frame.has_data) {
+            return panel("VISUALIZACIÓN DIDÁCTICA",
+                ftxui::text("Sin datos. Pulsa R para reiniciar."));
+        }
+        if (!frame.error_message.empty() && frame.phase == DidacticController::Phase::Error) {
+            return panel("VISUALIZACIÓN DIDÁCTICA",
+                ftxui::vbox({
+                    ftxui::text("Error en la generación instrumentada."),
+                    ftxui::text(frame.error_message),
+                }));
+        }
+
+        const std::size_t rows = visibleBoardRows(height, frame.height, compact);
+        const std::size_t panelWidth = compact
+            ? std::max<std::size_t>(1, width > 8 ? width - 8 : 1)
+            : std::max<std::size_t>(
+                  1, (width - std::min<std::size_t>(width, 10)) / 2);
+        const std::size_t columns = std::max<std::size_t>(
+            1, std::min(frame.width, panelWidth / 4));
+        const bool colors = colorsEnabled();
+
+        Element currentPanel = panel(
+            "CURRENT · generación " + std::to_string(frame.current_generation),
+            ftxui::vbox(didacticCurrentRows(frame, rows, columns, colors)));
+
+        // Panel NEXT con indicador de particion encima.
+        std::vector<Element> nextWithIndicator;
+        nextWithIndicator.push_back(partitionIndicator(frame));
+        nextWithIndicator.push_back(ftxui::text(" "));
+        for (auto& e : didacticBoardRows(frame, rows, columns, colors)) {
+            nextWithIndicator.push_back(std::move(e));
+        }
+        Element nextPanel = panel(
+            "NEXT · generación " + std::to_string(frame.next_generation) +
+                (frame.fully_revealed
+                    ? "  ·  REPRODUCCIÓN COMPLETA"
+                    : (frame.playing ? "  ·  REPRODUCIENDO" : "  ·  EN PAUSA")),
+            ftxui::vbox(std::move(nextWithIndicator)));
+
+        Element boards = compact
+            ? ftxui::vbox({std::move(currentPanel) | ftxui::flex,
+                           ftxui::text(""),
+                           std::move(nextPanel) | ftxui::flex})
+            : ftxui::hbox({std::move(currentPanel) | ftxui::flex,
+                           ftxui::text(" "),
+                           std::move(nextPanel) | ftxui::flex});
+
+        Element workersPanel = renderDidacticWorkers(frame, colors);
+
+        std::string statusLine = "Motor: " + frame.engine_name +
+            "  ·  Generación actual " +
+            std::to_string(frame.current_generation) + " → siguiente " +
+            std::to_string(frame.next_generation);
+        if (frame.engine_name == "OpenMP") {
+            statusLine += "  ·  hilos solicitados " +
+                std::to_string(frame.requested_threads) +
+                "  ·  efectivos " + std::to_string(frame.effective_threads);
+        }
+        statusLine += "  ·  procesadores lógicos " +
+            std::to_string(frame.logical_processors);
+
+        const std::string warning =
+            "REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo";
+        std::string speedLine = "Velocidad: " + speedLabel(frame.speed) +
+            "  ·  [" + (frame.playing ? std::string("Reproduciendo")
+                                       : std::string("En pausa")) + "]";
+        if (frame.fully_revealed) {
+            speedLine += "  ·  pulse N para consolidar la siguiente generación";
+        } else if (!frame.playing) {
+            speedLine += "  ·  pulse Espacio para reproducir";
+        }
+
+        return ftxui::vbox({
+            ftxui::text(warning) | ftxui::bold | ftxui::color(ftxui::Color::Cyan),
+            heading("MODO DIDÁCTICO · " + state_.path),
+            ftxui::text(statusLine) | ftxui::dim,
+            ftxui::text(" "),
+            std::move(boards) | ftxui::flex,
+            ftxui::text(" "),
+            std::move(workersPanel) | ftxui::flex,
+            ftxui::text(speedLine) | ftxui::dim,
+        }) | ftxui::border;
+    }
+
+    // Indicador de particion horizontal sobre el panel NEXT. Una
+    // barra pequena (un caracter por fila logica) con el color del
+    // worker responsable. Se renderiza en una sola linea usando
+    // ftxui::hbox.
+    Element partitionIndicator(const DidacticFrame& frame) {
+        if (frame.workers.empty() || frame.height == 0) {
+            return ftxui::text("");
+        }
+        std::vector<Element> segments;
+        for (const auto& w : frame.workers) {
+            const int span = w.end_row - w.first_row;
+            if (span <= 0) continue;
+            const std::size_t chars = std::max<std::size_t>(1,
+                static_cast<std::size_t>(span));
+            // U+2580 '▀' (Upper Half Block) en UTF-8.
+            const std::string block(chars * 3, '\0');
+            std::string filled;
+            filled.reserve(chars * 3);
+            for (std::size_t k = 0; k < chars; ++k) {
+                filled += "\xE2\x96\x80";
+            }
+            segments.push_back(ftxui::text(filled) |
+                ftxui::bgcolor(workerColor(w.color_index)));
+            (void)block;
+        }
+        return ftxui::hbox(std::move(segments));
+    }
+
+    // Panel inferior: lista de trabajadores con su id, filas,
+    // celdas, duracion medida y barra de progreso.
+    Element renderDidacticWorkers(const DidacticFrame& frame, bool colors) {
+        std::vector<Element> rows;
+        rows.push_back(ftxui::text("TRABAJO POR HILO") | ftxui::bold);
+        if (frame.workers.empty()) {
+            rows.push_back(ftxui::text("Sin trabajadores registrados.") | ftxui::dim);
+            return ftxui::vbox(std::move(rows));
+        }
+        // Encabezado
+        rows.push_back(ftxui::hbox({
+            ftxui::text("ID") | ftxui::bold,
+            ftxui::text("  "),
+            ftxui::text("Filas") | ftxui::bold,
+            ftxui::text("          "),
+            ftxui::text("Celdas") | ftxui::bold,
+            ftxui::text("   "),
+            ftxui::text("Duración") | ftxui::bold,
+            ftxui::text("    "),
+            ftxui::text("Progreso") | ftxui::bold,
+        }) | ftxui::dim);
+        // Limite la cantidad de filas mostradas para no romper el
+        // panel en terminales pequeñas.
+        const std::size_t max_show = 8;
+        const std::size_t show = std::min(max_show, frame.workers.size());
+        for (std::size_t i = 0; i < show; ++i) {
+            const auto& w = frame.workers[i];
+            const std::string tlabel = "T" + std::to_string(w.thread_id);
+            const std::string rows_label = "[" +
+                std::to_string(w.first_row) + ", " +
+                std::to_string(w.end_row) + ")";
+            const std::string cells_label = std::to_string(w.cells_processed);
+            const double dur_ms =
+                static_cast<double>(w.loop_duration_ns) / 1.0e6;
+            char dur_buf[32];
+            std::snprintf(dur_buf, sizeof(dur_buf), "%.3f ms", dur_ms);
+            const std::string dur_label = dur_buf;
+            const int bar_chars = 20;
+            const int filled = std::max(0,
+                std::min(bar_chars,
+                    static_cast<int>(w.progress * bar_chars + 0.5)));
+            // Construimos la barra con dos bloques UTF-8: '·' (punto
+            // medio) para vacio y '█' (bloque completo) para lleno.
+            std::string bar;
+            bar.reserve(bar_chars * 3);
+            for (int j = 0; j < filled; ++j) {
+                bar += "\xE2\x96\x88";  // '█'
+            }
+            for (int j = filled; j < bar_chars; ++j) {
+                bar += "\xC2\xB7";  // '·'
+            }
+            const std::string status = w.is_sequential
+                ? std::string("T0 único")
+                : (w.progress >= 1.0
+                    ? std::string("completo")
+                    : (frame.playing
+                        ? std::string("activo")
+                        : std::string("pendiente")));
+            Element bar_el = colors
+                ? ftxui::text(bar) | ftxui::color(workerColor(w.color_index))
+                : ftxui::text(bar) | ftxui::dim;
+            rows.push_back(ftxui::hbox({
+                ftxui::text(tlabel) | ftxui::bold,
+                ftxui::text("  "),
+                ftxui::text(rows_label),
+                ftxui::text("  "),
+                ftxui::text(cells_label),
+                ftxui::text("   "),
+                ftxui::text(dur_label),
+                ftxui::text("    "),
+                std::move(bar_el),
+                ftxui::text("  "),
+                ftxui::text(status) | ftxui::dim,
+            }));
+        }
+        if (frame.workers.size() > show) {
+            rows.push_back(ftxui::text(
+                "Mostrando " + std::to_string(show) + " de " +
+                std::to_string(frame.workers.size()) +
+                " trabajadores.") | ftxui::dim);
+        }
+        return ftxui::vbox(std::move(rows));
+    }
+
+    std::string speedLabel(double s) const {
+        if (std::abs(s - 0.25) < 1e-9) return "0.25x";
+        if (std::abs(s - 0.5) < 1e-9) return "0.5x";
+        if (std::abs(s - 1.0) < 1e-9) return "1.0x";
+        if (std::abs(s - 2.0) < 1e-9) return "2.0x";
+        if (std::abs(s - 4.0) < 1e-9) return "4.0x";
+        if (std::abs(s - 8.0) < 1e-9) return "8.0x";
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(2) << s << "x";
+        return out.str();
+    }
+
     std::string footerText() const {
         switch (state_.page) {
             case Page::Main: return "↑↓ navegar · Enter seleccionar · C patrones · 0 salir";
@@ -1218,7 +1695,8 @@ private:
             case Page::PathInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
-            case Page::Benchmark: return "Esc volver · resultados comparan estados equivalentes";
+            case Page::Benchmark: return "Espacio/Esc volver · resultados comparan estados equivalentes";
+            case Page::Didactic: return "Espacio reproducir · N siguiente · R reiniciar · + más rápido · - más lento · Esc menú";
         }
         return {};
     }
@@ -1253,6 +1731,7 @@ private:
     ftxui::Component threadInput_;
     ftxui::Component simulationView_ = ftxui::Renderer([] { return ftxui::text(""); });
     ftxui::Component benchmarkView_ = ftxui::Renderer([] { return ftxui::text(""); });
+    ftxui::Component didacticView_ = ftxui::Renderer([] { return ftxui::text(""); });
 };
 
 } // namespace

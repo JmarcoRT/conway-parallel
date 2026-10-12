@@ -39,6 +39,7 @@ add_executable(conway
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
     src/app/pattern_preview.cpp
+    src/app/didactic_session.cpp
     src/app/ftxui_app.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
@@ -233,6 +234,24 @@ target_include_directories(step_trace_tests PRIVATE include)
 target_link_libraries(step_trace_tests PRIVATE OpenMP::OpenMP_CXX)
 add_test(NAME step_trace
     COMMAND step_trace_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+# Tests del controlador de visualizacion didactica. Cubre equivalencia
+# con el motor, reproduccion, play/pause, velocidad, cobertura y
+# navegacion entre generaciones. No usa FTXUI.
+add_executable(didactic_session_tests
+    tests/didactic_session_tests.cpp
+    src/app/didactic_session.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(didactic_session_tests PRIVATE include)
+target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX)
+add_test(NAME didactic_session
+    COMMAND didactic_session_tests "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 endif()
 

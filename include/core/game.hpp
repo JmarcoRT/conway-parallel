@@ -28,6 +28,14 @@ class Game {
 public:
     explicit Game(const InputData& input);
 
+    // Variante que fija la generacion inicial a `start_generation`.
+    // Util para construir un Game que representa el estado de la
+    // generacion N sin tener que ejecutar N pasos desde gen 0. El
+    // contenido de las celdas se toma de `input`; el contador de
+    // generacion y el contador de celdas vivas se inicializan
+    // coherentemente con `start_generation`.
+    Game(const InputData& input, std::size_t start_generation);
+
     std::size_t width() const noexcept;
     std::size_t height() const noexcept;
     std::size_t generation() const noexcept;

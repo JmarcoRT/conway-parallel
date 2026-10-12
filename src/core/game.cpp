@@ -41,6 +41,13 @@ Game::Game(const InputData& input)
     }
 }
 
+Game::Game(const InputData& input, std::size_t start_generation)
+    : Game(input) {
+    // El constructor base asigna state_.generation = 0; forzamos
+    // el valor de partida. aliveCount y celdas se conservan.
+    state_.generation = start_generation;
+}
+
 std::size_t Game::width() const noexcept {
     return state_.width;
 }
