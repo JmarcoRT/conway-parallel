@@ -4,6 +4,15 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 binary="${1:-$root/build/conway}"
+# Resolver a ruta absoluta: las sesiones PTY ejecutadas con
+# `script -qfec` hacen `cd` a directorios auxiliares (catalogo de
+# patrones), por lo que una ruta relativa dejaria el binario
+# inalcanzable desde esos contextos. Si la ruta es relativa se
+# ancla al project root; el chequeo posterior validara la
+# existencia y permisos del archivo, sin fallback silencioso.
+if [[ "$binary" != /* ]]; then
+    binary="$root/$binary"
+fi
 binary_cmd=$(printf '%q' "$binary")
 work=$(mktemp -d "${TMPDIR:-/tmp}/conway-functional-app.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
