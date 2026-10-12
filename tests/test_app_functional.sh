@@ -279,6 +279,167 @@ if command -v script >/dev/null 2>&1; then
     fi
     checks=$((checks + 1))
 
+    mkdir -p "$work/catalog/patterns"
+    cp "$root"/patterns/*.txt "$work/catalog/patterns/"
+    cp "$root/patterns/blinker.txt" \
+        "$work/catalog/patterns/aaa_dynamic_test.txt"
+    printf 'not a valid pattern\n' > "$work/catalog/patterns/000-invalid.txt"
+    {
+        printf '12 20\n10000000000000000000\n'
+        for ((row = 1; row < 12; ++row)); do
+            printf '00000000000000000000\n'
+        done
+    } > "$work/catalog/patterns/large-preview.txt"
+    catalog_count=0
+    blinker_index=-1
+    large_index=-1
+    catalog_last=
+    while IFS= read -r catalog_file; do
+        catalog_name=${catalog_file%.txt}
+        catalog_last=$catalog_name
+        if [[ "$catalog_name" == "blinker" ]]; then
+            blinker_index=$catalog_count
+        fi
+        if [[ "$catalog_name" == "large-preview" ]]; then
+            large_index=$catalog_count
+        fi
+        catalog_count=$((catalog_count + 1))
+    done < <(find "$work/catalog/patterns" -maxdepth 1 -type f -name '*.txt' \
+        -printf '%f\n' | sort)
+    dynamic_status=0
+    catalog_cwd=$(printf '%q' "$work/catalog")
+    {
+        sleep 0.3
+        printf 'C'
+        sleep 0.5
+        for ((index = 0; index < blinker_index; ++index)); do
+            printf '\033[B'
+            sleep 0.12
+        done
+        sleep 0.5
+        for ((index = blinker_index; index < catalog_count - 1; ++index)); do
+            printf '\033[B'
+            sleep 0.12
+        done
+        sleep 0.4
+        for ((index = blinker_index; index < catalog_count - 1; ++index)); do
+            printf '\033[A'
+            sleep 0.12
+        done
+        sleep 0.4
+        printf '\033'
+        sleep 0.4
+        printf 'C'
+        sleep 0.5
+        printf '\r'
+        sleep 0.6
+        printf 'q'
+    } | timeout 10 script -qfec \
+        "stty rows 40 cols 120 && cd $catalog_cwd && NO_COLOR=1 $binary_cmd" /dev/null \
+        > "$work/dynamic-catalog-pty.txt" 2>&1 || dynamic_status=$?
+    strip_ansi < "$work/dynamic-catalog-pty.txt" \
+        > "$work/dynamic-catalog-pty-clean.txt"
+    check invalid_catalog_entry_shows_contextual_preview_error \
+        "Vista previa no disponible: No se puede previsualizar 000-invalid" \
+        "$work/dynamic-catalog-pty-clean.txt"
+    check dynamic_pattern_is_discovered_and_previewed \
+        "Patrón: aaa_dynamic_test" "$work/dynamic-catalog-pty-clean.txt"
+    check arrow_navigation_reaches_last_discovered_pattern \
+        "Patrón: $catalog_last" "$work/dynamic-catalog-pty-clean.txt"
+    check catalog_preview_updates_with_arrow_selection \
+        "Patrón: blinker" "$work/dynamic-catalog-pty-clean.txt"
+    check catalog_preview_has_both_real_generations \
+        "SIGUIENTE · generación 1" "$work/dynamic-catalog-pty-clean.txt"
+    check blinker_generation_one_is_horizontal \
+        "░░│▓▓│▓▓│▓▓│░░" "$work/dynamic-catalog-pty-clean.txt"
+    check browsing_catalog_does_not_load_pattern \
+        "Sin patrón cargado" "$work/dynamic-catalog-pty-clean.txt"
+    check catalog_enter_loads_selected_pattern \
+        "patterns/blinker.txt  ·  5 × 5" "$work/dynamic-catalog-pty-clean.txt"
+    check_menu_highlight catalog_selection_uses_approved_highlight \
+        "blinker" "$work/dynamic-catalog-pty.txt"
+    if ! grep -qF $'\033[2J' "$work/dynamic-catalog-pty.txt"; then
+        echo "PASS: catalog_navigation_does_not_clear_full_screen"
+    else
+        echo "FAIL: catalog_navigation_does_not_clear_full_screen"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    if [[ "$dynamic_status" -eq 0 ]]; then
+        echo "PASS: dynamic_catalog_navigation_session_exits_cleanly"
+    else
+        echo "FAIL: dynamic_catalog_navigation_session_exits_cleanly (rc=$dynamic_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
+    compact_catalog_status=0
+    {
+        sleep 0.3
+        printf 'C'
+        sleep 0.5
+        for ((index = 0; index < large_index; ++index)); do
+            printf '\033[B'
+            sleep 0.12
+        done
+        sleep 0.5
+        printf '\033'
+        sleep 0.3
+        printf 'q'
+    } | timeout 8 script -qfec \
+        "stty rows 24 cols 80 && cd $catalog_cwd && NO_COLOR=1 $binary_cmd" /dev/null \
+        > "$work/compact-catalog-pty.txt" 2>&1 || compact_catalog_status=$?
+    strip_ansi < "$work/compact-catalog-pty.txt" \
+        > "$work/compact-catalog-pty-clean.txt"
+    check compact_catalog_shows_large_pattern_dimensions \
+        "Dimensiones: 12 × 20" "$work/compact-catalog-pty-clean.txt"
+    check compact_catalog_keeps_current_and_next_visible \
+        "SIGUIENTE · generación 1" "$work/compact-catalog-pty-clean.txt"
+    check compact_catalog_indicates_preview_viewport \
+        "Viewport:" "$work/compact-catalog-pty-clean.txt"
+    if [[ "$compact_catalog_status" -eq 0 ]]; then
+        echo "PASS: compact_catalog_preview_session_exits_cleanly"
+    else
+        echo "FAIL: compact_catalog_preview_session_exits_cleanly (rc=$compact_catalog_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
+    actions_status=0
+    {
+        sleep 0.3
+        printf 'C'
+        sleep 0.4
+        printf '\033[A'
+        sleep 0.4
+        printf '\033[A'
+        sleep 0.3
+        printf '\r'
+        sleep 0.4
+        printf '\033'
+        sleep 0.3
+        printf '\033'
+        sleep 0.3
+        printf 'q'
+    } | timeout 8 script -qfec \
+        "stty rows 40 cols 120 && cd $catalog_cwd && NO_COLOR=1 $binary_cmd" /dev/null \
+        > "$work/catalog-actions-pty.txt" 2>&1 || actions_status=$?
+    strip_ansi < "$work/catalog-actions-pty.txt" \
+        > "$work/catalog-actions-pty-clean.txt"
+    check catalog_actions_are_visually_separated "ACCIONES" \
+        "$work/catalog-actions-pty-clean.txt"
+    check catalog_enter_opens_manual_route "CARGAR PATRÓN" \
+        "$work/catalog-actions-pty-clean.txt"
+    check_menu_highlight catalog_action_uses_approved_highlight \
+        "Volver" "$work/catalog-actions-pty.txt"
+    if [[ "$actions_status" -eq 0 ]]; then
+        echo "PASS: catalog_actions_keyboard_flow_exits_cleanly"
+    else
+        echo "FAIL: catalog_actions_keyboard_flow_exits_cleanly (rc=$actions_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
     navigation_status=0
     {
         sleep 0.3

@@ -5,34 +5,40 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <system_error>
 
 namespace conway::app {
 
 namespace {
 
-std::string descriptionFor(const std::string& name) {
+struct PatternMetadata {
+    std::string type;
+    std::string description;
+    std::optional<std::size_t> period;
+};
+
+PatternMetadata metadataFor(const std::string& name) {
     std::string normalized = name;
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
         [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
 
-    if (normalized.find("blinker") != std::string::npos) {
-        return "Oscilador de periodo 2";
+    if (normalized == "block") {
+            return {"Estructura estable", "Permanece sin cambios", 1};
     }
-    if (normalized.find("glider") != std::string::npos) {
-        return "Patrón móvil";
+    if (normalized == "blinker") {
+        return {"Oscilador", "Alterna entre dos fases", 2};
     }
-    if (normalized.find("pulsar") != std::string::npos) {
-        return "Oscilador de periodo largo";
+    if (normalized == "toad" || normalized == "beacon") {
+        return {"Oscilador", "Alterna entre dos fases", 2};
     }
-    if (normalized.find("toad") != std::string::npos ||
-        normalized.find("beacon") != std::string::npos) {
-        return "Oscilador";
+    if (normalized == "glider") {
+        return {"Planeador", "Se desplaza en diagonal", 4};
     }
-    if (normalized.find("block") != std::string::npos) {
-        return "Patrón estable";
+    if (normalized == "pulsar") {
+        return {"Oscilador", "Oscilador de periodo largo", 3};
     }
-    return "Patrón de Conway";
+    return {};
 }
 
 } // namespace
@@ -72,7 +78,10 @@ PatternCatalog discoverPatterns(const std::filesystem::path& directory) {
         PatternEntry entry;
         entry.name = iterator->path().stem().string();
         entry.path = (directory / iterator->path().filename()).generic_string();
-        entry.description = descriptionFor(entry.name);
+        const PatternMetadata metadata = metadataFor(entry.name);
+        entry.type = metadata.type;
+        entry.description = metadata.description;
+        entry.period = metadata.period;
         try {
             const InputData input = loadInput(entry.path);
             entry.width = input.width;

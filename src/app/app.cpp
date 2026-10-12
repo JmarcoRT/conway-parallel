@@ -363,7 +363,10 @@ bool selectPatternFromCatalog(AppState& state, std::string& message) {
         std::string label = entry.name;
         if (entry.valid()) {
             label += "  ·  " + std::to_string(entry.width) + " × " +
-                std::to_string(entry.height) + "  ·  " + entry.description;
+                std::to_string(entry.height);
+            if (!entry.description.empty()) {
+                label += "  ·  " + entry.description;
+            }
             if (entry.path == state.path) {
                 selected = index;
             }

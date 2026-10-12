@@ -3,6 +3,7 @@
 #include "app/benchmark.hpp"
 #include "app/controls.hpp"
 #include "app/pattern_catalog.hpp"
+#include "app/pattern_preview.hpp"
 #include "app/simulation.hpp"
 #include "app/thread_config.hpp"
 #include "core/engines/openmp.hpp"
@@ -67,8 +68,10 @@ struct InteractiveState {
     Page returnAfterCatalog{Page::Main};
     int mainSelection{0};
     int patternSelection{0};
+    int patternActionSelection{0};
     int engineSelection{0};
     int threadSelection{0};
+    bool patternActionsFocused{false};
     std::string pathDraft;
     std::string threadDraft;
     std::unique_ptr<SimulationSession> simulation;
@@ -333,7 +336,11 @@ public:
           output_(output),
           mainMenu_(makeMenu(mainItems_, state_.mainSelection, [this] { selectMain(); })),
           patternMenu_(makeMenu(patternItems_, state_.patternSelection,
-                                 [this] { selectPattern(); })),
+                                 [this] { selectPattern(); },
+                                 [this] { updateCatalogPreview(); })),
+          patternActionsMenu_(makeMenu(
+              patternActionItems_, state_.patternActionSelection,
+              [this] { selectPatternAction(); })),
           engineMenu_(makeMenu(engineItems_, state_.engineSelection,
                                [this] { selectEngine(); })),
           threadMenu_(makeMenu(threadItems_, state_.threadSelection,
@@ -343,6 +350,7 @@ public:
         omp_set_num_threads(state_.requestedThreads);
         Add(mainMenu_);
         Add(patternMenu_);
+        Add(patternActionsMenu_);
         Add(engineMenu_);
         Add(threadMenu_);
         Add(pathInput_);
@@ -381,7 +389,7 @@ public:
                 content = renderMain();
                 break;
             case Page::Patterns:
-                content = renderPatterns();
+                content = renderPatterns(size.columns, size.rows, compact);
                 break;
             case Page::Engines:
                 content = renderEngines();
@@ -458,6 +466,10 @@ public:
             goBack();
             return true;
         }
+        if (state_.page == Page::Patterns &&
+            handlePatternNavigationBoundary(event)) {
+            return true;
+        }
         if (event.is_character()) {
             const std::string key = event.character();
             if (handleShortcut(key)) {
@@ -525,11 +537,13 @@ private:
     static ftxui::Component makeMenu(
         std::vector<std::string>& items,
         int& selection,
-        std::function<void()> onEnter
+        std::function<void()> onEnter,
+        std::function<void()> onChange = {}
     ) {
         ftxui::MenuOption option;
         option.focused_entry = &selection;
         option.on_enter = std::move(onEnter);
+        option.on_change = std::move(onChange);
         return ftxui::Menu(&items, &selection, std::move(option));
     }
 
@@ -550,7 +564,9 @@ private:
     ftxui::Component activeComponent() const {
         switch (state_.page) {
             case Page::Main: return mainMenu_;
-            case Page::Patterns: return patternMenu_;
+            case Page::Patterns:
+                return state_.patternActionsFocused
+                    ? patternActionsMenu_ : patternMenu_;
             case Page::Engines: return engineMenu_;
             case Page::Threads: return threadMenu_;
             case Page::PathInput: return pathInput_;
@@ -562,20 +578,40 @@ private:
     }
 
     void refreshPatterns() {
+        std::string previousPath;
+        if (state_.patternSelection >= 0 &&
+            static_cast<std::size_t>(state_.patternSelection) <
+                catalog_.entries.size()) {
+            previousPath = catalog_.entries[static_cast<std::size_t>(
+                state_.patternSelection)].path;
+        }
         catalog_ = discoverPatterns("patterns");
         patternItems_.clear();
+        patternItems_.reserve(std::max<std::size_t>(1, catalog_.entries.size()));
         for (const PatternEntry& entry : catalog_.entries) {
             std::string label = entry.name;
             if (entry.valid()) {
                 label += "  ·  " + std::to_string(entry.height) + " × " +
-                    std::to_string(entry.width) + "  ·  " + entry.description;
+                    std::to_string(entry.width);
+                if (!entry.type.empty()) {
+                    label += "  ·  " + entry.type;
+                }
             } else {
                 label += "  ·  inválido: " + entry.error;
             }
             patternItems_.push_back(std::move(label));
         }
         if (patternItems_.empty()) {
+            patternItems_.push_back("No hay patrones .txt disponibles");
             state_.patternSelection = 0;
+        } else if (!previousPath.empty()) {
+            state_.patternSelection = 0;
+            for (std::size_t i = 0; i < catalog_.entries.size(); ++i) {
+                if (catalog_.entries[i].path == previousPath) {
+                    state_.patternSelection = static_cast<int>(i);
+                    break;
+                }
+            }
         } else if (state_.input) {
             for (std::size_t i = 0; i < catalog_.entries.size(); ++i) {
                 if (catalog_.entries[i].path == state_.path) {
@@ -584,9 +620,62 @@ private:
                 }
             }
         }
-        manualPatternIndex_ = static_cast<int>(patternItems_.size());
-        patternItems_.push_back("Introducir una ruta manual...");
-        patternItems_.push_back("Volver");
+        patternActionItems_ = {"Ruta manual...", "Volver"};
+        state_.patternActionSelection = 0;
+        state_.patternActionsFocused = false;
+        updateCatalogPreview();
+    }
+
+    bool handlePatternNavigationBoundary(const Event& event) {
+        if (event == Event::ArrowDown && !state_.patternActionsFocused &&
+            !patternItems_.empty() &&
+            state_.patternSelection ==
+                static_cast<int>(patternItems_.size() - 1)) {
+            state_.patternActionsFocused = true;
+            state_.patternActionSelection = 0;
+            return true;
+        }
+        if (event == Event::ArrowUp && state_.patternActionsFocused &&
+            state_.patternActionSelection == 0 && !patternItems_.empty()) {
+            state_.patternActionsFocused = false;
+            state_.patternSelection =
+                static_cast<int>(patternItems_.size() - 1);
+            updateCatalogPreview();
+            return true;
+        }
+        if (event == Event::ArrowDown && state_.patternActionsFocused &&
+            state_.patternActionSelection ==
+                static_cast<int>(patternActionItems_.size() - 1) &&
+            !patternItems_.empty()) {
+            state_.patternActionsFocused = false;
+            state_.patternSelection = 0;
+            updateCatalogPreview();
+            return true;
+        }
+        if (event == Event::ArrowUp && !state_.patternActionsFocused &&
+            state_.patternSelection == 0 && !patternItems_.empty()) {
+            state_.patternActionsFocused = true;
+            state_.patternActionSelection =
+                static_cast<int>(patternActionItems_.size() - 1);
+            return true;
+        }
+        return false;
+    }
+
+    void updateCatalogPreview() {
+        catalogPreview_ = {};
+        if (!catalog_.error.empty()) {
+            catalogPreview_.error = catalog_.error;
+            return;
+        }
+        if (catalog_.entries.empty() || state_.patternSelection < 0 ||
+            static_cast<std::size_t>(state_.patternSelection) >=
+                catalog_.entries.size()) {
+            catalogPreview_.error = "No hay un patrón seleccionado.";
+            return;
+        }
+        catalogPreview_ = buildPatternPreview(
+            catalog_.entries[static_cast<std::size_t>(state_.patternSelection)]);
     }
 
     void selectMain() {
@@ -606,15 +695,9 @@ private:
     }
 
     void selectPattern() {
-        if (state_.patternSelection == manualPatternIndex_) {
-            state_.pathDraft.clear();
-            pathReturnPage_ = Page::Patterns;
-            destinationAfterPath_ = state_.returnAfterCatalog;
-            state_.page = Page::PathInput;
-            return;
-        }
-        if (state_.patternSelection >= static_cast<int>(catalog_.entries.size())) {
-            state_.page = state_.returnAfterCatalog;
+        if (catalog_.entries.empty() || state_.patternSelection < 0 ||
+            static_cast<std::size_t>(state_.patternSelection) >=
+                catalog_.entries.size()) {
             return;
         }
         const PatternEntry& entry =
@@ -632,6 +715,17 @@ private:
                 startBenchmark();
             }
         }
+    }
+
+    void selectPatternAction() {
+        if (state_.patternActionSelection == 0) {
+            state_.pathDraft.clear();
+            pathReturnPage_ = Page::Patterns;
+            destinationAfterPath_ = state_.returnAfterCatalog;
+            state_.page = Page::PathInput;
+            return;
+        }
+        state_.page = state_.returnAfterCatalog;
     }
 
     void selectEngine() {
@@ -882,17 +976,118 @@ private:
             }));
     }
 
-    Element renderPatterns() {
-        if (!catalog_.error.empty()) {
-            return panel("CATÁLOGO DE PATRONES",
-                         ftxui::text("Error: " + catalog_.error));
+    Element renderPatterns(std::size_t width, std::size_t height, bool compact) {
+        Element listBody = ftxui::vbox({
+            ftxui::text("Archivos .txt disponibles") | ftxui::dim,
+            catalog_.error.empty()
+                ? patternMenu_->Render() | ftxui::flex
+                : ftxui::text("Error: " + catalog_.error) | ftxui::color(ftxui::Color::Red),
+            ftxui::separator(),
+            ftxui::text("ACCIONES") | ftxui::bold,
+            patternActionsMenu_->Render(),
+        });
+        Element patternList = panel("PATRONES", std::move(listBody));
+
+        std::vector<Element> details;
+        if (catalog_.error.empty() && !catalog_.entries.empty() &&
+            state_.patternSelection >= 0 &&
+            static_cast<std::size_t>(state_.patternSelection) <
+                catalog_.entries.size()) {
+            const PatternEntry& selected = catalog_.entries[
+                static_cast<std::size_t>(state_.patternSelection)];
+            details.push_back(ftxui::text("Patrón: " + selected.name));
+            if (selected.valid()) {
+                details.push_back(ftxui::text(
+                    "Dimensiones: " + std::to_string(selected.height) + " × " +
+                    std::to_string(selected.width) + "  ·  " +
+                    std::to_string(selected.aliveCells) + " vivas"));
+                if (!selected.type.empty()) {
+                    details.push_back(ftxui::text("Tipo: " + selected.type));
+                }
+                if (selected.period) {
+                    details.push_back(ftxui::text(
+                        "Período: " + std::to_string(*selected.period)));
+                }
+                if (!selected.description.empty()) {
+                    details.push_back(ftxui::text(selected.description) | ftxui::dim);
+                }
+            }
+        } else {
+            details.push_back(ftxui::text("Selecciona un archivo .txt para ver sus datos."));
         }
-        return panel("CATÁLOGO DE PATRONES",
-            ftxui::vbox({
-                ftxui::text("Selecciona un patrón; los archivos .txt se descubren al abrir esta vista."),
-                patternMenu_->Render() | ftxui::flex,
-                ftxui::text("Entrada activa: " + activePattern(state_)) | ftxui::dim,
-            }));
+
+        Element detailContent = ftxui::vbox(std::move(details));
+        if (!catalogPreview_.error.empty()) {
+            detailContent = ftxui::vbox({
+                std::move(detailContent),
+                ftxui::text("Vista previa no disponible: " + catalogPreview_.error) |
+                    ftxui::color(ftxui::Color::Red),
+            });
+        } else if (catalogPreview_.current && catalogPreview_.next) {
+            const PatternEntry& selected = catalog_.entries[
+                static_cast<std::size_t>(state_.patternSelection)];
+            const std::size_t detailWidth = width < 64
+                ? width : width - (width * 2 / 5) - 3;
+            const bool horizontalPreviews = !compact && detailWidth >= 62;
+            const std::size_t previewWidth = horizontalPreviews
+                ? (detailWidth - 5) / 2
+                : detailWidth > 4 ? detailWidth - 4 : 1;
+            const std::size_t previewRows = horizontalPreviews
+                ? (height > 18 ? std::max<std::size_t>(1, (height - 18) / 2) : 1)
+                : (height > 22 ? std::max<std::size_t>(1, (height - 22) / 4) : 1);
+            const std::size_t columns = std::max<std::size_t>(
+                1, std::min(selected.width,
+                    previewWidth > 4 ? (previewWidth - 4) / 3 : 1));
+            const std::size_t rows = std::max<std::size_t>(
+                1, std::min(selected.height, previewRows));
+            const bool colors = colorsEnabled();
+            const auto currentRows = boardRows(
+                *catalogPreview_.current, rows, columns, colors);
+            const auto nextRows = boardRows(
+                *catalogPreview_.next, rows, columns, colors);
+            const bool compactStack = !horizontalPreviews && height <= 28;
+            Element current = compactStack
+                ? ftxui::vbox({
+                      heading("ACTUAL · generación 0"),
+                      ftxui::vbox(currentRows),
+                  })
+                : panel("ACTUAL · generación 0", ftxui::vbox(currentRows));
+            Element next = compactStack
+                ? ftxui::vbox({
+                      heading("SIGUIENTE · generación 1"),
+                      ftxui::vbox(nextRows),
+                  })
+                : panel("SIGUIENTE · generación 1", ftxui::vbox(nextRows));
+            Element previews = horizontalPreviews
+                ? ftxui::hbox({std::move(current) | ftxui::flex,
+                               ftxui::text(" "),
+                               std::move(next) | ftxui::flex})
+                : ftxui::vbox({std::move(current) | ftxui::flex,
+                               std::move(next) | ftxui::flex});
+            detailContent = ftxui::vbox({
+                std::move(detailContent),
+                ftxui::separator(),
+                std::move(previews) | ftxui::flex,
+            });
+        }
+        Element detailPanel = panel("DETALLE", std::move(detailContent));
+
+        Element catalogPanels = width < 64
+            ? ftxui::vbox({
+                  std::move(patternList) | ftxui::flex,
+                  std::move(detailPanel) | ftxui::flex,
+              })
+            : ftxui::hbox({
+                  std::move(patternList) |
+                      ftxui::size(ftxui::WIDTH, ftxui::EQUAL,
+                                  static_cast<int>((width * 2) / 5)),
+                  ftxui::text(" "),
+                  std::move(detailPanel) | ftxui::flex,
+              });
+        return ftxui::vbox({
+            heading("CATÁLOGO DE PATRONES"),
+            std::move(catalogPanels) | ftxui::flex,
+        });
     }
 
     Element renderEngines() {
@@ -1033,10 +1228,11 @@ private:
     InteractiveState state_;
     std::vector<std::string> mainItems_;
     std::vector<std::string> patternItems_;
+    std::vector<std::string> patternActionItems_;
     std::vector<std::string> engineItems_;
     std::vector<std::string> threadItems_;
     PatternCatalog catalog_;
-    int manualPatternIndex_{0};
+    PatternPreview catalogPreview_;
     Page pathReturnPage_{Page::Main};
     Page destinationAfterPath_{Page::Main};
     std::optional<Game> preview_;
@@ -1050,6 +1246,7 @@ private:
     std::thread benchmarkWorker_;
     ftxui::Component mainMenu_;
     ftxui::Component patternMenu_;
+    ftxui::Component patternActionsMenu_;
     ftxui::Component engineMenu_;
     ftxui::Component threadMenu_;
     ftxui::Component pathInput_;

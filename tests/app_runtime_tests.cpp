@@ -1,5 +1,6 @@
 #include "app/benchmark.hpp"
 #include "app/pattern_catalog.hpp"
+#include "app/pattern_preview.hpp"
 #include "app/simulation.hpp"
 #include "app/thread_config.hpp"
 #include "core/game.hpp"
@@ -236,8 +237,44 @@ int main(int argc, char** argv) {
           "pattern_catalog_discovers_txt_files_and_validates_metadata");
     writePattern(temporaryDirectory / "new-pattern.txt", "1 1\n1\n");
     const auto refreshed = conway::app::discoverPatterns(temporaryDirectory);
-    check(refreshed.entries.size() == 3,
+    check(refreshed.entries.size() == 3 &&
+              refreshed.entries.back().name == "zeta" &&
+              refreshed.entries[1].type.empty() &&
+              refreshed.entries[1].description.empty() &&
+              !refreshed.entries[1].period,
           "pattern_catalog_discovers_files_added_after_initial_scan");
+    const auto previewCatalog = conway::app::discoverPatterns(
+        std::filesystem::current_path() / "patterns");
+    const auto blinkerEntry = std::find_if(
+        previewCatalog.entries.begin(), previewCatalog.entries.end(),
+        [](const auto& entry) { return entry.name == "blinker"; });
+    const bool hasBlinker = blinkerEntry != previewCatalog.entries.end();
+    check(hasBlinker && blinkerEntry->type == "Oscilador" &&
+              blinkerEntry->period == 2,
+          "pattern_catalog_uses_verified_blinker_metadata");
+    if (hasBlinker) {
+        const auto preview = conway::app::buildPatternPreview(*blinkerEntry);
+        check(preview.error.empty() && preview.current && preview.next &&
+                  preview.current->generation() == 0 &&
+                  preview.next->generation() == 1 &&
+                  conway::ui::boardLines(*preview.current) ==
+                      std::vector<std::string>{
+                          ".....", "..#..", "..#..", "..#..", "....."} &&
+                  conway::ui::boardLines(*preview.next) ==
+                      std::vector<std::string>{
+                          ".....", ".....", ".###.", ".....", "....."},
+              "catalog_preview_uses_real_blinker_generation");
+    } else {
+        check(false, "catalog_preview_uses_real_blinker_generation");
+    }
+    const auto invalidEntry = std::find_if(
+        discovered.entries.begin(), discovered.entries.end(),
+        [](const auto& entry) { return !entry.valid(); });
+    const auto invalidPreview = conway::app::buildPatternPreview(*invalidEntry);
+    check(invalidPreview.error.find("No se puede previsualizar broken") == 0 &&
+              !invalidPreview.current &&
+              !invalidPreview.next,
+          "catalog_preview_reports_invalid_pattern_without_games");
     const auto missingCatalog = conway::app::discoverPatterns(temporaryDirectory / "missing");
     check(!missingCatalog.error.empty(),
           "pattern_catalog_reports_directory_errors");

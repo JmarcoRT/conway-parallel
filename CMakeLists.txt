@@ -38,6 +38,7 @@ add_executable(conway
     src/app/simulation.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
+    src/app/pattern_preview.cpp
     src/app/ftxui_app.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
@@ -168,6 +169,7 @@ if(BUILD_TESTING)
         src/app/simulation.cpp
         src/app/thread_config.cpp
         src/app/pattern_catalog.cpp
+        src/app/pattern_preview.cpp
         src/app/benchmark.cpp
         src/ui/layout.cpp
         src/ui/simulation_layout.cpp
@@ -185,12 +187,14 @@ if(BUILD_TESTING)
     )
     set_tests_properties(app_runtime PROPERTIES
         ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME app_runtime_thread_limit
         COMMAND app_runtime_tests --thread-limit-one
     )
     set_tests_properties(app_runtime_thread_limit PROPERTIES
         ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
     add_test(NAME app_functional_smoke
