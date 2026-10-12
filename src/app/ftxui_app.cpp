@@ -425,6 +425,10 @@ public:
         return frame;
     }
 
+    ftxui::Component ActiveChild() override {
+        return activeComponent();
+    }
+
     bool OnEvent(Event event) override {
         if (event == Event::Custom) {
             const unsigned pending = pendingEvents_.exchange(0, std::memory_order_acq_rel);
@@ -443,20 +447,6 @@ public:
         if (event == Event::Escape) {
             goBack();
             return true;
-        }
-        if (isMenuPage(state_.page)) {
-            if (event == Event::ArrowUp) {
-                moveMenuSelection(-1);
-                return true;
-            }
-            if (event == Event::ArrowDown) {
-                moveMenuSelection(1);
-                return true;
-            }
-            if (event == Event::Return) {
-                selectMenuItem();
-                return true;
-            }
         }
         if (event.is_character()) {
             const std::string key = event.character();
@@ -511,68 +501,6 @@ private:
     static constexpr unsigned kPlaybackEvent = 1U;
     static constexpr unsigned kBenchmarkEvent = 2U;
 
-    static bool isMenuPage(Page page) {
-        return page == Page::Main || page == Page::Patterns ||
-            page == Page::Engines || page == Page::Threads;
-    }
-
-    int& menuSelection() {
-        switch (state_.page) {
-            case Page::Main: return state_.mainSelection;
-            case Page::Patterns: return state_.patternSelection;
-            case Page::Engines: return state_.engineSelection;
-            case Page::Threads: return state_.threadSelection;
-            case Page::PathInput:
-            case Page::ThreadInput:
-            case Page::Simulation:
-            case Page::Benchmark:
-                break;
-        }
-        return state_.mainSelection;
-    }
-
-    std::size_t menuSize() const {
-        switch (state_.page) {
-            case Page::Main: return mainItems_.size();
-            case Page::Patterns: return patternItems_.size();
-            case Page::Engines: return engineItems_.size();
-            case Page::Threads: return threadItems_.size();
-            case Page::PathInput:
-            case Page::ThreadInput:
-            case Page::Simulation:
-            case Page::Benchmark:
-                break;
-        }
-        return 0;
-    }
-
-    void moveMenuSelection(int direction) {
-        const std::size_t size = menuSize();
-        if (size == 0) {
-            return;
-        }
-        int& selection = menuSelection();
-        const auto current = static_cast<std::size_t>(std::max(0, selection));
-        const std::size_t next = direction < 0
-            ? (current + size - 1) % size
-            : (current + 1) % size;
-        selection = static_cast<int>(next);
-    }
-
-    void selectMenuItem() {
-        switch (state_.page) {
-            case Page::Main: selectMain(); break;
-            case Page::Patterns: selectPattern(); break;
-            case Page::Engines: selectEngine(); break;
-            case Page::Threads: selectThreadOption(); break;
-            case Page::PathInput:
-            case Page::ThreadInput:
-            case Page::Simulation:
-            case Page::Benchmark:
-                break;
-        }
-    }
-
     void schedulePlaybackTick() {
         playbackTimer_.request_stop();
         playbackTimer_ = std::jthread([this](std::stop_token stopToken) {
@@ -590,20 +518,7 @@ private:
         std::function<void()> onEnter
     ) {
         ftxui::MenuOption option;
-        option.entries_option.transform = [](const ftxui::EntryState& state) {
-            Element entry = ftxui::text(
-                std::string(state.active ? "> " : "  ") + state.label);
-            if (state.active) {
-                entry = entry | ftxui::bold;
-                if (colorsEnabled()) {
-                    entry = entry | ftxui::color(ftxui::Color::Cyan);
-                }
-            }
-            if (state.focused) {
-                entry = entry | ftxui::inverted;
-            }
-            return entry;
-        };
+        option.focused_entry = &selection;
         option.on_enter = std::move(onEnter);
         return ftxui::Menu(&items, &selection, std::move(option));
     }

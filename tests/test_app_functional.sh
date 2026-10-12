@@ -32,6 +32,20 @@ check() {
     fi
 }
 
+check_menu_highlight() {
+    local label="$1"
+    local option="$2"
+    local file="$3"
+    local reverse_video=$'\x1b\\[(?:[0-9]+;)*7(?:;[0-9]+)*m'
+    checks=$((checks + 1))
+    if grep -aPq "${reverse_video}> ${option}" "$file"; then
+        echo "PASS: $label"
+    else
+        echo "FAIL: $label (selected row lacks focused reverse-video styling)"
+        failures=$((failures + 1))
+    fi
+}
+
 status=0
 printf 'C\npatterns/blinker.txt\n3\nO\n2\nn\np\np\nr\nx\n3\n0\n1\n\n0\n' \
     | "$binary" > "$work/output.txt" 2>&1 || status=$?
@@ -146,6 +160,8 @@ if command -v script >/dev/null 2>&1; then
     check interactive_board_has_horizontal_grid_lines "─" "$work/pty-clean.txt"
     check interactive_board_has_crossed_cell_junctions "┼" "$work/pty-clean.txt"
     check interactive_board_has_vertical_grid_lines "│" "$work/pty-clean.txt"
+    check_menu_highlight main_menu_selection_is_visually_highlighted \
+        "Benchmark" "$work/pty.txt"
     header_writes=$(grep -ao "CONWAY PARALLEL" "$work/pty.txt" | wc -l)
     if [[ "$header_writes" -eq 1 ]]; then
         echo "PASS: unchanged_header_is_not_rewritten"
@@ -189,7 +205,27 @@ if command -v script >/dev/null 2>&1; then
     navigation_status=0
     {
         sleep 0.3
-        printf '\033[B\033[B\r'
+        printf '\033[B'
+        sleep 0.3
+        printf '\033[A'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\033[A'
+        sleep 0.3
+        printf '\033'
+        sleep 0.3
+        printf '3'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\033[A'
         sleep 0.3
         printf '\033[B'
         sleep 0.3
@@ -199,9 +235,17 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.3
         printf '\033[B'
         sleep 0.3
+        printf '\033[A'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
         printf '\r'
         sleep 0.3
         printf 'C'
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\033[A'
         sleep 0.3
         printf '\033[B'
         sleep 0.3
@@ -222,19 +266,32 @@ if command -v script >/dev/null 2>&1; then
         "NO_COLOR=1 $binary_cmd" /dev/null \
         > "$work/navigation-pty.txt" 2>&1 || navigation_status=$?
     strip_ansi < "$work/navigation-pty.txt" > "$work/navigation-pty-clean.txt"
+    check_menu_highlight main_menu_arrow_selection_is_highlighted \
+        "Seleccionar motor" "$work/navigation-pty.txt"
+    check engine_submenu_escape_keeps_current_engine \
+        "Motor actual: Secuencial" "$work/navigation-pty-clean.txt"
     check engine_submenu_arrow_selects_openmp \
         "Motor: OpenMP" "$work/navigation-pty-clean.txt"
-    check engine_submenu_highlights_arrow_selection \
-        "> OpenMP" "$work/navigation-pty-clean.txt"
+    check_menu_highlight engine_submenu_highlights_arrow_selection \
+        "OpenMP" "$work/navigation-pty.txt"
     check thread_submenu_arrow_selects_two_threads \
         "OpenMP solicitados: 2" "$work/navigation-pty-clean.txt"
-    check thread_submenu_highlights_arrow_selection \
-        "> 2 hilos" "$work/navigation-pty-clean.txt"
+    check_menu_highlight thread_submenu_highlights_arrow_selection \
+        "2 hilos" "$work/navigation-pty.txt"
     check pattern_catalog_arrow_selects_blinker \
         "patterns/blinker.txt  ·  5 × 5" "$work/navigation-pty-clean.txt"
+    check_menu_highlight pattern_catalog_highlights_arrow_selection \
+        "blinker" "$work/navigation-pty.txt"
     check submenu_returns_to_main_menu "MENÚ PRINCIPAL" "$work/navigation-pty-clean.txt"
-    check arrow_navigation_keeps_ftxui_menu_rendering "> Seleccionar motor" \
-        "$work/navigation-pty-clean.txt"
+    check enter_selects_engine_and_returns_to_main \
+        "Motor: OpenMP" "$work/navigation-pty-clean.txt"
+    if ! grep -qF $'\033[2J' "$work/navigation-pty.txt"; then
+        echo "PASS: submenu_navigation_does_not_clear_full_screen"
+    else
+        echo "FAIL: submenu_navigation_does_not_clear_full_screen"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
     check submenu_flow_runs_simulation_and_benchmark "Mediana secuencial:" \
         "$work/navigation-pty-clean.txt"
     if [[ "$navigation_status" -eq 0 ]]; then
