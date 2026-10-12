@@ -225,10 +225,17 @@ void DidacticController::storeReadyData(conway::Game pre, conway::Game post,
         phase_.store(Phase::Ready, std::memory_order_release);
     }
     // Calculamos la duracion total de reproduccion con la traza
-    // visible. total_playback_ns_ se inicializa a max(loop_duration)
-    // entre los workers activos; si todos son 0, usamos 1ns para
-    // que la reproduccion arranque inmediatamente.
-    computeTotalPlaybackNs(trace);
+    // visible. Se calcula DESPUES de mover la traza al miembro,
+    // porque la unica copia viva es la de `trace_`. Si se hiciera
+    // con la `trace` local ya movida, el vector `workers` estara
+    // vacio y `computeTotalPlaybackNs` fijaría
+    // `total_playback_ns_ = 1` (fallback por m == 0). Esto es
+    // exactamente la causa del bug: con `total_playback_ns_ = 1`
+    // y `current_playback_ns_` que se capa a 1, el flag
+    // `fully_revealed` quedaba en true (mostrando
+    // "REPRODUCCION COMPLETA") pero el progreso por worker era
+    // `min(1, 1 / loop_duration_ns) < 1`, mostrando "pendiente".
+    computeTotalPlaybackNs(*trace_);
     resetPlaybackToZero();
 }
 

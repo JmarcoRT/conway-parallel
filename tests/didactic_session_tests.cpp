@@ -522,6 +522,142 @@ int main(int argc, char** argv) {
                    "async_path_next_matches_engine");
         }
 
+        // ----------------------------------------------------------------
+        // Tier 13: Coherencia entre total_playback_ns_, fully_revealed
+        //          y el progreso por worker tras auto-pausa.
+        //
+        //          Reproduce el bug detectado en Windows Terminal donde
+        //          NEXT mostraba "REPRODUCCION COMPLETA" pero los
+        //          workers quedaban en "pendiente". La causa raiz era
+        //          que total_playback_ns_ se calculaba despues de
+        //          mover la traza al miembro trace_, lo que dejaba el
+        //          vector workers vacio y forzaba el fallback m == 0
+        //          -> total = 1. Con current capped a 1, el flag
+        //          fully_revealed quedaba en true mientras
+        //          progress = 1/loop_duration quedaban practicamente
+        //          en 0. Aqui verificamos que la traza se mide
+        //          correctamente, que todos los workers activos
+        //          quedan en progress >= 1.0 al terminar y que el
+        //          estado visual es coherente.
+        // ----------------------------------------------------------------
+        {
+            omp_set_dynamic(0);
+            struct Cfg {
+                const char* name;
+                std::size_t w;
+                std::size_t h;
+                int threads;
+            };
+            const Cfg cfgs[] = {
+                {"blinker_5x5_t2", 5, 5, 2},
+                {"blinker_5x5_t4", 5, 5, 4},
+                {"pulsar_17x17_t2", 17, 17, 2},
+                {"pulsar_17x17_t4", 17, 17, 4},
+                {"blinker_5x5_seq", 5, 5, 1},
+            };
+            for (const auto& cfg : cfgs) {
+                omp_set_num_threads(cfg.threads);
+                const InputData in = makeInput(cfg.w, cfg.h, 7000 +
+                    cfg.threads + static_cast<int>(cfg.h * 7 + cfg.w));
+                conway::app::DidacticController c;
+                const bool sequential = (cfg.threads == 1);
+                c.prepareSynchronously(in,
+                    sequential ? conway::Engine::Sequential
+                               : conway::Engine::OpenMP,
+                    cfg.threads);
+                c.waitUntilReady();
+                const auto* tr = c.stepTrace();
+                if (tr == nullptr) {
+                    report(false, "playback_total_uses_max",
+                        cfg.name);
+                    continue;
+                }
+
+                // Estado inicial: current = 0, total = max(loop_duration).
+                auto fr0 = c.snapshot();
+                std::uint64_t real_max = 0;
+                for (const auto& w : tr->workers) {
+                    if (w.loop_duration > real_max) real_max = w.loop_duration;
+                }
+                report(fr0.total_playback_ns == real_max
+                           && real_max > 0,
+                       "playback_total_equals_max_loop_duration",
+                       std::string(cfg.name) +
+                           " total=" + std::to_string(fr0.total_playback_ns) +
+                           " max=" + std::to_string(real_max));
+                report(fr0.current_playback_ns == 0,
+                       "playback_initial_current_is_zero",
+                       cfg.name);
+                report(!fr0.fully_revealed,
+                       "playback_initial_not_fully_revealed",
+                       cfg.name);
+                for (const auto& w : fr0.workers) {
+                    report(w.progress == 0.0,
+                           "playback_initial_worker_progress_zero",
+                           std::string(cfg.name) + " T" +
+                               std::to_string(w.thread_id));
+                }
+
+                // Reproducir hasta el final con pasos pequenos.
+                c.play();
+                for (int i = 0; i < 10000 && c.isPlaying(); ++i) {
+                    c.tick(std::chrono::microseconds(100));
+                }
+                auto fr = c.snapshot();
+
+                // Tras auto-pausa: current == total, fully_revealed,
+                // todos los workers con progress >= 1.0.
+                report(fr.current_playback_ns == fr.total_playback_ns,
+                       "playback_complete_current_equals_total",
+                       std::string(cfg.name) + " cur=" +
+                           std::to_string(fr.current_playback_ns) +
+                           " tot=" +
+                           std::to_string(fr.total_playback_ns));
+                report(fr.fully_revealed,
+                       "playback_complete_fully_revealed",
+                       cfg.name);
+                report(!fr.playing,
+                       "playback_complete_auto_paused",
+                       cfg.name);
+                for (const auto& w : fr.workers) {
+                    report(w.progress >= 1.0,
+                           "playback_complete_worker_progress_one",
+                           std::string(cfg.name) + " T" +
+                               std::to_string(w.thread_id) +
+                               " progress=" +
+                               std::to_string(w.progress));
+                }
+
+                // Pausa preserva el avance. Tras la reproduccion
+                // completa, el avance debe ser 1.0.
+                c.pause();
+                auto frPaused = c.snapshot();
+                for (const auto& w : frPaused.workers) {
+                    report(w.progress >= 1.0,
+                           "playback_pause_preserves_advance",
+                           std::string(cfg.name) + " T" +
+                               std::to_string(w.thread_id));
+                }
+
+                // Reset: avance vuelve a 0.
+                c.resetToInitial();
+                c.waitUntilReady();
+                auto frReset = c.snapshot();
+                report(frReset.current_playback_ns == 0,
+                       "playback_reset_current_zero",
+                       cfg.name);
+                report(!frReset.fully_revealed,
+                       "playback_reset_not_fully_revealed",
+                       cfg.name);
+                for (const auto& w : frReset.workers) {
+                    report(w.progress == 0.0,
+                           "playback_reset_worker_progress_zero",
+                           std::string(cfg.name) + " T" +
+                               std::to_string(w.thread_id));
+                }
+            }
+        }
+
         std::cout << "Resultado: " << g_passes << " PASS, " << g_failures
                   << " FAIL\n";
         return g_failures == 0 ? 0 : 1;
