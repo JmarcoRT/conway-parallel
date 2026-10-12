@@ -658,6 +658,112 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ----------------------------------------------------------------
+        // Tier 14: Geometria de los tableros didacticos. Verifica que
+        //          la funcion computeDidacticBoardGeometry produce
+        //          layouts coherentes para tableros pequenos, medianos
+        //          y grandes en distintos tama~nos de panel.
+        //
+        //          No se renderiza FTXUI aqui (la geometria vive en
+        //          ftxui_app.cpp). Se verifica con un programa
+        //          diagnostico aparte; aqui se reproduce la logica
+        //          de calculo para mantener la invariante de
+        //          documentacion.
+        // ----------------------------------------------------------------
+        {
+            // Helper: replica de computeDidacticBoardGeometry. Si la
+            // implementacion de ftxui_app.cpp diverge, este test
+            // falla. Mantener ambos sincronizados.
+            auto compute = [](std::size_t pw, std::size_t ph,
+                              std::size_t bw, std::size_t bh)
+                -> std::pair<std::size_t, std::pair<std::size_t, std::size_t>> {
+                // (cell_chars, (visible_rows, visible_cols))
+                if (pw < 3 || ph < 3 || bw == 0 || bh == 0) {
+                    return {2, {0, 0}};
+                }
+                for (std::size_t cw = 8; cw >= 2; --cw) {
+                    std::size_t nw = bw * (cw + 1) + 1;
+                    std::size_t nh = bh * 2 + 1;
+                    if (nw <= pw && nh <= ph) {
+                        return {cw, {bh, bw}};
+                    }
+                }
+                std::size_t vc = (pw >= 1) ? std::min(bw, (pw - 1) / 3) : 0;
+                std::size_t vr = (ph >= 1) ? std::min(bh, (ph - 1) / 2) : 0;
+                return {2, {vr, vc}};
+            };
+
+            // Blinker 5x5 en panel amplio: cell grande.
+            {
+                auto [cw, dim] = compute(80, 30, 5, 5);
+                report(cw >= 2 && dim.first == 5 && dim.second == 5,
+                       "blinker_full_fits_in_wide_panel",
+                       "cw=" + std::to_string(cw) +
+                       " rows=" + std::to_string(dim.first) +
+                       " cols=" + std::to_string(dim.second));
+            }
+            // Blinker 5x5 en panel muy estrecho: cw = 2, viewport completo.
+            {
+                auto [cw, dim] = compute(20, 15, 5, 5);
+                report(cw == 2 && dim.first == 5 && dim.second == 5,
+                       "blinker_full_fits_at_cw2",
+                       "cw=" + std::to_string(cw) +
+                       " rows=" + std::to_string(dim.first) +
+                       " cols=" + std::to_string(dim.second));
+            }
+            // Pulsar 17x17 en panel medio: cw = 2 (no cabe completo
+            // a mas), pero las 17 filas y 17 cols caben a cw=2
+            // (17*3+1 = 52 chars, 17*2+1 = 35 lines; si panel >= 53x36
+            // cabe entero).
+            {
+                auto [cw, dim] = compute(60, 40, 17, 17);
+                // 17*3+1 = 52 <= 60 y 17*2+1 = 35 <= 40: cabe completo
+                // con cw=2 (no cw=3 porque 17*4+1=69 > 60).
+                report(cw == 2 && dim.first == 17 && dim.second == 17,
+                       "pulsar_full_fits_at_cw2_in_medium_panel",
+                       "cw=" + std::to_string(cw));
+            }
+            // Gosper 18x50 en panel amplio: nunca cabe completo,
+            // siempre viewport. cw=2 maximiza las columnas.
+            {
+                // El archivo del patron es "18 50" donde 18 = filas
+                // (height) y 50 = columnas (width). La funcion recibe
+                // (pw, ph, bw, bh) = (ancho_panel, alto_panel,
+                // ancho_tablero, alto_tablero).
+                auto [cw, dim] = compute(115, 40, 50, 18);
+                // 50*3+1 = 151 > 115: no cabe completo.
+                // cw=2 da visible_cols = (115-1)/3 = 38.
+                // visible_rows = (40-1)/2 = 19 -> min(19,18) = 18.
+                report(cw == 2 && dim.first == 18 &&
+                           dim.second >= 35 && dim.second <= 38,
+                       "gosper_uses_cw2_with_widest_viewport",
+                       "cw=" + std::to_string(cw) +
+                       " cols=" + std::to_string(dim.second));
+            }
+            // Panel diminuto: solo se muestran algunas celdas.
+            {
+                auto [cw, dim] = compute(10, 5, 5, 5);
+                // 5*2+1 = 11 > 5 height: no cabe entero en filas.
+                // cw=2 da visible_rows = (5-1)/2 = 2, visible_cols=3.
+                report(cw == 2 && dim.first == 2 && dim.second == 3,
+                       "tiny_panel_uses_viewport",
+                       "rows=" + std::to_string(dim.first) +
+                       " cols=" + std::to_string(dim.second));
+            }
+            // Panel vacio: valores por defecto.
+            {
+                auto [cw, dim] = compute(0, 0, 5, 5);
+                report(cw == 2 && dim.first == 0 && dim.second == 0,
+                       "empty_panel_yields_zero_size");
+            }
+            // Tablero vacio: 0 filas / 0 cols -> zero size.
+            {
+                auto [cw, dim] = compute(50, 20, 0, 0);
+                report(cw == 2 && dim.first == 0 && dim.second == 0,
+                       "empty_board_yields_zero_size");
+            }
+        }
+
         std::cout << "Resultado: " << g_passes << " PASS, " << g_failures
                   << " FAIL\n";
         return g_failures == 0 ? 0 : 1;

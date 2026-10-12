@@ -51,12 +51,24 @@ using ftxui::Event;
 // definicion (didacticBoardRows, didacticCurrentRows) y se mantienen
 // en el mismo namespace anonimo.
 Element cellElement(bool alive, bool colors);
+Element cellElement(bool alive, std::size_t cell_chars, bool colors);
+Element didacticCellElement(bool alive, bool revealed,
+                             std::int8_t worker_index, bool colors);
+Element didacticCellElement(bool alive, bool revealed,
+                             std::int8_t worker_index,
+                             std::size_t cell_chars, bool colors);
 Element gridElement(std::string value, bool colors);
 std::string gridBorder(
     std::size_t columns,
     std::string_view junction,
     std::string_view left,
     std::string_view right);
+std::string gridBorder(
+    std::size_t columns,
+    std::string_view junction,
+    std::string_view left,
+    std::string_view right,
+    std::size_t cell_chars);
 std::size_t visibleBoardRows(
     std::size_t screenHeight,
     std::size_t boardHeight,
@@ -68,6 +80,34 @@ std::vector<Element> boardRows(
     bool colors);
 ftxui::Color workerColor(int index);
 class DifferentialOutputBuffer;
+
+// Geometria adaptable para los tableros de la visualizacion didactica.
+// Mantiene el tablero cuadrado (en coordenadas logicas) y elige el
+// tamano de celda mas grande que permita mostrarlo completo dentro
+// del area disponible. Si no cabe, usa cell_chars = 2 (el menor) y un
+// viewport con el mayor numero posible de filas y columnas.
+struct DidacticBoardGeometry {
+    std::size_t cell_chars = 2;
+    std::size_t visible_rows = 0;
+    std::size_t visible_cols = 0;
+    std::size_t row_offset = 0;
+    std::size_t col_offset = 0;
+    std::size_t board_chars = 0;
+    std::size_t board_lines = 0;
+    bool full_board_shown = false;
+};
+
+DidacticBoardGeometry computeDidacticBoardGeometry(
+    std::size_t panel_inner_width,
+    std::size_t panel_inner_height,
+    std::size_t board_width,
+    std::size_t board_height);
+
+Element renderDidacticBoardPanel(
+    const conway::app::DidacticFrame& frame,
+    const DidacticBoardGeometry& geom,
+    bool is_next,
+    bool colors);
 
 enum class Page {
     Main,
@@ -242,6 +282,22 @@ Element cellElement(bool alive, bool colors) {
     return ftxui::text("  ") | ftxui::bgcolor(background);
 }
 
+// Variante con ancho de celda variable. En modo color se usa
+// `cell_chars` espacios como fondo; en modo monocromo se conservan
+// los bloques de 2 chars para no romper la estetica de la
+// visualizacion normal.
+Element cellElement(bool alive, std::size_t cell_chars, bool colors) {
+    if (cell_chars < 2) cell_chars = 2;
+    if (cell_chars > 8) cell_chars = 8;
+    if (!colors) {
+        return ftxui::text(alive ? "▓▓" : "░░");
+    }
+    const auto background = alive
+        ? ftxui::Color::RGB(98, 232, 137)
+        : ftxui::Color::RGB(38, 49, 56);
+    return ftxui::text(std::string(cell_chars, ' ')) | ftxui::bgcolor(background);
+}
+
 // Color de un worker para la visualizacion didactica. Mantiene el
 // verde #62E889 para celulas vivas (no se usa aqui) y elige una
 // paleta distinguible para el resto: cada worker tiene un color
@@ -279,6 +335,28 @@ Element didacticCellElement(bool alive, bool revealed,
         return ftxui::text("  ") | ftxui::bgcolor(ftxui::Color::RGB(98, 232, 137));
     }
     return ftxui::text("  ") | ftxui::bgcolor(workerColor(worker_index));
+}
+
+// Variante con ancho de celda variable. Mismas reglas de color
+// que la version de 2 chars, pero el fondo ocupa `cell_chars`.
+Element didacticCellElement(bool alive, bool revealed,
+                             std::int8_t worker_index,
+                             std::size_t cell_chars, bool colors) {
+    if (cell_chars < 2) cell_chars = 2;
+    if (cell_chars > 8) cell_chars = 8;
+    if (!revealed) {
+        return ftxui::text(std::string(cell_chars, ' ')) |
+            ftxui::bgcolor(ftxui::Color::RGB(0x1F, 0x2A, 0x30));
+    }
+    if (!colors) {
+        return ftxui::text(alive ? "▓▓" : "░░");
+    }
+    if (alive) {
+        return ftxui::text(std::string(cell_chars, ' ')) |
+            ftxui::bgcolor(ftxui::Color::RGB(98, 232, 137));
+    }
+    return ftxui::text(std::string(cell_chars, ' ')) |
+        ftxui::bgcolor(workerColor(worker_index));
 }
 
 // Construye el tablero NEXT del panel didactico, usando la mascara
@@ -398,6 +476,161 @@ std::string gridBorder(
     }
     output += right;
     return output;
+}
+
+// Variante con ancho de celda variable: cada celda del borde se
+// rellena con `cell_chars` copias del caracter "─" (U+2580 top half
+// block no sirve: usamos la barra horizontal UTF-8 E2 94 80).
+std::string gridBorder(
+    std::size_t columns,
+    std::string_view junction,
+    std::string_view left,
+    std::string_view right,
+    std::size_t cell_chars
+) {
+    if (cell_chars < 2) cell_chars = 2;
+    if (cell_chars > 8) cell_chars = 8;
+    static const std::string kDash = "\xE2\x94\x80";  // "─" UTF-8
+    std::string dash;
+    dash.reserve(cell_chars * kDash.size());
+    for (std::size_t i = 0; i < cell_chars; ++i) {
+        dash += kDash;
+    }
+    std::string output(left);
+    for (std::size_t column = 0; column < columns; ++column) {
+        output += dash;
+        if (column + 1 < columns) {
+            output += junction;
+        }
+    }
+    output += right;
+    return output;
+}
+
+// Calculo de la geometria adaptable. Si el tablero completo cabe en
+// el area disponible con cell_chars >= 2, se elige el cell_chars
+// mas grande posible. Si no cabe, se usa cell_chars = 2 (el menor)
+// y un viewport con el mayor numero de filas/columnas que quepan.
+DidacticBoardGeometry computeDidacticBoardGeometry(
+    std::size_t panel_inner_width,
+    std::size_t panel_inner_height,
+    std::size_t board_width,
+    std::size_t board_height
+) {
+    DidacticBoardGeometry g;
+    if (panel_inner_width < 3 || panel_inner_height < 3 ||
+        board_width == 0 || board_height == 0) {
+        return g;
+    }
+    // Intentar con cell_chars de mayor a menor hasta que el tablero
+    // completo quepa.
+    for (std::size_t cw = 8; cw >= 2; --cw) {
+        const std::size_t needed_w = board_width * (cw + 1) + 1;
+        const std::size_t needed_h = board_height * 2 + 1;
+        if (needed_w <= panel_inner_width &&
+            needed_h <= panel_inner_height) {
+            g.cell_chars = cw;
+            g.visible_rows = board_height;
+            g.visible_cols = board_width;
+            g.board_chars = needed_w;
+            g.board_lines = needed_h;
+            g.full_board_shown = true;
+            return g;
+        }
+    }
+    // No cabe el tablero completo. Usar cell_chars = 2 (maxima cantidad
+    // de columnas visibles) y calcular el viewport mas grande que
+    // quepa en el area.
+    g.cell_chars = 2;
+    g.visible_cols = (panel_inner_width >= 1)
+        ? std::min(board_width, (panel_inner_width - 1) / 3)
+        : 0;
+    g.visible_rows = (panel_inner_height >= 1)
+        ? std::min(board_height, (panel_inner_height - 1) / 2)
+        : 0;
+    g.board_chars = g.visible_cols * 3 + 1;
+    g.board_lines = g.visible_rows * 2 + 1;
+    return g;
+}
+
+// Renderiza un panel (CURRENT o NEXT) aplicando la geometria. La
+// cuadrícula se centra horizontal y verticalmente dentro del area
+// disponible usando ftxui::filler. Si la geometria indica viewport
+// parcial, se anade la nota "Viewport: r/h filas, c/w columnas".
+Element renderDidacticBoardPanel(
+    const conway::app::DidacticFrame& frame,
+    const DidacticBoardGeometry& geom,
+    bool is_next,
+    bool colors
+) {
+    if (geom.visible_rows == 0 || geom.visible_cols == 0 ||
+        frame.width == 0 || frame.height == 0) {
+        return ftxui::text("Tablero sin espacio") | ftxui::dim;
+    }
+
+    const std::size_t cell = geom.cell_chars;
+    std::vector<Element> rows;
+    rows.reserve(geom.visible_rows * 2 + 3);
+
+    rows.push_back(gridElement(
+        gridBorder(geom.visible_cols, "┬", "┌", "┐", cell), colors));
+
+    for (std::size_t r = 0; r < geom.visible_rows; ++r) {
+        const std::size_t logical_r = r + geom.row_offset;
+        std::vector<Element> cells;
+        cells.reserve(geom.visible_cols * 2 + 1);
+        cells.push_back(gridElement("│", colors));
+        for (std::size_t c = 0; c < geom.visible_cols; ++c) {
+            const std::size_t logical_c = c + geom.col_offset;
+            if (logical_r >= frame.height || logical_c >= frame.width) {
+                cells.push_back(cellElement(false, cell, colors));
+            } else {
+                const std::size_t idx = logical_r * frame.width + logical_c;
+                const bool alive = is_next
+                    ? (frame.next_alive_map[idx] != 0)
+                    : (frame.current_alive_map[idx] != 0);
+                if (is_next) {
+                    const bool revealed = frame.revealed[idx] != 0;
+                    const std::int8_t wid = revealed
+                        ? frame.worker_id[idx] : std::int8_t{-1};
+                    cells.push_back(didacticCellElement(
+                        alive, revealed, wid, cell, colors));
+                } else {
+                    cells.push_back(cellElement(alive, cell, colors));
+                }
+            }
+            cells.push_back(gridElement("│", colors));
+        }
+        rows.push_back(ftxui::hbox(std::move(cells)));
+        if (r + 1 < geom.visible_rows) {
+            rows.push_back(gridElement(
+                gridBorder(geom.visible_cols, "┼", "├", "┤", cell), colors));
+        } else {
+            rows.push_back(gridElement(
+                gridBorder(geom.visible_cols, "┴", "└", "┘", cell), colors));
+        }
+    }
+
+    if (!geom.full_board_shown) {
+        rows.push_back(ftxui::text(
+            "Viewport: " + std::to_string(geom.visible_rows) + "/" +
+            std::to_string(frame.height) + " filas, " +
+            std::to_string(geom.visible_cols) + "/" +
+            std::to_string(frame.width) + " columnas") | ftxui::dim);
+    }
+
+    Element board = ftxui::vbox(std::move(rows));
+    // Centrar horizontal y verticalmente: fillers en ambos ejes
+    // absorben el espacio sobrante del panel.
+    return ftxui::vbox({
+        ftxui::filler(),
+        ftxui::hbox({
+            ftxui::filler(),
+            std::move(board),
+            ftxui::filler(),
+        }),
+        ftxui::filler(),
+    });
 }
 
 std::vector<Element> boardRows(
@@ -1490,32 +1723,71 @@ private:
                 }));
         }
 
-        const std::size_t rows = visibleBoardRows(height, frame.height, compact);
-        const std::size_t panelWidth = compact
-            ? std::max<std::size_t>(1, width > 8 ? width - 8 : 1)
-            : std::max<std::size_t>(
-                  1, (width - std::min<std::size_t>(width, 10)) / 2);
-        const std::size_t columns = std::max<std::size_t>(
-            1, std::min(frame.width, panelWidth / 4));
+        // Distribucion del espacio vertical entre boards y panel de
+        // trabajadores. El panel de trabajadores toma su tamano
+        // natural (1 titulo + 1 cabecera + N filas). Los boards toman
+        // el resto con `| ftxui::flex`, evitando asi que los dos
+        // compitan por el espacio como antes.
+        const std::size_t fixed_lines = 1 + 1 + 1 + 1 + 1 + 1 +
+            2;  // warning + heading + status + 2 spacers + speed + bordes
+        // Estimar alto del panel de trabajadores para reservar el
+        // espacio de los boards. No es exacto (depende del numero
+        // de workers), pero da una buena aproximacion.
+        const std::size_t approx_workers_lines = 1 + 1 +
+            std::min<std::size_t>(frame.workers.empty() ? 1 : frame.workers.size(), 8) + 1;
+        const std::size_t boards_height = (height > fixed_lines + approx_workers_lines)
+            ? height - fixed_lines - approx_workers_lines
+            : 4;  // minimo
+
+        // Distribucion horizontal. En modo no-compact, dos paneles
+        // lado a lado; en compact, uno encima del otro.
+        std::size_t panel_outer_width;
+        if (compact) {
+            panel_outer_width = (width > 2) ? width - 2 : 0;
+        } else {
+            // 1 char separador entre paneles
+            panel_outer_width = (width > 3) ? (width - 3) / 2 : 0;
+        }
+        const std::size_t panel_outer_height = (boards_height > 2)
+            ? boards_height - 2 : 0;  // menos bordes del panel
+        // Interior del panel: menos titulo + separador (2 lineas).
+        const std::size_t panel_inner_width = (panel_outer_width > 2)
+            ? panel_outer_width - 2 : 0;
+        const std::size_t panel_inner_height = (panel_outer_height > 2)
+            ? panel_outer_height - 2 : 0;
+
+        // Geometria adaptable: cell_chars optimo + viewport.
+        const DidacticBoardGeometry geom = computeDidacticBoardGeometry(
+            panel_inner_width, panel_inner_height,
+            frame.width, frame.height);
         const bool colors = colorsEnabled();
+
+        // Construir los dos paneles con la misma geometria. CURRENT y
+        // NEXT siempre usan la misma escala para que se vean
+        // identicos.
+        Element currentBody = renderDidacticBoardPanel(
+            frame, geom, /*is_next=*/false, colors);
+
+        // NEXT incluye el indicador de particion encima del tablero.
+        // Se anade como una linea extra antes del cuerpo.
+        Element partition = partitionIndicator(frame);
+        Element nextBoard = renderDidacticBoardPanel(
+            frame, geom, /*is_next=*/true, colors);
+        Element nextBody = ftxui::vbox({
+            std::move(partition),
+            ftxui::text(" "),
+            std::move(nextBoard),
+        });
 
         Element currentPanel = panel(
             "CURRENT · generación " + std::to_string(frame.current_generation),
-            ftxui::vbox(didacticCurrentRows(frame, rows, columns, colors)));
-
-        // Panel NEXT con indicador de particion encima.
-        std::vector<Element> nextWithIndicator;
-        nextWithIndicator.push_back(partitionIndicator(frame));
-        nextWithIndicator.push_back(ftxui::text(" "));
-        for (auto& e : didacticBoardRows(frame, rows, columns, colors)) {
-            nextWithIndicator.push_back(std::move(e));
-        }
+            std::move(currentBody));
         Element nextPanel = panel(
             "NEXT · generación " + std::to_string(frame.next_generation) +
                 (frame.fully_revealed
                     ? "  ·  REPRODUCCIÓN COMPLETA"
                     : (frame.playing ? "  ·  REPRODUCIENDO" : "  ·  EN PAUSA")),
-            ftxui::vbox(std::move(nextWithIndicator)));
+            std::move(nextBody));
 
         Element boards = compact
             ? ftxui::vbox({std::move(currentPanel) | ftxui::flex,
@@ -1525,6 +1797,8 @@ private:
                            ftxui::text(" "),
                            std::move(nextPanel) | ftxui::flex});
 
+        // Panel de trabajadores: sin flex, toma su tamano natural.
+        // Asi no compite con los boards por el espacio vertical.
         Element workersPanel = renderDidacticWorkers(frame, colors);
 
         std::string statusLine = "Motor: " + frame.engine_name +
@@ -1557,7 +1831,7 @@ private:
             ftxui::text(" "),
             std::move(boards) | ftxui::flex,
             ftxui::text(" "),
-            std::move(workersPanel) | ftxui::flex,
+            std::move(workersPanel),
             ftxui::text(speedLine) | ftxui::dim,
         }) | ftxui::border;
     }
