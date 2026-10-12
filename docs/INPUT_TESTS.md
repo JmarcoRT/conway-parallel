@@ -1,40 +1,106 @@
-# Semana 5 — Patrones y pruebas funcionales de entrada
+# Formato de entrada, patrones y demos visuales
 
-## Alcance y formato existente
+Base revisada: rama `develop`, commit `49eedc6`.
 
-Base: `origin/develop`, commit `adcee7b`. Se usa `loadInput(const std::string&)`
-y `InputData` tal como están implementados, sin modificar interfaces ni el lector.
+Este documento describe el lector y las entradas que existen en esa base. No
+define un formato nuevo ni cambia las interfaces `loadInput(const std::string&)`
+y `InputData`.
 
-La primera pareja de valores representa **alto ancho**, en ese orden. Después
-aparecen `alto` filas de `ancho` caracteres binarios. No se incluyen halos.
-El vector devuelto contiene las células por filas, de izquierda a derecha.
+## Formato `.txt` actual
 
-El lector usa extracción por espacios en blanco: admite LF, CRLF, espacios al
-final y ausencia de salto final. No comprueba límites de líneas físicas; aquí
-se presentan los ejemplos con una fila lógica por línea. No admite espacios
-entre células de una misma fila, comentarios ni contenido adicional.
+El archivo contiene dos dimensiones y luego las células:
 
-`main` carga únicamente `patterns/test.txt` relativo al directorio de ejecución.
-Todavía no hay selección interactiva de archivo ni gestión de entrada activa.
-Las pruebas de cambio de archivo verifican llamadas sucesivas al lector y
-asignación a una variable del test; **no prueban un menú existente**.
+1. La primera pareja de números es **alto ancho**, en ese orden.
+2. Siguen exactamente `alto` tokens de fila; cada token debe tener `ancho`
+   caracteres.
+3. Cada carácter es `1` para una célula viva o `0` para una célula muerta.
 
-## Ejemplos válidos
+Las dimensiones describen el tablero lógico: `alto` filas por `ancho`
+columnas. El archivo no incluye el halo que usa la representación interna. Las
+células se guardan por filas, de izquierda a derecha.
 
-| Archivo | Alto × ancho | Vivas | Comprobación |
+El lector separa tokens usando espacios en blanco. Acepta finales de línea LF o
+CRLF, espacios en blanco al final y archivos sin salto de línea final. No exige
+que cada token de fila ocupe una línea física separada; en los ejemplos se usa
+una fila por línea para facilitar la lectura. Rechaza filas de ancho incorrecto,
+caracteres distintos de `0` y `1`, y cualquier token adicional después del
+tablero. No hay sintaxis para comentarios ni espacios entre células de una fila.
+
+### Ejemplo mínimo válido
+
+Este archivo representa un tablero de alto 2 y ancho 3, con tres células vivas:
+
+```text
+2 3
+010
+101
+```
+
+Al iniciar, la aplicación integrada no tiene una entrada activa. Se puede
+cargar una ruta con la opción `C` del menú o al entrar a Visualización sin
+haber cargado un patrón. Las rutas como `patterns/blinker.txt` se resuelven
+desde el directorio actual.
+
+## Patrones disponibles y momentos para la demo
+
+Las dimensiones de esta tabla se muestran como **alto × ancho**, igual que en
+la primera línea de cada archivo.
+
+| Archivo | Alto × ancho | Vivas iniciales | Momento y resultado esperado |
 |---|---|---|---|
-| `patterns/block.txt` | 4 × 4 | 4 | Carga exacta y estabilidad después de un paso |
-| `patterns/blinker.txt` | 5 × 5 | 3 | Vertical → horizontal → vertical en dos pasos |
-| `patterns/glider.txt` | 6 × 7 | 5 | Carga rectangular; desplazamiento una fila y una columna tras cuatro pasos |
-| `patterns/test.txt` | 5 × 5 | 3 | Se conserva el Blinker original |
-| `tests/fixtures/input/valid/single_dead.txt` | 1 × 1 | 0 | Tamaño mínimo con célula muerta |
-| `tests/fixtures/input/valid/single_alive.txt` | 1 × 1 | 1 | Tamaño mínimo con célula viva |
-| `tests/fixtures/input/valid/rectangle.txt` | 2 × 4 | 4 | Orden de dimensiones y células: `0101`, `1010` |
+| `patterns/blinker.txt` | 5 × 5 | 3 | Generaciones 0–2: vertical, horizontal y vuelve a vertical |
+| `patterns/block.txt` | 4 × 4 | 4 | Generaciones 0–1: el bloque permanece estable |
+| `patterns/glider.txt` | 6 × 7 | 5 | Generaciones 0–4: se desplaza una fila hacia abajo y una columna a la derecha |
+| `patterns/toad.txt` | 6 × 6 | 6 | Generaciones 0–2: cambia de fase y vuelve al estado inicial |
+| `patterns/beacon.txt` | 6 × 6 | 8 | Generaciones 0–2: alterna entre 8 y 6 células vivas y vuelve |
+| `patterns/pulsar.txt` | 17 × 17 | 48 | Generaciones 0–3: población 48 → 56 → 72 → 48; vuelve al estado inicial |
+| `patterns/gosper_glider_gun.txt` | 18 × 50 | 36 | Generación 30: emite un planeador; la prueba registra 41 células vivas |
+| `patterns/test.txt` | 5 × 5 | 3 | Entrada de prueba que conserva el Blinker |
 
-En cada carga se comprueban las dimensiones, todas las células y su orden.
-Después se construye `Game` y se comprueban generación cero, estado y conteo.
-Los estados esperados de los patrones están escritos explícitamente en los
-tests; no se calculan mediante otra copia del algoritmo del motor.
+Las fixtures `single_dead.txt`, `single_alive.txt` y `rectangle.txt` de
+`tests/fixtures/input/valid/` cubren dimensiones pequeñas y rectangulares.
+
+Para una presentación breve, conviene empezar por Blinker, Block y Glider:
+cambian poco entre generaciones y el resultado se reconoce con facilidad.
+Pulsar y Gosper son opciones para una vista más amplia o una demostración larga.
+Las pruebas existentes comprueban los estados esperados en
+`tests/input_tests.cpp` y `tests/conway_correctness_tests.cpp`; no hace falta
+añadir tests para reutilizar estos casos en la demo.
+
+## Cargar y ejecutar una demo
+
+Desde la raíz del repositorio, configura y compila la aplicación y la demo
+textual:
+
+```bash
+cmake -B build -S .
+cmake --build build --target conway conway_view_demo
+```
+
+La aplicación integrada inicia sin una entrada activa. Ejecuta:
+
+```bash
+./build/conway
+```
+
+En el menú, elige `C` y escribe, por ejemplo, `patterns/blinker.txt`; luego
+elige `2` para Visualización. También puedes elegir Visualización primero y
+la aplicación pedirá una ruta si aún no hay una entrada cargada. Ejecuta desde
+la raíz para que las rutas `patterns/...` se resuelvan correctamente.
+
+La pantalla muestra `CURRENT` y `NEXT` calculado desde el estado real del
+motor. Dentro de la simulación, `N` avanza una generación, Espacio o `P`
+inician/pausan la reproducción, `R` reinicia y `X` o `Q` vuelve al menú.
+
+Para una ejecución corta que imprime tableros y progreso en texto:
+
+```bash
+./build/conway_view_demo patterns/blinker.txt 2
+```
+
+Muestra las generaciones 0, 1 y 2 junto con `NEXT` para cada una. La salida
+registrada de la demo textual y un extracto de la aplicación integrada están en
+[`evidencias/blinker_demo.txt`](../evidencias/blinker_demo.txt).
 
 ## Cómo reproducir
 
@@ -52,12 +118,14 @@ real. Devuelve cero solamente si esas comprobaciones pasan. Usa un directorio
 temporal propio que elimina al finalizar; no reemplaza patrones del repositorio.
 Puede invocarse desde otro directorio usando la ruta al script.
 
-Para ejecutar únicamente la suite C++ o investigar sus fallos:
+Para ejecutar únicamente la suite C++:
 
 ```bash
 mkdir -p build
-g++ -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Iinclude \
-    tests/input_tests.cpp src/input/input.cpp src/core/game.cpp -o build/input_tests
+g++ -std=c++20 -fopenmp -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Iinclude \
+    tests/input_tests.cpp src/input/input.cpp src/core/game.cpp \
+    src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp \
+    -o build/input_tests
 ./build/input_tests "$PWD"
 ```
 
@@ -123,23 +191,23 @@ con bytes explícitos para evitar alteraciones por el editor o la configuración
 | `failed_change_missing.txt` | La misma secuencia con una ruta inexistente | Error de apertura, conservación de Block y recuperación posterior |
 | `glider_moves_after_4_steps` | Cargar Glider, evolucionar un juego y crear otro desde la misma entrada | La entrada original conserva su estado y puede reutilizarse |
 
-La conservación tras un fallo corresponde a `active = loadInput(path)`: si el
-lado derecho lanza una excepción, no se realiza la asignación. La futura aplicación
-deberá decidir cómo mostrar el error y gestionar su entrada activa.
+En la aplicación integrada, un cambio de entrada fallido muestra el error y
+conserva la entrada anterior. Esto se implementa en `src/app/app.cpp`; las
+pruebas de asignación sucesiva también cubren la reutilización de `InputData`.
 
 ## Programa completo
 
-El script coloca una copia de entrada en `patterns/test.txt` dentro del directorio
-temporal y ejecuta el `main` real desde allí:
+El script `tests/run_input_tests.sh` compila la aplicación integrada en un
+directorio temporal y comprueba la selección de entrada mediante el menú:
 
 | Caso | Resultado esperado |
 |---|---|
-| `executable_valid_block` | Salida 0; generaciones 0, 1 y 2 con el Block intacto; stderr vacío |
-| `executable_invalid_file` | Salida 1; stdout vacío; `Error: El tablero solo puede contener 0 y 1.` |
-| `executable_missing_file` | Salida 1; stdout vacío; `Error: No se pudo abrir el archivo: patterns/test.txt` |
+| `executable_loads_valid_pattern` | Se carga Block; el menú muestra la ruta activa y dimensiones 4 × 4 |
+| `executable_invalid_pattern` | El menú presenta el diagnóstico por una célula no binaria |
+| `executable_missing_file` | El menú presenta el diagnóstico de ruta inexistente |
 
-La salida se compara completa. Las ejecuciones del programa son procesos
-separados y no representan cambio interactivo durante una sesión.
+Estas comprobaciones cubren la carga y los errores de entrada. La evolución
+visual se reproduce aparte con los comandos descritos en la sección anterior.
 
 ## Regresiones pendientes de dimensiones
 
@@ -171,10 +239,13 @@ la implementación del lector en esta entrega.
 
 ## Trazabilidad
 
-Fuentes utilizadas: `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRIBUTING.md`,
-`src/input/input.cpp`, `include/input/input.hpp`, `src/core/game.cpp`,
-`src/main.cpp` y `patterns/test.txt` de la base indicada. Para preparar los patrones
-y las pruebas no se consultaron fuentes externas ni se agregaron bibliotecas de pruebas.
+Fuentes revisadas para esta actualización: `README.md`,
+`docs/ARCHITECTURE.md`, `docs/CONTRIBUTING.md`, `src/input/input.cpp`,
+`include/input/input.hpp`, `src/app/app.cpp`, `src/ui/demo_view.cpp`,
+`tests/input_tests.cpp`, `tests/conway_correctness_tests.cpp` y los archivos
+de `patterns/` en `develop` (`49eedc6`). No se consultaron fuentes externas
+ni se agregaron bibliotecas. Las referencias de instalación Fedora que siguen
+pertenecen a la documentación previa.
 
 Referencias para la instalación de herramientas en Fedora:
 [CMake en Fedora](https://developer.fedoraproject.org/tech/languages/c/cmake.html),

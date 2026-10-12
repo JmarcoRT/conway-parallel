@@ -9,12 +9,14 @@ Simulador del **Juego de la Vida de Conway** desarrollado en C++ para estudiar y
 
 El proyecto busca comprobar que las implementaciones paralelas y distribuidas produzcan los mismos resultados que la versión secuencial, y analizar su rendimiento mediante métricas como tiempo de ejecución, speedup y eficiencia.
 
-Además, el simulador contará con:
+La aplicación permite:
 
 - carga de tableros desde archivos `.txt`;
-- modo de visualización de la evolución del tablero;
-- visualización del trabajo realizado por threads y procesos;
-- modo benchmark sin renderizado para realizar mediciones comparables.
+- visualización interactiva de la evolución del tablero;
+- benchmark sin renderizado para comparar Secuencial y OpenMP.
+
+La visualización detallada del trabajo de threads y procesos está prevista para
+cuando esos motores se integren en la aplicación.
 
 ## Tecnologías
 
@@ -44,8 +46,11 @@ cmake -B build -S .
 # Compilar todos los objetivos
 cmake --build build
 
-# Ejecutar la demostración de la interfaz de terminal (Menú Principal y Layout Base)
-./build/conway_ui_demo
+# Ejecutar la aplicación integrada
+./build/conway
+
+# Ejecutar una demo breve de CURRENT/NEXT con Blinker
+./build/conway_view_demo patterns/blinker.txt 2
 ```
 
 > **Nota:** La interfaz requiere una terminal con soporte para secuencias de colores ANSI y UTF-8 (ej. WSL, Linux/macOS Terminal, Windows Terminal moderno).
@@ -63,6 +68,7 @@ conway-parallel/
 
 - La arquitectura del sistema está definida en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - La documentación del módulo de UI y Layout Base está en [`docs/UI.md`](docs/UI.md).
+- El formato de entrada y los patrones de demo están en [`docs/INPUT_TESTS.md`](docs/INPUT_TESTS.md).
 - Las reglas para contribuir al proyecto están en [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 
 ## Estado
