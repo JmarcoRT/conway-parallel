@@ -9,11 +9,15 @@ Simulador del **Juego de la Vida de Conway** desarrollado en C++ para estudiar y
 
 El proyecto busca comprobar que las implementaciones paralelas y distribuidas produzcan los mismos resultados que la versión secuencial, y analizar su rendimiento mediante métricas como tiempo de ejecución, speedup y eficiencia.
 
-La aplicación interactiva incluye:
+La aplicación interactiva ofrece:
 
+- carga de tableros desde archivos `.txt`;
 - catálogo dinámico de patrones `.txt` en `patterns/`, además de carga manual;
-- visualización de CURRENT/NEXT con avance, pausa, reinicio y selección de motor;
-- benchmark Secuencial/OpenMP con medianas, speedup, eficiencia y equivalencia.
+- visualización adaptativa de CURRENT/NEXT con avance, pausa, reinicio y selección persistente de motor;
+- configuración OpenMP por sesión y benchmark sin renderizado entre Secuencial/OpenMP, con medianas, speedup, eficiencia válida y verificación de equivalencia.
+
+La visualización detallada del trabajo de threads y procesos está prevista para
+cuando esos motores se integren en la aplicación.
 
 ## Tecnologías
 
@@ -43,14 +47,14 @@ cmake -B build -S .
 # Compilar todos los objetivos
 cmake --build build
 
-# Ejecutar la demostración de la interfaz de terminal (Menú Principal y Layout Base)
-./build/conway_ui_demo
-
 # Ejecutar la aplicación interactiva
 ./build/conway
+
+# Ejecutar una demo breve de CURRENT/NEXT con Blinker
+./build/conway_view_demo patterns/blinker.txt 2
 ```
 
-> **Nota:** En una TTY, la aplicación usa la pantalla alternativa y restaura la pantalla y el modo de terminal al salir. El layout se adapta al tamaño reportado por Linux/WSL. Las celdas usan bloques UTF-8; los colores ANSI de fondo se activan en terminales compatibles y `NO_COLOR=1` los desactiva.
+> **Nota:** En una TTY, la aplicación usa la pantalla alternativa y restaura la pantalla y el modo de terminal al salir. El layout se adapta al tamaño reportado por Linux/WSL. Las celdas usan bloques UTF-8; los colores ANSI de fondo se activan en terminales compatibles y `NO_COLOR=1` los desactiva. Se requiere una terminal con soporte UTF-8; ANSI solo se usa para color y control de pantalla.
 
 ## Estructura actual
 
@@ -65,6 +69,7 @@ conway-parallel/
 
 - La arquitectura del sistema está definida en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - La documentación del módulo de UI y Layout Base está en [`docs/UI.md`](docs/UI.md).
+- El formato de entrada y los patrones de demo están en [`docs/INPUT_TESTS.md`](docs/INPUT_TESTS.md).
 - Las reglas para contribuir al proyecto están en [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 
 ## Estado
