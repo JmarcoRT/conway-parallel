@@ -207,8 +207,17 @@ Element cellElement(bool alive, bool colors) {
     if (!colors) {
         return ftxui::text(alive ? "▓▓" : "░░");
     }
-    return ftxui::text("  ") |
-        ftxui::bgcolor(alive ? ftxui::Color::Green : ftxui::Color::GrayDark);
+    const auto background = alive
+        ? ftxui::Color::RGB(98, 232, 137)
+        : ftxui::Color::RGB(38, 49, 56);
+    return ftxui::text("  ") | ftxui::bgcolor(background);
+}
+
+Element gridElement(std::string value, bool colors) {
+    Element output = ftxui::text(std::move(value));
+    return colors
+        ? output | ftxui::color(ftxui::Color::RGB(88, 103, 111))
+        : output;
 }
 
 std::string gridBorder(
@@ -241,23 +250,23 @@ std::vector<Element> boardRows(
         return output;
     }
     output.reserve(visibleRows * 2 + 3);
-    output.push_back(ftxui::text(
-        gridBorder(visibleColumns, "┬", "┌", "┐")));
+    output.push_back(gridElement(
+        gridBorder(visibleColumns, "┬", "┌", "┐"), colors));
     for (std::size_t row = 0; row < visibleRows; ++row) {
         std::vector<Element> cells;
         cells.reserve(visibleColumns * 2 + 1);
-        cells.push_back(ftxui::text("│"));
+        cells.push_back(gridElement("│", colors));
         for (std::size_t column = 0; column < visibleColumns; ++column) {
             cells.push_back(cellElement(game.isAlive(row, column), colors));
-            cells.push_back(ftxui::text("│"));
+            cells.push_back(gridElement("│", colors));
         }
         output.push_back(ftxui::hbox(std::move(cells)));
         if (row + 1 < visibleRows) {
-            output.push_back(ftxui::text(
-                gridBorder(visibleColumns, "┼", "├", "┤")));
+            output.push_back(gridElement(
+                gridBorder(visibleColumns, "┼", "├", "┤"), colors));
         } else {
-            output.push_back(ftxui::text(
-                gridBorder(visibleColumns, "┴", "└", "┘")));
+            output.push_back(gridElement(
+                gridBorder(visibleColumns, "┴", "└", "┘"), colors));
         }
     }
     if (visibleRows < game.height() || visibleColumns < game.width()) {

@@ -202,6 +202,83 @@ if command -v script >/dev/null 2>&1; then
     fi
     checks=$((checks + 1))
 
+    color_status=0
+    {
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.4
+        printf '\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.5
+        printf 'q'
+        sleep 0.2
+        printf '0'
+    } | timeout 8 script -qfec \
+        "TERM=xterm-256color COLORTERM=truecolor $binary_cmd" /dev/null \
+        > "$work/color-pty.txt" 2>&1 || color_status=$?
+    if grep -aPq '\x1b\[[0-9;]*48;2;98;232;137m {2}' "$work/color-pty.txt" &&
+        [[ "$(grep -aoP '\x1b\[[0-9;]*48;2;98;232;137m {2}' \
+            "$work/color-pty.txt" | wc -l)" -ge 2 ]]; then
+        echo "PASS: current_and_next_cells_share_full_rgb_fill"
+    else
+        echo "FAIL: current_and_next_cells_share_full_rgb_fill"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    if grep -aPq '\x1b\[[0-9;]*48;2;38;49;56m {2}' "$work/color-pty.txt"; then
+        echo "PASS: dead_cells_use_uniform_muted_fill"
+    else
+        echo "FAIL: dead_cells_use_uniform_muted_fill"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    if grep -aPq '\x1b\[[0-9;]*38;2;88;103;111m' "$work/color-pty.txt"; then
+        echo "PASS: colored_grid_uses_muted_rgb_lines"
+    else
+        echo "FAIL: colored_grid_uses_muted_rgb_lines"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+    if [[ "$color_status" -eq 0 ]]; then
+        echo "PASS: colored_simulation_session_exits_cleanly"
+    else
+        echo "FAIL: colored_simulation_session_exits_cleanly (rc=$color_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
+    large_status=0
+    {
+        sleep 0.3
+        printf '\033[B'
+        sleep 0.2
+        printf '\r'
+        sleep 0.3
+        printf '\033[B\033[B\033[B\033[B'
+        sleep 0.3
+        printf '\r'
+        sleep 0.5
+        printf 'q'
+        sleep 0.2
+        printf '0'
+    } | timeout 8 script -qfec \
+        "TERM=xterm-256color COLORTERM=truecolor $binary_cmd" /dev/null \
+        > "$work/large-pty.txt" 2>&1 || large_status=$?
+    strip_ansi < "$work/large-pty.txt" > "$work/large-pty-clean.txt"
+    check large_pattern_keeps_dimensions_visible "50 × 18" \
+        "$work/large-pty-clean.txt"
+    check large_pattern_uses_viewport "Viewport:" "$work/large-pty-clean.txt"
+    if [[ "$large_status" -eq 0 ]]; then
+        echo "PASS: large_pattern_simulation_session_exits_cleanly"
+    else
+        echo "FAIL: large_pattern_simulation_session_exits_cleanly (rc=$large_status)"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
+
     navigation_status=0
     {
         sleep 0.3
