@@ -152,7 +152,8 @@ private:
             }
             output += "\x1b[" + std::to_string(row + 1) + ";1H";
             output += frameRows_[row];
-            output += "\x1b[0m\x1b[K";
+            // Rows span the terminal width; EL here can erase the last cell.
+            output += "\x1b[0m";
         }
         if (previousRows_.empty()) {
             output += "\x1b[?25l";
@@ -954,8 +955,10 @@ private:
             ftxui::vbox(boardRows(*preview_, rows, columns, colors)));
         Element boards = compact
             ? ftxui::vbox({std::move(current) | ftxui::flex,
+                           ftxui::text(""),
                            std::move(next) | ftxui::flex})
             : ftxui::hbox({std::move(current) | ftxui::flex,
+                           ftxui::text(" "),
                            std::move(next) | ftxui::flex});
         std::string status = state_.simulation->isRunning() ? "En ejecución" : "Pausado";
         std::string threads = state_.engine == Engine::OpenMP

@@ -464,15 +464,27 @@ if command -v script >/dev/null 2>&1; then
         printf '\r'
         sleep 0.3
         printf '2'
-        sleep 1.2
+        sleep 2.5
         printf '\033'
         sleep 0.2
         printf '0'
     } | timeout 10 script -qfec \
-        "stty cols 80 rows 24; initial=\$(stty -g); { sleep 0.9; stty cols 100 rows 30 </dev/tty; } & resize_pid=\$!; $binary_cmd; app_status=\$?; wait \"\$resize_pid\"; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
+        "stty cols 80 rows 24; initial=\$(stty -g); { sleep 0.9; stty cols 120 rows 40 </dev/tty; sleep 0.8; stty cols 50 rows 30 </dev/tty; } & resize_pid=\$!; $binary_cmd; app_status=\$?; wait \"\$resize_pid\"; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
         /dev/null > "$work/resize-pty.txt" 2>&1 || resize_status=$?
     strip_ansi < "$work/resize-pty.txt" > "$work/resize-pty-clean.txt"
     check simulation_resize_keeps_screen_rendered "CURRENT" "$work/resize-pty-clean.txt"
+    check simulation_resize_keeps_next_panel_rendered "NEXT" "$work/resize-pty-clean.txt"
+    for corner in '┌' '┐' '└' '┘'; do
+        check "simulation_resize_keeps_panel_corner_$corner" "$corner" \
+            "$work/resize-pty-clean.txt"
+    done
+    if ! grep -qF $'\033[K' "$work/resize-pty.txt"; then
+        echo "PASS: differential_rows_do_not_erase_terminal_edge"
+    else
+        echo "FAIL: differential_rows_do_not_erase_terminal_edge"
+        failures=$((failures + 1))
+    fi
+    checks=$((checks + 1))
     check resize_terminal_state_restored "TERMINAL_RESTORED" "$work/resize-pty-clean.txt"
     if [[ "$resize_status" -eq 0 ]]; then
         echo "PASS: resized_terminal_session_exits_cleanly"
