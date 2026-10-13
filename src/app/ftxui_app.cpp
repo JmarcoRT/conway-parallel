@@ -22,6 +22,7 @@
 #include <omp.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -270,6 +271,19 @@ Element heading(std::string label) {
     return colorsEnabled() ? output | ftxui::color(identityCyan()) : output;
 }
 
+// Tres filas de 57 columnas: suficiente presencia sin ocupar un banner grande.
+Element renderAppTitle(bool expanded) {
+    if (!expanded) return heading("CONWAY PARALLEL") | ftxui::hcenter;
+    static constexpr std::array<std::string_view, 3> lettering{
+        "╔═╗ ╔═╗ ╔╗╔ ╦ ╦ ╔═╗ ╦ ╦   ╔═╗ ╔═╗ ╦═╗ ╔═╗ ╦   ╦   ╔═╗ ╦  ",
+        "║   ║ ║ ║║║ ║║║ ╠═╣ ╚╦╝   ╠═╝ ╠═╣ ╠╦╝ ╠═╣ ║   ║   ║╣  ║  ",
+        "╚═╝ ╚═╝ ╝╚╝ ╚╩╝ ╩ ╩  ╩    ╩   ╩ ╩ ╩╚═ ╩ ╩ ╩═╝ ╩═╝ ╚═╝ ╩═╝",
+    };
+    ftxui::Elements lines;
+    for (const auto row : lettering) lines.push_back(heading(std::string(row)));
+    return ftxui::vbox(std::move(lines)) | ftxui::hcenter;
+}
+
 // Encabezado compartido: se deriva del estado actual en cada render, sin cache.
 Element renderAppHeader(const InteractiveState& state, std::size_t width,
                         std::size_t height) {
@@ -286,11 +300,10 @@ Element renderAppHeader(const InteractiveState& state, std::size_t width,
     const std::string threads = std::string(!compact && height <= 28
         ? "OMP sol.: " : "OpenMP solicitado: ") +
         std::to_string(state.requestedThreads);
-    Element title = ftxui::text("CONWAY PARALLEL") | ftxui::bold;
-    if (colorsEnabled()) {
-        title = title | ftxui::color(identityCyan());
-    }
-    ftxui::Elements lines{std::move(title) | ftxui::hcenter};
+    // Ampliar solo con margen en ambos ejes; los tamanos pequenos mantienen
+    // exactamente el encabezado anterior y su espacio util.
+    const bool expandedTitle = width >= 120 && height >= 40;
+    ftxui::Elements lines{renderAppTitle(expandedTitle)};
     if (!compact && height > 28) {
         lines.push_back(ftxui::text("Simulación y análisis de programación paralela") |
                         ftxui::hcenter | ftxui::dim);

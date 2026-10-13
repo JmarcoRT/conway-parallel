@@ -15,6 +15,14 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ROW = re.compile(r"\x1b\[(\d+);1H(.*?)(?=\x1b\[\d+;1H|\Z)", re.S)
 
 
+# Instantanea tipografica: tres filas, mismo ancho y dos palabras reconocibles.
+EXPANDED_TITLE = (
+    "╔═╗ ╔═╗ ╔╗╔ ╦ ╦ ╔═╗ ╦ ╦   ╔═╗ ╔═╗ ╦═╗ ╔═╗ ╦   ╦   ╔═╗ ╦  ",
+    "║   ║ ║ ║║║ ║║║ ╠═╣ ╚╦╝   ╠═╝ ╠═╣ ╠╦╝ ╠═╣ ║   ║   ║╣  ║  ",
+    "╚═╝ ╚═╝ ╝╚╝ ╚╩╝ ╩ ╩  ╩    ╩   ╩ ╩ ╩╚═ ╩ ╩ ╩═╝ ╩═╝ ╚═╝ ╩═╝",
+)
+
+
 class Terminal:
     def __init__(self, binary, cwd, columns, rows):
         self.columns = columns
@@ -54,7 +62,13 @@ class Terminal:
         assert end is not None, lines
         return "\n".join(lines[row] for row in sorted(lines) if row < end)
 
+    def assert_fits(self):
+        lines = self.screen()
+        assert max(lines) <= self.rows, lines
+        assert all(len(line) == self.columns for line in lines.values()), lines
+
     def expect(self, *values):
+        self.assert_fits()
         text = self.header()
         if self.columns >= 64 and 18 <= self.rows <= 28:
             values = [value.replace("OpenMP solicitado:", "OMP sol.:") for value in values]
@@ -75,13 +89,30 @@ class Terminal:
 def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
-        terminal.expect("CONWAY PARALLEL", "Sin patrón", "Motor: Secuencial", "OpenMP solicitado:")
-        title_start = terminal.raw.index(b"CONWAY PARALLEL")
-        title_style = terminal.raw[max(0, title_start - 50):title_start]
-        assert b"38;2;83;191;208m" in title_style, title_style
-        assert b"\x1b[1m" in title_style, title_style
-        title = next(line for line in terminal.header().splitlines() if "CONWAY PARALLEL" in line)
-        assert abs(title.index("CONWAY PARALLEL") - (columns - len("CONWAY PARALLEL")) // 2) <= 1
+        terminal.expect("Sin patrón", "Motor: Secuencial", "OpenMP solicitado:")
+        expanded = columns >= 120 and rows >= 40
+        title_rows = EXPANDED_TITLE if expanded else ("CONWAY PARALLEL",)
+        header_lines = terminal.header().splitlines()
+        for index, title in enumerate(title_rows, start=1):
+            line = header_lines[index]
+            assert title in line, (title, line)
+            assert abs(line.index(title) - (columns - len(title)) // 2) <= 1
+            title_start = terminal.raw.index(title.encode())
+            title_style = terminal.raw[max(0, title_start - 50):title_start]
+            assert b"38;2;83;191;208m" in title_style, title_style
+            assert b"\x1b[1m" in title_style, title_style
+        # Los encabezados de 80x24 y 50x24 conservan dos filas interiores.
+        if (columns, rows) in ((80, 24), (50, 24)):
+            assert len(header_lines) == 3, header_lines
+        before = terminal.raw
+        terminal.read()
+        assert terminal.raw == before, "La pantalla pausada genero refrescos"
+        before = len(terminal.raw)
+        terminal.send("\x1b[B")
+        delta = terminal.raw[before:]
+        assert all(title.encode() not in delta for title in title_rows), delta
+        assert b"\x1b[2J" not in delta, delta
+        terminal.send("\x1b[A")
         if columns >= 64 and rows > 28:
             terminal.expect("Simulación y análisis de programación paralela")
         terminal.send("C")
@@ -126,5 +157,5 @@ if __name__ == "__main__":
         patterns.mkdir()
         (patterns / "cedar.txt").write_text("3 7\n" + "0000000\n" * 3)
         (patterns / "willow.txt").write_text("6 4\n" + "0000\n" * 6)
-        for size in [(120, 40), (50, 24), (80, 16), (32, 24)]:
+        for size in [(160, 50), (120, 40), (80, 24), (50, 24), (80, 16), (32, 24)]:
             check(binary, cwd, *size)
