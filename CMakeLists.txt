@@ -27,6 +27,18 @@ find_package(MPI REQUIRED COMPONENTS CXX)
 add_library(conway_generated_input STATIC src/input/generated_input.cpp)
 target_include_directories(conway_generated_input PUBLIC include)
 
+# Experimental runner remains independent of FTXUI/MPI and its presentation.
+add_library(conway_experiments STATIC
+    src/app/experiment_runner.cpp
+    src/app/benchmark.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+)
+target_include_directories(conway_experiments PUBLIC include)
+target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX)
+
 # Ejecutable principal del proyecto
 add_executable(conway
     src/main.cpp
@@ -75,6 +87,16 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(experiment_runner_tests tests/experiment_runner_tests.cpp src/input/input.cpp)
+    target_link_libraries(experiment_runner_tests PRIVATE conway_experiments conway_generated_input)
+    add_test(NAME experiment_runner COMMAND experiment_runner_tests "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experiment_runner PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+    add_test(NAME experiment_runner_thread_limit
+        COMMAND experiment_runner_tests "${CMAKE_CURRENT_SOURCE_DIR}" --thread-limit-one)
+    set_tests_properties(experiment_runner_thread_limit PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1")
+
     add_executable(benchmark_statistics_tests
         tests/benchmark_statistics_tests.cpp
         src/app/benchmark.cpp

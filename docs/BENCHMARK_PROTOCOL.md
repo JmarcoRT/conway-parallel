@@ -4,6 +4,11 @@ Estado: Fase 2A. Este documento fija el contrato para los experimentos y
 separa el comportamiento implementado de las extensiones pendientes. No
 modifica `runBenchmark()`, los motores ni la interfaz.
 
+El ejecutor independiente de Fase 4 se documenta en
+[EXPERIMENT_RUNNER.md](EXPERIMENT_RUNNER.md). Las descripciones históricas de
+orden, calentamientos y resultados de este documento corresponden a
+`runBenchmark()`; su procedimiento permanece sin cambios.
+
 ## Compilación experimental
 
 Requisitos existentes: CMake >= 3.20, G++ 14 en `/usr/bin/g++-14`, OpenMP,
