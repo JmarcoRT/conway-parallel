@@ -362,9 +362,9 @@ if command -v script >/dev/null 2>&1; then
     check blinker_generation_one_is_horizontal \
         "░░│▓▓│▓▓│▓▓│░░" "$work/dynamic-catalog-pty-clean.txt"
     check browsing_catalog_does_not_load_pattern \
-        "Sin patrón" "$work/dynamic-catalog-pty-clean.txt"
+        "Patrón: Sin cargar" "$work/dynamic-catalog-pty-clean.txt"
     check catalog_enter_loads_selected_pattern \
-        "Patrón: blinker.txt · 5 × 5" "$work/dynamic-catalog-pty-clean.txt"
+        "Patrón: blinker.txt (5×5)" "$work/dynamic-catalog-pty-clean.txt"
     check_menu_highlight catalog_selection_uses_approved_highlight \
         "blinker" "$work/dynamic-catalog-pty.txt"
     if ! grep -qF $'\033[2J' "$work/dynamic-catalog-pty.txt"; then
@@ -516,7 +516,7 @@ if command -v script >/dev/null 2>&1; then
     check_menu_highlight main_menu_arrow_selection_is_highlighted \
         "Seleccionar motor" "$work/navigation-pty.txt"
     check engine_submenu_escape_keeps_current_engine \
-        "Motor actual: Secuencial" "$work/navigation-pty-clean.txt"
+        "Motor: Secuencial" "$work/navigation-pty-clean.txt"
     check engine_submenu_arrow_selects_openmp \
         "Motor: OpenMP" "$work/navigation-pty-clean.txt"
     check_menu_highlight engine_submenu_highlights_arrow_selection \
@@ -526,7 +526,7 @@ if command -v script >/dev/null 2>&1; then
     check_menu_highlight thread_submenu_highlights_arrow_selection \
         "2 hilos" "$work/navigation-pty.txt"
     check pattern_catalog_arrow_selects_blinker \
-        "Patrón: blinker.txt · 5 × 5" "$work/navigation-pty-clean.txt"
+        "Patrón: blinker.txt (5×5)" "$work/navigation-pty-clean.txt"
     check_menu_highlight pattern_catalog_highlights_arrow_selection \
         "blinker" "$work/navigation-pty.txt"
     check submenu_returns_to_main_menu "MENÚ PRINCIPAL" "$work/navigation-pty-clean.txt"
@@ -574,7 +574,7 @@ if command -v script >/dev/null 2>&1; then
         > "$work/benchmark-pty.txt" 2>&1 || benchmark_status=$?
     strip_ansi < "$work/benchmark-pty.txt" > "$work/benchmark-pty-clean.txt"
     check interactive_thread_selection_applies_to_openmp \
-        "OMP sol.: 8" "$work/benchmark-pty-clean.txt"
+        "Hilos solicitados: 8" "$work/benchmark-pty-clean.txt"
     check interactive_benchmark_shows_sequential_median \
         "Mediana secuencial:" "$work/benchmark-pty-clean.txt"
     check interactive_benchmark_shows_openmp_median \
@@ -617,7 +617,7 @@ if command -v script >/dev/null 2>&1; then
         > "$work/manual-path-pty.txt" 2>&1 || manual_path_status=$?
     strip_ansi < "$work/manual-path-pty.txt" > "$work/manual-path-pty-clean.txt"
     check interactive_manual_path_loads_external_pattern \
-        "Patrón: external-pattern.txt · 5 × 5" "$work/manual-path-pty-clean.txt"
+        "Patrón: external-pattern.txt (5×5)" "$work/manual-path-pty-clean.txt"
     if [[ "$manual_path_status" -eq 0 ]]; then
         echo "PASS: interactive_manual_path_session_exits_cleanly"
     else

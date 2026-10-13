@@ -18,6 +18,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/dom/node.hpp>
 #include <ftxui/screen/screen.hpp>
+#include <ftxui/screen/string.hpp>
 
 #include <omp.h>
 
@@ -284,54 +285,56 @@ Element renderAppTitle(bool expanded) {
     return ftxui::vbox(std::move(lines)) | ftxui::hcenter;
 }
 
-// Encabezado compartido: se deriva del estado actual en cada render, sin cache.
-Element renderAppHeader(const InteractiveState& state, std::size_t width,
-                        std::size_t height) {
-    const bool compact = width < 64 || height < 18;
-    const bool singleCompactLine = width >= 44 && width < 64;
-    std::string pattern = "Sin patrón";
-    if (state.input) {
-        pattern = std::string(singleCompactLine ? "" : "Patrón: ") +
-            std::filesystem::path(state.path).filename().string() +
-            " · " + std::to_string(state.input->height) + " × " +
-            std::to_string(state.input->width);
-    }
-    const std::string engine = "Motor: " + engineName(state.engine);
-    const std::string threads = std::string(!compact && height <= 28
-        ? "OMP sol.: " : "OpenMP solicitado: ") +
-        std::to_string(state.requestedThreads);
-    // Ampliar solo con margen en ambos ejes; los tamanos pequenos mantienen
-    // exactamente el encabezado anterior y su espacio util.
+// Identidad compartida, sin datos de configuracion dentro del recuadro.
+Element renderAppHeader(std::size_t width, std::size_t height) {
     const bool expandedTitle = width >= 120 && height >= 40;
     ftxui::Elements lines{renderAppTitle(expandedTitle)};
-    if (!compact && height > 28) {
+    if (width >= 64 && height > 28) {
         lines.push_back(ftxui::text("Simulación y análisis de programación paralela") |
                         ftxui::hcenter | ftxui::dim);
     }
-    if (singleCompactLine) {
-        lines.push_back(ftxui::hbox({
-            ftxui::text(pattern) | ftxui::xflex,
-            ftxui::text(" | " + engineName(state.engine) + " · OMP sol.: " +
-                        std::to_string(state.requestedThreads)),
-        }) | ftxui::dim);
-    } else if (compact) {
-        lines.push_back(ftxui::text(pattern) | ftxui::dim);
-        if (width < 44) {
-            lines.push_back(ftxui::text(engine) | ftxui::dim);
-            lines.push_back(ftxui::text(threads) | ftxui::dim);
-        } else {
-            lines.push_back(ftxui::text(engine + " · " + threads) | ftxui::dim);
-        }
-    } else if (width < 100 && height > 28) {
-        lines.push_back(ftxui::text(pattern) | ftxui::dim);
-        lines.push_back(ftxui::text(engine + " · " + threads) | ftxui::dim);
-    } else {
-        lines.push_back(ftxui::hbox({
-            ftxui::text(pattern) | ftxui::flex,
-            ftxui::text("  |  " + engine + " · " + threads),
-        }) | ftxui::dim);
-    }
     return ftxui::vbox(std::move(lines));
+}
+
+// Abreviar solo el nombre conserva las dimensiones y la configuracion visibles.
+std::string fitContextLabel(const std::string& label, std::size_t columns) {
+    if (ftxui::string_width(label) <= static_cast<int>(columns)) return label;
+    if (columns == 0) return {};
+    std::string result;
+    std::size_t used = 0;
+    for (const auto& glyph : ftxui::Utf8ToGlyphs(label)) {
+        const auto glyphWidth = static_cast<std::size_t>(ftxui::string_width(glyph));
+        if (used + glyphWidth >= columns) break;
+        result += glyph;
+        used += glyphWidth;
+    }
+    return result + "…";
+}
+
+// Una barra secundaria, derivada del estado compartido en cada render.
+Element renderContextBar(const InteractiveState& state, std::size_t width) {
+    const bool compact = width < 64;
+    std::string label = compact ? "" : "Patrón: ";
+    std::string dimensions;
+    if (state.input) {
+        label += std::filesystem::path(state.path).filename().string();
+        dimensions = std::to_string(state.input->height) + "×" +
+            std::to_string(state.input->width);
+        dimensions = compact ? " " + dimensions : " (" + dimensions + ")";
+    } else {
+        label += "Sin cargar";
+    }
+    const std::string engine = width < 44
+        ? (state.engine == Engine::Sequential ? "Sec." : "OMP")
+        : engineName(state.engine);
+    std::string suffix = dimensions + " · " + (compact ? "" : "Motor: ") + engine;
+    if (state.engine == Engine::OpenMP) {
+        suffix += width < 44 ? " · H:" : compact ? " · Hilos: " : " · Hilos solicitados: ";
+        suffix += std::to_string(state.requestedThreads);
+    }
+    const auto suffixWidth = static_cast<std::size_t>(ftxui::string_width(suffix));
+    const auto labelWidth = width > suffixWidth ? width - suffixWidth : 0;
+    return ftxui::text(fitContextLabel(label, labelWidth) + suffix) | ftxui::dim;
 }
 
 Element panel(std::string title, Element body) {
@@ -856,12 +859,15 @@ public:
     Element Render() override {
         const auto size = controls::terminalSize();
         const bool compact = size.columns < 64 || size.rows < 18;
-        Element top = renderAppHeader(state_, size.columns, size.rows);
+        Element top = ftxui::vbox({
+            renderAppHeader(size.columns, size.rows) | ftxui::border,
+            renderContextBar(state_, size.columns),
+        });
         top->ComputeRequirement();
-        // Los layouts existentes descuentan el encabezado anterior (dos filas).
+        // Los layouts existentes descuentan cuatro filas de cabecera total.
         // Compensar aqui su nueva altura mantiene intacto su presupuesto util.
         const auto extraHeaderRows = static_cast<std::size_t>(
-            std::max(0, top->requirement().min_y - 2));
+            std::max(0, top->requirement().min_y - 4));
         const auto layoutHeight = size.rows > extraHeaderRows
             ? size.rows - extraHeaderRows : 0;
         Element content;
@@ -905,7 +911,7 @@ public:
             ftxui::text(footerText()) | ftxui::dim,
         });
         Element frame = ftxui::vbox({
-            std::move(top) | ftxui::border,
+            std::move(top),
             std::move(content) | ftxui::flex,
             std::move(bottom) | ftxui::border,
         });
@@ -1536,14 +1542,7 @@ private:
     }
 
     Element renderMain() {
-        return panel("MENÚ PRINCIPAL",
-            ftxui::vbox({
-                mainMenu_->Render() | ftxui::flex,
-                ftxui::separator(),
-                ftxui::text("Motor: " + engineName(state_.engine) +
-                            "  ·  Hilos OpenMP: " +
-                            std::to_string(state_.requestedThreads)),
-            }));
+        return panel("MENÚ PRINCIPAL", mainMenu_->Render() | ftxui::flex);
     }
 
     Element renderPatterns(std::size_t width, std::size_t height, bool compact) {
@@ -1661,11 +1660,7 @@ private:
     }
 
     Element renderEngines() {
-        return panel("MOTOR DE EJECUCIÓN",
-            ftxui::vbox({
-                ftxui::text("Motor actual: " + engineName(state_.engine)),
-                engineMenu_->Render() | ftxui::flex,
-            }));
+        return panel("MOTOR DE EJECUCIÓN", engineMenu_->Render() | ftxui::flex);
     }
 
     Element renderThreads() {

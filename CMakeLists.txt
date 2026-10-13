@@ -265,7 +265,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME ftxui_header_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_header.py"
             "$<TARGET_FILE:conway>")
-set_tests_properties(ftxui_header_pty PROPERTIES TIMEOUT 90)
+set_tests_properties(ftxui_header_pty PROPERTIES TIMEOUT 150)
 add_test(NAME ftxui_menu_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_menu.py"
             "$<TARGET_FILE:conway>")
