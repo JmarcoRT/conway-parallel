@@ -260,9 +260,14 @@ std::string activePattern(const InteractiveState& state) {
         std::to_string(state.input->width);
 }
 
+// Identidad compartida; no depende de la paleta ANSI del terminal.
+ftxui::Color identityCyan() {
+    return ftxui::Color::RGB(83, 191, 208);  // #53BFD0
+}
+
 Element heading(std::string label) {
     Element output = ftxui::text(std::move(label)) | ftxui::bold;
-    return colorsEnabled() ? output | ftxui::color(ftxui::Color::Cyan) : output;
+    return colorsEnabled() ? output | ftxui::color(identityCyan()) : output;
 }
 
 // Encabezado compartido: se deriva del estado actual en cada render, sin cache.
@@ -283,7 +288,7 @@ Element renderAppHeader(const InteractiveState& state, std::size_t width,
         std::to_string(state.requestedThreads);
     Element title = ftxui::text("CONWAY PARALLEL") | ftxui::bold;
     if (colorsEnabled()) {
-        title = title | ftxui::color(ftxui::Color::RGB(83, 191, 208));
+        title = title | ftxui::color(identityCyan());
     }
     ftxui::Elements lines{std::move(title) | ftxui::hcenter};
     if (!compact && height > 28) {
@@ -1053,7 +1058,7 @@ private:
             if (entry.active) row = row | ftxui::bold;
             if (entry.focused) {
                 row = colorsEnabled()
-                    ? row | ftxui::bgcolor(ftxui::Color::RGB(83, 191, 208)) |
+                    ? row | ftxui::bgcolor(identityCyan()) |
                         ftxui::color(ftxui::Color::RGB(25, 32, 38))
                     : row | ftxui::inverted;
             }

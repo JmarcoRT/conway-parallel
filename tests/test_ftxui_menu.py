@@ -58,20 +58,37 @@ def expect_focus(terminal, label, full_width=True):
     assert len(colored_rows) == 1, (label, len(colored_rows))
 
 
+def expect_identity_heading(terminal, label):
+    rows = {}
+    for match in ROW.finditer(terminal.raw.decode("utf-8", errors="replace")):
+        rows[int(match[1])] = match[2]
+    for row in rows.values():
+        row_pixels = pixels(row)
+        text = "".join(pixel[0] for pixel in row_pixels)
+        if label in text:
+            start = text.index(label)
+            assert all(pixel[1] == CYAN for pixel in row_pixels[start:start + len(label)]), row
+            return
+    raise AssertionError((label, terminal.screen()))
+
+
 def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
         expect_focus(terminal, "Benchmark")
+        expect_identity_heading(terminal, "MENÚ PRINCIPAL")
         terminal.send("\x1b[B")
         expect_focus(terminal, "Visualización")
         terminal.send("3")
         expect_focus(terminal, "Secuencial")
+        expect_identity_heading(terminal, "MOTOR DE EJECUCIÓN")
         terminal.send("\x1b[B")
         expect_focus(terminal, "OpenMP")
         terminal.send("\r")
         terminal.expect("Motor: OpenMP")
         terminal.send("4")
         expect_focus(terminal, "1 hilo")
+        expect_identity_heading(terminal, "CONFIGURACIÓN OPENMP")
         terminal.send("\x1b[B")
         expect_focus(terminal, "2 hilos")
         terminal.send("\r")
@@ -85,6 +102,7 @@ def check(binary, cwd, columns, rows):
             return
         terminal.send("C")
         expect_focus(terminal, "cedar", False)
+        expect_identity_heading(terminal, "CATÁLOGO DE PATRONES")
         terminal.send("\x1b[B")
         expect_focus(terminal, "willow", False)
         terminal.send("\x1b[B")  # Transfiere foco a ACCIONES.
@@ -111,5 +129,5 @@ if __name__ == "__main__":
         patterns.mkdir()
         (patterns / "cedar.txt").write_text("3 7\n" + "0000000\n" * 3)
         (patterns / "willow.txt").write_text("6 4\n" + "0000\n" * 6)
-        for size in [(120, 40), (80, 24), (50, 24)]:
+        for size in [(160, 50), (120, 40), (80, 24), (50, 24)]:
             check(binary, cwd, *size)
