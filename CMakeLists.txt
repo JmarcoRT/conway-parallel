@@ -85,6 +85,8 @@ add_executable(conway
     src/app/pattern_preview.cpp
     src/app/didactic_session.cpp
     src/app/ftxui_app.cpp
+    src/app/experiment_form.cpp
+    src/app/experiment_form_view.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
@@ -115,6 +117,10 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(experiment_form_tests tests/experiment_form_tests.cpp src/app/experiment_form.cpp)
+    target_include_directories(experiment_form_tests PRIVATE include)
+    add_test(NAME experiment_form COMMAND experiment_form_tests)
+
     add_executable(experiment_csv_tests tests/experiment_csv_tests.cpp src/input/input.cpp)
     target_link_libraries(experiment_csv_tests PRIVATE conway_experiment_export conway_generated_input)
     add_test(NAME experiment_csv COMMAND experiment_csv_tests "${CMAKE_CURRENT_SOURCE_DIR}")

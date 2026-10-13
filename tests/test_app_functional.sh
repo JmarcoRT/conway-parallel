@@ -541,7 +541,7 @@ if command -v script >/dev/null 2>&1; then
         failures=$((failures + 1))
     fi
     checks=$((checks + 1))
-    check submenu_flow_runs_simulation_and_benchmark "Mediana secuencial:" \
+    check submenu_flow_opens_simulation_and_comparison_form "COMPARACIÓN DE MOTORES" \
         "$work/navigation-pty-clean.txt"
     if [[ "$navigation_status" -eq 0 ]]; then
         echo "PASS: ftxui_submenu_navigation_session_exits_cleanly"
@@ -579,18 +579,21 @@ if command -v script >/dev/null 2>&1; then
     strip_ansi < "$work/benchmark-pty.txt" > "$work/benchmark-pty-clean.txt"
     check interactive_thread_selection_applies_to_openmp \
         "Hilos solicitados: 8" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_shows_sequential_median \
-        "Mediana secuencial:" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_shows_openmp_median \
-        "Mediana OpenMP:" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_reports_effective_threads \
-        "Hilos efectivos:" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_uses_actual_thread_limit \
-        "Hilos efectivos:     1" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_reports_equivalence \
-        "Equivalencia:" "$work/benchmark-pty-clean.txt"
-    check interactive_benchmark_warns_about_small_patterns \
-        "Nota: tablero pequeño" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_opens_configuration \
+        "COMPARACIÓN DE MOTORES" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_shows_measurement_fields \
+        "Generaciones:" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_shows_thread_field \
+        "Hilos OpenMP:" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_exposes_validation_action \
+        "Ejecutar experimento" "$work/benchmark-pty-clean.txt"
+    checks=$((checks + 1))
+    if ! grep -qF "Mediana secuencial:" "$work/benchmark-pty-clean.txt"; then
+        echo "PASS: interactive_comparison_does_not_measure"
+    else
+        echo "FAIL: interactive_comparison_does_not_measure"
+        failures=$((failures + 1))
+    fi
     if [[ "$benchmark_status" -eq 0 ]]; then
         echo "PASS: interactive_benchmark_session_exits_cleanly"
     else

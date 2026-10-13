@@ -1,6 +1,7 @@
 #include "app/ftxui_app.hpp"
 
 #include "app/benchmark.hpp"
+#include "app/experiment_form_view.hpp"
 #include "app/controls.hpp"
 #include "app/didactic_session.hpp"
 #include "app/pattern_catalog.hpp"
@@ -120,6 +121,7 @@ enum class Page {
     PathInput,
     ThreadInput,
     Simulation,
+    ComparisonConfig,
     BenchmarkMenu,
     BenchmarkScaling,
     BenchmarkResults,
@@ -854,6 +856,19 @@ public:
             "1 hilo", "2 hilos", "4 hilos", "8 hilos",
             "Número personalizado", "Volver",
         };
+        auto input = [this]() -> const InputData* {
+            return state_.input ? &*state_.input : nullptr;
+        };
+        auto name = [this] { return std::filesystem::path(state_.path).filename().string(); };
+        auto threads = [this] { return state_.requestedThreads; };
+        auto style = [](Element row) {
+            return colorsEnabled() ? row | ftxui::bgcolor(identityCyan()) |
+                ftxui::color(ftxui::Color::RGB(25, 32, 38)) : row | ftxui::inverted;
+        };
+        comparisonForm_ = makeExperimentFormView(false, input, name, threads, style);
+        scalingForm_ = makeExperimentFormView(true, input, name, threads, style);
+        Add(comparisonForm_);
+        Add(scalingForm_);
         refreshPatterns();
     }
 
@@ -910,10 +925,11 @@ public:
             case Page::BenchmarkMenu:
                 content = renderBenchmarkMenu();
                 break;
+            case Page::ComparisonConfig:
+                content = panel("COMPARACIÓN DE MOTORES", comparisonForm_->Render());
+                break;
             case Page::BenchmarkScaling:
-                content = panel("ESCALABILIDAD OPENMP", ftxui::paragraph(
-                    "La configuración y ejecución desde esta interfaz se "
-                    "integrarán en próximas iteraciones."));
+                content = panel("ESCALABILIDAD OPENMP", scalingForm_->Render());
                 break;
             case Page::BenchmarkResults:
                 content = panel("RESULTADOS DE LA SESIÓN", ftxui::paragraph(
@@ -1130,7 +1146,8 @@ private:
         switch (state_.page) {
             case Page::Main: return mainMenu_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
-            case Page::BenchmarkScaling:
+            case Page::ComparisonConfig: return comparisonForm_;
+            case Page::BenchmarkScaling: return scalingForm_;
             case Page::BenchmarkResults: return benchmarkView_;
             case Page::Patterns:
                 return state_.patternActionsFocused
@@ -1266,7 +1283,7 @@ private:
 
     void selectBenchmarkOption() {
         switch (state_.benchmarkSelection) {
-            case 0: startBenchmark(); break;
+            case 0: state_.page = Page::ComparisonConfig; break;
             case 1: state_.page = Page::BenchmarkScaling; break;
             case 2: state_.page = Page::BenchmarkResults; break;
             default: break;
@@ -1555,6 +1572,7 @@ private:
                 state_.page = Page::Main;
                 break;
             case Page::Benchmark:
+            case Page::ComparisonConfig:
             case Page::BenchmarkScaling:
             case Page::BenchmarkResults:
                 state_.page = Page::BenchmarkMenu;
@@ -1784,8 +1802,8 @@ private:
 
     Element renderBenchmarkMenu() {
         static const std::array<const char*, 3> descriptions{
-            "Compara los motores Secuencial y OpenMP con el patrón cargado.",
-            "Configuración y ejecución desde esta interfaz: próximamente.",
+            "Configura la comparación de los motores Secuencial y OpenMP.",
+            "Configura el estudio de escalabilidad OpenMP.",
             "Historial de resultados de la sesión: próximamente.",
         };
         return panel("BENCHMARK", ftxui::vbox({
@@ -2099,7 +2117,8 @@ private:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
-            case Page::BenchmarkScaling:
+            case Page::ComparisonConfig:
+            case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter activar · Esc volver a Benchmark";
             case Page::BenchmarkResults: return "Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
             case Page::Didactic: return "Espacio reproducir · N siguiente · R reiniciar · + más rápido · - más lento · Esc menú";
@@ -2129,6 +2148,7 @@ private:
     std::optional<BenchmarkResult> benchmarkResult_;
     std::string benchmarkError_;
     std::thread benchmarkWorker_;
+    ftxui::Component comparisonForm_, scalingForm_;
     ftxui::Component mainMenu_;
     ftxui::Component benchmarkMenu_;
     ftxui::Component patternMenu_;
