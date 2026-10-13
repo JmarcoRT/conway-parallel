@@ -7,7 +7,8 @@ modifica `runBenchmark()`, los motores ni la interfaz.
 El ejecutor independiente de Fase 4 se documenta en
 [EXPERIMENT_RUNNER.md](EXPERIMENT_RUNNER.md). Las descripciones históricas de
 orden, calentamientos y resultados de este documento corresponden a
-`runBenchmark()`; su procedimiento permanece sin cambios.
+`runBenchmark()`; su procedimiento permanece sin cambios. El estudio de
+escalabilidad fuerte de Fase 5 se documenta en [SCALING_STUDY.md](SCALING_STUDY.md).
 
 ## Compilación experimental
 

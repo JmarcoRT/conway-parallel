@@ -1,5 +1,6 @@
 #include "app/experiment_runner.hpp"
 #include "benchmark_detail.hpp"
+#include "experiment_input_detail.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,49 +9,9 @@
 
 namespace conway::app {
 namespace {
-std::size_t checkedAdd(std::size_t a, std::size_t b) {
-    if (b > std::numeric_limits<std::size_t>::max() - a)
-        throw std::length_error("Experiment size addition overflows");
-    return a + b;
-}
-std::size_t checkedMultiply(std::size_t a, std::size_t b) {
-    if (a && b > std::numeric_limits<std::size_t>::max() / a)
-        throw std::length_error("Experiment size multiplication overflows");
-    return a * b;
-}
-
-ExperimentInputIdentity validateInput(const InputData& input) {
-    if (!input.width || !input.height)
-        throw std::invalid_argument("Experiment dimensions must be positive");
-    if (input.height >= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()))
-        throw std::length_error("Experiment height exceeds engine index range");
-    const auto count = checkedMultiply(input.width, input.height);
-    const auto padded = checkedMultiply(checkedAdd(input.width, 2), checkedAdd(input.height, 2));
-    if (padded > std::vector<std::uint8_t>{}.max_size())
-        throw std::length_error("Experiment halo exceeds vector capacity");
-    // Peak board payload: borrowed input + reference Game + current Game.
-    (void)checkedAdd(count, checkedMultiply(4, padded));
-    if (input.cells.size() != count)
-        throw std::invalid_argument("Experiment cell count does not match dimensions");
-
-    std::uint64_t fingerprint = 14695981039346656037ULL;
-    const auto append = [&](std::uint8_t byte) {
-        fingerprint ^= byte;
-        fingerprint *= 1099511628211ULL; // Defined uint64_t wraparound.
-    };
-    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
-    for (auto dimension : {input.width, input.height}) {
-        for (int shift = 0; shift < 64; shift += 8)
-            append(static_cast<std::uint8_t>(static_cast<std::uint64_t>(dimension) >> shift));
-    }
-    std::size_t alive = 0;
-    for (auto cell : input.cells) {
-        if (cell > 1) throw std::invalid_argument("Experiment requires binary cells");
-        alive += cell;
-        append(cell);
-    }
-    return {input.width, input.height, alive, fingerprint, std::nullopt};
-}
+using detail::checkedAdd;
+using detail::checkedMultiply;
+using detail::validateInput;
 
 Engine engineAt(MeasurementOrder order, int round, int position) {
     const bool sequentialFirst = (order == MeasurementOrder::AlternatingSequentialFirst)
@@ -72,16 +33,7 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
     if (sampleCount > std::vector<ExperimentSample>{}.max_size())
         throw std::length_error("Experiment sample count exceeds vector capacity");
     auto identity = validateInput(input);
-    if (generated) {
-        const double observed = static_cast<double>(identity.aliveCount) / static_cast<double>(input.cells.size());
-        if (generated->width != input.width || generated->height != input.height
-            || generated->alive_count != identity.aliveCount
-            || generated->requested_density < 0 || generated->requested_density > 10000
-            || generated->observed_density != observed || generated->version.empty())
-            throw std::invalid_argument("Generated input metadata does not match input");
-        identity.generated = GeneratedInputIdentity{generated->seed, generated->requested_density,
-                                                    observed, std::string(generated->version)};
-    }
+    detail::attachGeneratedMetadata(identity, input, generated);
     ExperimentResult result{config, std::move(identity), 0, {}, {}};
     result.samples.reserve(sampleCount);
 
@@ -129,6 +81,11 @@ ExperimentSummary summarizeExperimentSamples(std::span<const ExperimentSample> s
     summary.equivalent = true;
     bool valid = true, sequentialTimesValid = true, parallelTimesValid = true;
     std::vector<double> sequentialTimes, parallelTimes;
+    // Reserve exact per-engine counts: bounded workspace for scaling summaries.
+    sequentialTimes.reserve(static_cast<std::size_t>(std::count_if(samples.begin(), samples.end(),
+        [](const auto& sample) { return sample.measurement.engine == Engine::Sequential; })));
+    parallelTimes.reserve(static_cast<std::size_t>(std::count_if(samples.begin(), samples.end(),
+        [](const auto& sample) { return sample.measurement.engine == Engine::OpenMP; })));
     std::optional<int> requested;
     const int generations = samples.front().measurement.generations;
     for (const auto& sample : samples) {

@@ -39,8 +39,8 @@ struct ExperimentInputIdentity {
 struct ExperimentSample {
     BenchmarkSample measurement;
     int roundIndex; // Zero-based measured round, also the engine's repetitionIndex.
-    int positionInRound; // 0 or 1.
-    // Global run position: reference is 0, then 2*warmups, then measured runs.
+    int positionInRound; // 0/1 for runExperiment; actual position for scaling.
+    // Global run position: oracle is 0, then warmup runs, then measured runs.
     std::size_t executionIndex;
 
     bool validForComparison() const noexcept;
