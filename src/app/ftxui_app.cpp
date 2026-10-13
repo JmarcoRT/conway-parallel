@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -262,6 +263,57 @@ std::string activePattern(const InteractiveState& state) {
 Element heading(std::string label) {
     Element output = ftxui::text(std::move(label)) | ftxui::bold;
     return colorsEnabled() ? output | ftxui::color(ftxui::Color::Cyan) : output;
+}
+
+// Encabezado compartido: se deriva del estado actual en cada render, sin cache.
+Element renderAppHeader(const InteractiveState& state, std::size_t width,
+                        std::size_t height) {
+    const bool compact = width < 64 || height < 18;
+    const bool singleCompactLine = width >= 44 && width < 64;
+    std::string pattern = "Sin patrón";
+    if (state.input) {
+        pattern = std::string(singleCompactLine ? "" : "Patrón: ") +
+            std::filesystem::path(state.path).filename().string() +
+            " · " + std::to_string(state.input->height) + " × " +
+            std::to_string(state.input->width);
+    }
+    const std::string engine = "Motor: " + engineName(state.engine);
+    const std::string threads = std::string(!compact && height <= 28
+        ? "OMP sol.: " : "OpenMP solicitado: ") +
+        std::to_string(state.requestedThreads);
+    Element title = ftxui::text("CONWAY PARALLEL") | ftxui::bold;
+    if (colorsEnabled()) {
+        title = title | ftxui::color(ftxui::Color::RGB(83, 191, 208));
+    }
+    ftxui::Elements lines{std::move(title) | ftxui::hcenter};
+    if (!compact && height > 28) {
+        lines.push_back(ftxui::text("Simulación y análisis de programación paralela") |
+                        ftxui::hcenter | ftxui::dim);
+    }
+    if (singleCompactLine) {
+        lines.push_back(ftxui::hbox({
+            ftxui::text(pattern) | ftxui::xflex,
+            ftxui::text(" | " + engineName(state.engine) + " · OMP sol.: " +
+                        std::to_string(state.requestedThreads)),
+        }) | ftxui::dim);
+    } else if (compact) {
+        lines.push_back(ftxui::text(pattern) | ftxui::dim);
+        if (width < 44) {
+            lines.push_back(ftxui::text(engine) | ftxui::dim);
+            lines.push_back(ftxui::text(threads) | ftxui::dim);
+        } else {
+            lines.push_back(ftxui::text(engine + " · " + threads) | ftxui::dim);
+        }
+    } else if (width < 100 && height > 28) {
+        lines.push_back(ftxui::text(pattern) | ftxui::dim);
+        lines.push_back(ftxui::text(engine + " · " + threads) | ftxui::dim);
+    } else {
+        lines.push_back(ftxui::hbox({
+            ftxui::text(pattern) | ftxui::flex,
+            ftxui::text("  |  " + engine + " · " + threads),
+        }) | ftxui::dim);
+    }
+    return ftxui::vbox(std::move(lines));
 }
 
 Element panel(std::string title, Element body) {
@@ -786,13 +838,21 @@ public:
     Element Render() override {
         const auto size = controls::terminalSize();
         const bool compact = size.columns < 64 || size.rows < 18;
+        Element top = renderAppHeader(state_, size.columns, size.rows);
+        top->ComputeRequirement();
+        // Los layouts existentes descuentan el encabezado anterior (dos filas).
+        // Compensar aqui su nueva altura mantiene intacto su presupuesto util.
+        const auto extraHeaderRows = static_cast<std::size_t>(
+            std::max(0, top->requirement().min_y - 2));
+        const auto layoutHeight = size.rows > extraHeaderRows
+            ? size.rows - extraHeaderRows : 0;
         Element content;
         switch (state_.page) {
             case Page::Main:
                 content = renderMain();
                 break;
             case Page::Patterns:
-                content = renderPatterns(size.columns, size.rows, compact);
+                content = renderPatterns(size.columns, layoutHeight, compact);
                 break;
             case Page::Engines:
                 content = renderEngines();
@@ -810,25 +870,16 @@ public:
                                           std::to_string(kMaxOpenMPThreads));
                 break;
             case Page::Simulation:
-                content = renderSimulation(size.columns, size.rows, compact);
+                content = renderSimulation(size.columns, layoutHeight, compact);
                 break;
             case Page::Benchmark:
                 content = renderBenchmark();
                 break;
             case Page::Didactic:
-                content = renderDidactic(size.columns, size.rows, compact);
+                content = renderDidactic(size.columns, layoutHeight, compact);
                 break;
         }
 
-        Element top = ftxui::vbox({
-            ftxui::hbox({
-                heading("CONWAY PARALLEL"),
-                ftxui::filler(),
-                ftxui::text(engineName(state_.engine) + "  |  OpenMP solicitado: " +
-                            std::to_string(state_.requestedThreads)) | ftxui::dim,
-            }),
-            ftxui::text(activePattern(state_)) | ftxui::dim,
-        });
         Element bottom = ftxui::hbox({
             ftxui::text(state_.message) | ftxui::color(state_.message.starts_with("Error")
                 ? ftxui::Color::Red : ftxui::Color::Green),

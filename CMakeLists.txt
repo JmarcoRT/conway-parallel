@@ -261,6 +261,12 @@ target_include_directories(didactic_layout_tests PRIVATE include)
 target_link_libraries(didactic_layout_tests PRIVATE OpenMP::OpenMP_CXX MPI::MPI_CXX
     ftxui::component ftxui::dom ftxui::screen)
 add_test(NAME didactic_layout COMMAND didactic_layout_tests)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME ftxui_header_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_header.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_header_pty PROPERTIES TIMEOUT 90)
+
 endif()
 
 # Target independiente de demostración para la UI (Semana 5)
