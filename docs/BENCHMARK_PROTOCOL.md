@@ -104,7 +104,7 @@ de compilación; la exportación automatizada de metadatos está pendiente.
   La unidad actual es **milisegundos por lote**, no por generación.
 - Si se informa `tiempo/G`, debe identificarse como promedio amortizado por
   generación, no como una muestra individual de cada generación.
-- Cuando exista el generador, registrar ancho, alto, densidad solicitada y
+- Al integrar el generador, registrar ancho, alto, densidad solicitada y
   observada, semilla, algoritmo/versionado y una identidad estable del contenido.
   Las entradas deberán validarse antes de reservar memoria, incluyendo halos.
 
@@ -150,8 +150,9 @@ de compilación; la exportación automatizada de metadatos está pendiente.
 
 | Aspecto | Implementación actual | Pendiente |
 |---|---|---|
+| Entradas generadas | Módulo independiente determinista v1, metadatos y validación de memoria; ver [GENERATED_INPUT.md](GENERATED_INPUT.md) | Integración experimental y registro de identidad de entrada |
 | Motores | Secuencial y OpenMP siempre se comparan, independientemente del motor seleccionado | Estudio de varios números de hilos |
-| Entrada | El mismo `InputData` inicial para cada ejecución | Generador reproducible, identidad y parámetros registrados |
+| Entrada | El mismo `InputData` inicial para cada ejecución | Integración del generador, identidad y parámetros registrados |
 | Configuración | API recibe generaciones, repeticiones e hilos; UI usa 20 generaciones y 5 repeticiones | Configuración experimental de esos valores y calentamientos |
 | Calentamiento | Uno por motor; su tiempo se descarta. Además se calcula una referencia secuencial previa | Política configurable y registro separado |
 | Cronometraje | Construcción, E/S, validación y renderizado fuera; sin sink StepTrace | Mantener este contrato en la extensión |
@@ -167,7 +168,8 @@ El código actual todavía calcula speedup aunque falle la equivalencia y
 FTXUI puede añadir una interpretación de rapidez junto al error. Este
 protocolo exige descartar esa conclusión; corregir su presentación/validez
 corresponde a una fase posterior. También quedan pendientes la validación
-binaria de entradas en memoria y los defectos del cargador documentados en
+binaria general de entradas en memoria (el generador sí produce valores binarios)
+y los defectos del cargador documentados en
 `INPUT_TESTS.md`; la Fase 2A no los corrige.
 
 ## Validación y siguientes fases
@@ -189,7 +191,8 @@ benchmark de la aplicación. `scripts/measure_openmp.sh` compila con `-O2`
 y `${CXX:-g++}`; sus resultados no se mezclan automáticamente con esta
 configuración G++ 14 Release.
 
-Fases siguientes: generador reproducible (2B), conservación de muestras,
+Fase 2B: generador reproducible implementado como módulo independiente.
+Fases siguientes: integración experimental, conservación de muestras,
 orden equilibrado, comparación de escalabilidad con referencia secuencial
 compartida por estudio/bloque y exportación. Los parámetros de campaña y
 políticas correspondientes requieren revisión antes de implementarse.

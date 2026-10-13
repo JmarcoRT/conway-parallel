@@ -23,6 +23,10 @@ FetchContent_MakeAvailable(ftxui)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
 
+# Standalone reproducible input module: standard C++ only, no engine or UI.
+add_library(conway_generated_input STATIC src/input/generated_input.cpp)
+target_include_directories(conway_generated_input PUBLIC include)
+
 # Ejecutable principal del proyecto
 add_executable(conway
     src/main.cpp
@@ -71,6 +75,18 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(generated_input_tests
+        tests/generated_input_tests.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+    )
+    target_link_libraries(generated_input_tests PRIVATE conway_generated_input OpenMP::OpenMP_CXX)
+    add_test(NAME generated_input COMMAND generated_input_tests)
+    set_tests_properties(generated_input PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+
     add_executable(input_tests
         tests/input_tests.cpp
         src/input/input.cpp
