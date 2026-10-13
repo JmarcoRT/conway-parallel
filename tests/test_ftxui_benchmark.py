@@ -116,7 +116,17 @@ def check(binary, cwd, columns, rows):
         field(terminal, "Hilos OpenMP", "2")
         execute(terminal)
         wait_state(terminal, "Finalizado")
-        visible(terminal, "Ejecución #1", "Entrada: cedar.txt", "Equivalencia: SI", "Validez: SI", "Mediana secuencial:")
+        visible(terminal, "Ejecución #1", "Entrada: cedar.txt", "Equivalencia: SI", "Validez: SI", "TIEMPOS MEDIANOS", "Menor tiempo es mejor")
+        terminal.send("\x1b[C")
+        visible(terminal, "ESTADÍSTICAS DESCRIPTIVAS", "Desviación estándar poblacional")
+        terminal.send("\x1b[F")
+        visible(terminal, "efectivos observados:", "equivalencia SI")
+        terminal.send("\x1b[C")
+        visible(terminal, "MÉTODO Y FÓRMULAS", "Se cronometra el lote completo")
+        terminal.send("\x1b[F")
+        visible(terminal, "Speedup =", "divisor N")
+        terminal.send("\x1b[C")
+        visible(terminal, "TIEMPOS MEDIANOS", "Speedup:", "Referencia: 1.00×")
         before = terminal.raw
         terminal.send("\r" * 12)
         assert terminal.raw == before, "Enter duplicó el experimento finalizado"
@@ -167,8 +177,20 @@ def check(binary, cwd, columns, rows):
         wait_state(terminal, "Finalizado")
         visible(terminal, "Ejecución #4", "Equivalencia: SI")
         assert terminal.identity() == identity
-        assert b"\x1b[2J" not in terminal.raw
         terminal.send(ESC)
+        terminal.send(ESC)
+        terminal.send("\x1b[B\x1b[B\r")
+        expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
+        visible(terminal, "Ejecución #4", "TIEMPOS MEDIANOS", "Equivalencia: SI")
+        before = terminal.raw
+        terminal.read()
+        assert terminal.raw == before, "Repintado periódico inesperado"
+        terminal.send("\x1b[C")
+        visible(terminal, "ESTADÍSTICAS DESCRIPTIVAS")
+        terminal.send(ESC)
+        terminal.send("\r")
+        visible(terminal, "ESTADÍSTICAS DESCRIPTIVAS")  # La vista y el resultado se conservan.
+        assert b"\x1b[2J" not in terminal.raw
         terminal.send(ESC)
         terminal.send(ESC)
         terminal.send("q")

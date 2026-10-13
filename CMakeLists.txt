@@ -86,6 +86,7 @@ add_executable(conway
     src/app/didactic_session.cpp
     src/app/ftxui_app.cpp
     src/app/experiment_execution.cpp
+    src/app/comparison_view.cpp
     src/app/experiment_form.cpp
     src/app/experiment_form_view.cpp
     src/app/benchmark.cpp
@@ -119,6 +120,10 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp)
+    target_include_directories(comparison_view_tests PRIVATE include)
+    target_link_libraries(comparison_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME comparison_view COMMAND comparison_view_tests)
     add_executable(experiment_execution_tests tests/experiment_execution_tests.cpp src/app/experiment_execution.cpp src/app/experiment_form.cpp)
     target_include_directories(experiment_execution_tests PRIVATE include)
     target_link_libraries(experiment_execution_tests PRIVATE conway_experiment_export conway_generated_input)
