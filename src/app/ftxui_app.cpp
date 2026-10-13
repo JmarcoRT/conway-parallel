@@ -275,9 +275,9 @@ Element heading(std::string label) {
 Element renderAppTitle(bool expanded) {
     if (!expanded) return heading("CONWAY PARALLEL") | ftxui::hcenter;
     static constexpr std::array<std::string_view, 3> lettering{
-        "█▀▀ █▀█ █▄ █ █   █ ▄▀▄ █ █   █▀█ ▄▀▄ █▀█ ▄▀▄ █   █   █▀▀ █  ",
-        "█   █ █ █▀▄█ █ █ █ █▄█  █    █▀▀ █▄█ ██▀ █▄█ █   █   █▀  █  ",
-        "█▄▄ █▄█ █ ▀█ ▀▄▀▄▀ █ █  █    █   █ █ █ █ █ █ █▄▄ █▄▄ █▄▄ █▄▄",
+        "███ ███ █  █ █   █ ███ █ █   ███ ███ ███ ███ █   █   ███ █  ",
+        "█   █ █ ██ █ █ █ █ █▄█  █    ██▀ █▄█ ██▄ █▄█ █   █   ██  █  ",
+        "███ ███ █ ██ ██ ██ █ █  █    █   █ █ █ █ █ █ ███ ███ ███ ███",
     };
     ftxui::Elements lines;
     for (const auto row : lettering) lines.push_back(heading(std::string(row)));
