@@ -93,7 +93,8 @@ struct DidacticFrame {
 //     Se protegen con data_mutex_ + condition_variable_ para la
 //     entrega.
 //   - El estado de reproduccion (playback_ns_, speed_, playing_)
-//     solo lo toca el hilo de UI. No requiere sincronizacion.
+//     lo reinicia la UI antes de lanzar el worker; el worker fija la
+//     duracion antes de publicar Ready. Despues solo lo toca la UI.
 //   - El worker_ es unico; startPreparation() une el previo si
 //     quedase alguno antes de lanzar el nuevo.
 class DidacticController {
@@ -204,7 +205,7 @@ private:
     std::string error_;
     std::atomic<Phase> phase_{Phase::Idle};
 
-    // Estado de reproduccion, solo UI.
+    // Duracion publicada con Ready; reloj, velocidad y playing solo UI.
     std::uint64_t total_playback_ns_ = 0;
     std::uint64_t current_playback_ns_ = 0;
     double speed_ = 1.0;

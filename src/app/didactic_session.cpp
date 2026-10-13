@@ -222,21 +222,11 @@ void DidacticController::storeReadyData(conway::Game pre, conway::Game post,
         // (preservada por copia o fijada por el constructor con
         // start_generation).
         current_generation_ = pre_step_->generation();
+        // Inicializar toda la entrega antes de publicar Ready. El worker no
+        // vuelve a tocar la reproduccion despues; desde Ready pertenece a UI.
+        computeTotalPlaybackNs(*trace_);
         phase_.store(Phase::Ready, std::memory_order_release);
     }
-    // Calculamos la duracion total de reproduccion con la traza
-    // visible. Se calcula DESPUES de mover la traza al miembro,
-    // porque la unica copia viva es la de `trace_`. Si se hiciera
-    // con la `trace` local ya movida, el vector `workers` estara
-    // vacio y `computeTotalPlaybackNs` fijaría
-    // `total_playback_ns_ = 1` (fallback por m == 0). Esto es
-    // exactamente la causa del bug: con `total_playback_ns_ = 1`
-    // y `current_playback_ns_` que se capa a 1, el flag
-    // `fully_revealed` quedaba en true (mostrando
-    // "REPRODUCCION COMPLETA") pero el progreso por worker era
-    // `min(1, 1 / loop_duration_ns) < 1`, mostrando "pendiente".
-    computeTotalPlaybackNs(*trace_);
-    resetPlaybackToZero();
 }
 
 void DidacticController::computeTotalPlaybackNs(const conway::core::StepTrace& trace) {
@@ -371,6 +361,8 @@ DidacticFrame DidacticController::snapshot() const {
             trace_copy = trace_;
         }
         frame.error_message = error_;
+        frame.current_generation = current_generation_;
+        frame.total_playback_ns = (p == Phase::Ready) ? total_playback_ns_ : 0;
     }
 
     frame.is_preparing = (p == Phase::Preparing);
@@ -379,10 +371,8 @@ DidacticFrame DidacticController::snapshot() const {
                           ? "Secuencial" : "OpenMP";
     frame.requested_threads = requested_threads_;
     frame.logical_processors = std::max(1, omp_get_num_procs());
-    frame.current_generation = current_generation_;
     frame.playing = playing_;
     frame.speed = speed_;
-    frame.total_playback_ns = total_playback_ns_;
     frame.current_playback_ns = current_playback_ns_;
 
     if (p != Phase::Ready) {

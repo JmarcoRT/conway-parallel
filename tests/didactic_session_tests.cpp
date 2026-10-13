@@ -764,6 +764,30 @@ int main(int argc, char** argv) {
             }
         }
 
+        // UI activa mientras el worker publica: Ready implica entrega completa.
+        for (auto engine : {conway::Engine::Sequential, conway::Engine::OpenMP}) {
+            bool coherent = true;
+            conway::app::DidacticController controller;
+            for (int run = 0; run < 100; ++run) {
+                controller.startPreparation(makeInput(32, 32, run), engine, 2);
+                conway::app::DidacticFrame frame;
+                do {
+                    controller.pause();
+                    controller.tick(std::chrono::nanoseconds(1));
+                    frame = controller.snapshot();
+                    std::this_thread::yield();
+                } while (frame.is_preparing);
+                coherent &= frame.has_data && frame.total_playback_ns > 0 &&
+                            !frame.playing && frame.current_playback_ns == 0;
+                for (const auto& worker : frame.workers)
+                    coherent &= worker.loop_duration_ns <= frame.total_playback_ns;
+                controller.play();
+                controller.tick(std::chrono::seconds(1));
+                coherent &= controller.snapshot().fully_revealed;
+            }
+            report(coherent, "async_ready_publishes_complete_playback");
+        }
+
         std::cout << "Resultado: " << g_passes << " PASS, " << g_failures
                   << " FAIL\n";
         return g_failures == 0 ? 0 : 1;
