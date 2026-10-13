@@ -18,6 +18,17 @@ def visible(terminal, *values):
         assert value in text, (value, text)
 
 
+def scroll_visible(terminal, *values):
+    terminal.send("\x1b[H")
+    for _ in range(90):
+        text = " ".join(line.strip("│ ") for line in terminal.screen().values())
+        if all(value in text for value in values):
+            visible(terminal, *values)
+            return
+        terminal.send("\x1b[B")
+    raise AssertionError((values, terminal.screen()))
+
+
 def focus_text(terminal):
     rows = {}
     for match in ROW.finditer(terminal.raw.decode(errors="replace")):
@@ -112,21 +123,25 @@ def check(binary, cwd, columns, rows):
         visible(terminal, "Entero entre 1")
         edit(terminal, "3")
         field(terminal, "Calentamientos", "0")
-        field(terminal, "Repeticiones", "2")
+        field(terminal, "Repeticiones", "16")
         field(terminal, "Hilos OpenMP", "2")
         execute(terminal)
         wait_state(terminal, "Finalizado")
-        visible(terminal, "Ejecución #1", "Entrada: cedar.txt", "Equivalencia: SI", "Validez: SI", "TIEMPOS MEDIANOS", "Menor tiempo es mejor")
+        visible(terminal, "Ejecución #1", "Entrada: cedar.txt", "IDENTIFICACIÓN")
+        scroll_visible(terminal, "INDICADORES", "Equivalencia: SI", "Validez: SI")
+        scroll_visible(terminal, "INTERPRETACIÓN")
         terminal.send("\x1b[C")
         visible(terminal, "ESTADÍSTICAS DESCRIPTIVAS", "Desviación estándar poblacional")
         terminal.send("\x1b[F")
-        visible(terminal, "efectivos observados:", "equivalencia SI")
+        visible(terminal, "15/15", "SI/SI")
         terminal.send("\x1b[C")
-        visible(terminal, "MÉTODO Y FÓRMULAS", "Se cronometra el lote completo")
+        visible(terminal, "QUÉ MEDIMOS", "Se cronometra el lote completo")
+        scroll_visible(terminal, "CÓMO COMPARAMOS")
+        scroll_visible(terminal, "CÓMO INTERPRETAMOS", "Speedup =")
         terminal.send("\x1b[F")
-        visible(terminal, "Speedup =", "divisor N")
+        visible(terminal, "divisor N")
         terminal.send("\x1b[C")
-        visible(terminal, "TIEMPOS MEDIANOS", "Speedup:", "Referencia: 1.00×")
+        scroll_visible(terminal, "TIEMPOS MEDIANOS", "Referencia: 1.00×")
         before = terminal.raw
         terminal.send("\r" * 12)
         assert terminal.raw == before, "Enter duplicó el experimento finalizado"
@@ -175,13 +190,18 @@ def check(binary, cwd, columns, rows):
         field(terminal, "Alto", "5")
         execute(terminal)
         wait_state(terminal, "Finalizado")
-        visible(terminal, "Ejecución #4", "Equivalencia: SI")
+        terminal.send("\x1b[H")
+        visible(terminal, "Ejecución #4")
+        scroll_visible(terminal, "Equivalencia: SI")
         assert terminal.identity() == identity
         terminal.send(ESC)
         terminal.send(ESC)
         terminal.send("\x1b[B\x1b[B\r")
         expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
-        visible(terminal, "Ejecución #4", "TIEMPOS MEDIANOS", "Equivalencia: SI")
+        terminal.send("\x1b[H")
+        visible(terminal, "Ejecución #4")
+        scroll_visible(terminal, "TIEMPOS MEDIANOS")
+        scroll_visible(terminal, "Equivalencia: SI")
         before = terminal.raw
         terminal.read()
         assert terminal.raw == before, "Repintado periódico inesperado"

@@ -13,6 +13,8 @@ struct ComparisonBars {
     std::array<int, 2> cells{};
     std::array<bool, 2> belowCell{};
 };
+// True only for unambiguous adjacent measured pairs in acquisition order.
+bool comparisonSamplesArePaired(const std::vector<ExperimentSample>& samples);
 // Presentation geometry only. No statistics or performance metrics are calculated.
 ComparisonBars comparisonBars(const ExperimentSummary& summary, int columns);
 std::vector<ftxui::Element> comparisonRows(const ExperimentResult& result,

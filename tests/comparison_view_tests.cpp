@@ -37,6 +37,15 @@ int main() {
     check(text.find("OpenMP obtuvo menor") != text.npos && text.find("2.00×") != text.npos
         && text.find("100.00 %") != text.npos && text.find("Referencia: 1.00×") != text.npos, "backend metrics and percent, actual effective threads");
     check(text.find("solicitados: 4") != text.npos && text.find("Efectivos: 2 (observados)") != text.npos, "requested and observed distinguished");
+    auto screen = ftxui::Screen::Create(ftxui::Dimensions{80,100});
+    const auto cyan = ftxui::Color::RGB(83,191,208);
+    ftxui::Render(screen, ftxui::vbox(comparisonRows(faster,"synthetic",ComparisonTab::Summary,80,cyan,ftxui::Color::Green)));
+    int separators = 0, headings = 0;
+    for (int y = 0; y < 100; ++y) {
+        if (screen.PixelAt(0,y).character == "─" && screen.PixelAt(0,y).dim) ++separators;
+        if (screen.PixelAt(0,y).bold && screen.PixelAt(0,y).foreground_color == cyan) ++headings;
+    }
+    check(separators == 3 && headings >= 4, "dim section separators and cyan bold hierarchy");
     auto slower = measured(1,2);
     text = rendered(slower,ComparisonTab::Summary,80);
     check(text.find("Secuencial obtuvo menor") != text.npos && text.find("0.50×") != text.npos, "slower OpenMP is not an error");
@@ -84,19 +93,38 @@ int main() {
     auto malformed = faster;
     malformed.summary.sequentialStatistics->medianMs = std::numeric_limits<double>::infinity();
     check(!comparisonBars(malformed.summary,40).available, "non-finite medians cannot draw bars");
+    check(rendered(malformed,ComparisonTab::Samples).find("N/D") != text.npos, "invalid displayed times unavailable");
     auto precise = measured(0.12345678901234566,0.24691357802469132);
     const auto originalSamples = precise.samples;
     text = rendered(precise,ComparisonTab::Samples);
-    check(text.find("0.12345678901234566") != text.npos && text.find("0.24691357802469133") != text.npos,
-          "original samples rendered with round-trip precision");
-    check(text.find("Desviación estándar poblacional") != text.npos && text.find("Media:") != text.npos
-        && text.find("Mínimo:") != text.npos && text.find("Máximo:") != text.npos, "backend descriptive statistics");
-    check(text.find("efectivos observados: 2–2") != text.npos && text.find("equivalencia SI") != text.npos, "per-sample observations");
-    check(text.find("Secuencial · repetición 0") < text.find("OpenMP · repetición 0")
-        && text.find("OpenMP · repetición 0") < text.find("Secuencial · repetición 1"), "acquisition order preserved");
+    check(text.find("0.123457") != text.npos && text.find("0.246914") != text.npos && text.find("0.12345678901234566") == text.npos,
+          "readable precision only in presentation");
+    check(text.find("Desviación estándar poblacional") != text.npos && text.find("Media") != text.npos
+        && text.find("Mínimo") != text.npos && text.find("Máximo") != text.npos, "backend descriptive statistics");
+    check(text.find("2–2") != text.npos && text.find("SI/SI") != text.npos, "per-sample observations");
+    check(text.find("#3 S → #4 O") < text.find("#5 S → #6 O"), "acquisition order preserved");
     check(precise.samples[0].measurement.elapsedMs == originalSamples[0].measurement.elapsedMs, "render leaves original data unchanged");
+    check(comparisonSamplesArePaired(faster.samples), "real adjacent pairs");
+    auto independent = faster;
+    independent.samples[1].roundIndex = 9;
+    check(!comparisonSamplesArePaired(independent.samples), "different rounds cannot pair");
+    text = rendered(independent,ComparisonTab::Samples,50);
+    check(text.find("Sin asociación directa") != text.npos && text.find("Orden: 3") < text.find("Orden: 4"), "independent fallback preserves chronology");
+    independent = faster; independent.samples[1].measurement.repetitionIndex = 9;
+    check(!comparisonSamplesArePaired(independent.samples), "different repetitions cannot pair");
+    independent = faster; independent.samples[1].executionIndex = 99;
+    check(!comparisonSamplesArePaired(independent.samples), "nonconsecutive acquisition cannot pair");
+    independent = faster; independent.samples.pop_back();
+    check(!comparisonSamplesArePaired(independent.samples), "unmatched sample cannot pair");
+    for (int width : {80,120}) {
+        text = rendered(faster,ComparisonTab::Summary,width);
+        for (const auto* heading : {"IDENTIFICACIÓN","TIEMPOS MEDIANOS","INDICADORES","INTERPRETACIÓN"})
+            check(text.find(heading) != text.npos, "summary sections at both sizes");
+        text = rendered(precise,ComparisonTab::Samples,width);
+        check(text.find("Eq S/O") != text.npos && text.find("#3 S → #4 O") != text.npos, "compact paired table at both sizes");
+    }
     text = rendered(faster,ComparisonTab::Method);
-    check(text.find("construcción de Game") != text.npos && text.find("calentamientos") != text.npos
+    check(text.find("QUÉ MEDIMOS") != text.npos && text.find("CÓMO COMPARAMOS") != text.npos && text.find("CÓMO INTERPRETAMOS") != text.npos && text.find("construcción de Game") != text.npos && text.find("calentamientos") != text.npos
         && text.find("divisor N") != text.npos && text.find("Speedup =") != text.npos, "method explains interval, exclusions and formulas");
     std::cout << (failures ? "FAIL" : "PASS") << ": comparison geometry and presentation\n";
     return failures ? 1 : 0;
