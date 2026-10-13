@@ -253,6 +253,14 @@ target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX)
 add_test(NAME didactic_session
     COMMAND didactic_session_tests "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+# Compila los helpers reales de FTXUI para comprobar coordenadas renderizadas.
+get_target_property(didactic_layout_sources conway SOURCES)
+list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
+add_executable(didactic_layout_tests tests/didactic_layout_tests.cpp ${didactic_layout_sources})
+target_include_directories(didactic_layout_tests PRIVATE include)
+target_link_libraries(didactic_layout_tests PRIVATE OpenMP::OpenMP_CXX MPI::MPI_CXX
+    ftxui::component ftxui::dom ftxui::screen)
+add_test(NAME didactic_layout COMMAND didactic_layout_tests)
 endif()
 
 # Target independiente de demostración para la UI (Semana 5)

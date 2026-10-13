@@ -633,6 +633,12 @@ Element renderDidacticBoardPanel(
     });
 }
 
+// Ambos cuerpos reservan la misma cabecera y expanden el area del tablero.
+Element didacticBoardBody(Element indicator, Element board) {
+    return ftxui::vbox({std::move(indicator), ftxui::text(" "),
+                        std::move(board) | ftxui::flex});
+}
+
 std::vector<Element> boardRows(
     const Game& game,
     std::size_t rows,
@@ -1750,11 +1756,11 @@ private:
         }
         const std::size_t panel_outer_height = (boards_height > 2)
             ? boards_height - 2 : 0;  // menos bordes del panel
-        // Interior del panel: menos titulo + separador (2 lineas).
+        // Interior: titulo + separador y dos filas para particiones.
         const std::size_t panel_inner_width = (panel_outer_width > 2)
             ? panel_outer_width - 2 : 0;
-        const std::size_t panel_inner_height = (panel_outer_height > 2)
-            ? panel_outer_height - 2 : 0;
+        const std::size_t panel_inner_height = (panel_outer_height > 4)
+            ? panel_outer_height - 4 : 0;
 
         // Geometria adaptable: cell_chars optimo + viewport.
         const DidacticBoardGeometry geom = computeDidacticBoardGeometry(
@@ -1765,19 +1771,12 @@ private:
         // Construir los dos paneles con la misma geometria. CURRENT y
         // NEXT siempre usan la misma escala para que se vean
         // identicos.
-        Element currentBody = renderDidacticBoardPanel(
-            frame, geom, /*is_next=*/false, colors);
-
-        // NEXT incluye el indicador de particion encima del tablero.
-        // Se anade como una linea extra antes del cuerpo.
-        Element partition = partitionIndicator(frame);
-        Element nextBoard = renderDidacticBoardPanel(
-            frame, geom, /*is_next=*/true, colors);
-        Element nextBody = ftxui::vbox({
-            std::move(partition),
+        Element currentBody = didacticBoardBody(
             ftxui::text(" "),
-            std::move(nextBoard),
-        });
+            renderDidacticBoardPanel(frame, geom, /*is_next=*/false, colors));
+        Element nextBody = didacticBoardBody(
+            partitionIndicator(frame),
+            renderDidacticBoardPanel(frame, geom, /*is_next=*/true, colors));
 
         Element currentPanel = panel(
             "CURRENT · generación " + std::to_string(frame.current_generation),
