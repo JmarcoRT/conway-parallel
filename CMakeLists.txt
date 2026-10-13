@@ -85,6 +85,7 @@ add_executable(conway
     src/app/pattern_preview.cpp
     src/app/didactic_session.cpp
     src/app/ftxui_app.cpp
+    src/app/experiment_execution.cpp
     src/app/experiment_form.cpp
     src/app/experiment_form_view.cpp
     src/app/benchmark.cpp
@@ -95,6 +96,7 @@ add_executable(conway
 target_include_directories(conway PRIVATE include)
 
 target_link_libraries(conway PRIVATE
+    conway_experiment_export conway_generated_input
     OpenMP::OpenMP_CXX
     MPI::MPI_CXX
     ftxui::component
@@ -117,6 +119,11 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(experiment_execution_tests tests/experiment_execution_tests.cpp src/app/experiment_execution.cpp src/app/experiment_form.cpp)
+    target_include_directories(experiment_execution_tests PRIVATE include)
+    target_link_libraries(experiment_execution_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experiment_execution COMMAND experiment_execution_tests)
+    set_tests_properties(experiment_execution PROPERTIES ENVIRONMENT "OMP_THREAD_LIMIT=2" TIMEOUT 30)
     add_executable(experiment_form_tests tests/experiment_form_tests.cpp src/app/experiment_form.cpp)
     target_include_directories(experiment_form_tests PRIVATE include)
     add_test(NAME experiment_form COMMAND experiment_form_tests)
@@ -358,9 +365,13 @@ get_target_property(didactic_layout_sources conway SOURCES)
 list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
 add_executable(didactic_layout_tests tests/didactic_layout_tests.cpp ${didactic_layout_sources})
 target_include_directories(didactic_layout_tests PRIVATE include)
-target_link_libraries(didactic_layout_tests PRIVATE OpenMP::OpenMP_CXX MPI::MPI_CXX
+target_link_libraries(didactic_layout_tests PRIVATE conway_experiment_export conway_generated_input OpenMP::OpenMP_CXX MPI::MPI_CXX
     ftxui::component ftxui::dom ftxui::screen)
 add_test(NAME didactic_layout COMMAND didactic_layout_tests)
+add_executable(ftxui_execution_fixture tests/ftxui_execution_fixture.cpp ${didactic_layout_sources})
+target_include_directories(ftxui_execution_fixture PRIVATE include)
+target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
+    OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME experiment_csv_roundtrip
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"
@@ -377,7 +388,7 @@ add_test(NAME ftxui_menu_pty
 set_tests_properties(ftxui_menu_pty PROPERTIES TIMEOUT 60)
 add_test(NAME ftxui_benchmark_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
-            "$<TARGET_FILE:conway>")
+            "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")
 set_tests_properties(ftxui_benchmark_pty PROPERTIES TIMEOUT 150)
 
 endif()

@@ -78,130 +78,177 @@ def check_sources(terminal, values, change=False):
     terminal.expect("Patrón: cedar.txt", "3 × 7")
 
 
+def wait_state(terminal, state):
+    import time
+    deadline = time.monotonic() + 90  # Límite de bloqueo, no umbral de rendimiento.
+    while "Estado: " + state not in " ".join(terminal.screen().values()):
+        assert terminal.process.poll() is None
+        assert time.monotonic() < deadline, terminal.screen()
+        terminal.read()
+    terminal.assert_fits()
+
+
+def field(terminal, label, value):
+    move_to(terminal, label)
+    edit(terminal, value)
+
+
+def execute(terminal):
+    move_to(terminal, "Ejecutar experimento")
+    terminal.send("\r" * 12)
+
+
 def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
         identity = terminal.identity()
-        terminal.send("4c3\r")  # Configurar antes de abrir el formulario por primera vez.
-        terminal.send("\r\r")
+        terminal.send("4c2\rC\r1\r")
         expect_identity_heading(terminal, "COMPARACIÓN DE MOTORES")
-        assert "Sin patrón cargado" not in form_text(terminal)
-        move_to(terminal, "Hilos OpenMP")
-        focused(terminal, "Hilos OpenMP", "3")
-        move_to(terminal, "Tablero generado")
-        # Seleccionar patrón inexistente y validar: error concreto en Entrada.
-        terminal.send("\x1b[H\r" + BACK_TAB + "\r")
-        focused(terminal, "Patrón cargado")
-        visible(terminal, "Sin patrón cargado.")
+        visible(terminal, "cedar.txt", "7 × 3")
+        assert "Ancho:" not in form_text(terminal)
+        field(terminal, "Generaciones", "0")
+        execute(terminal)
+        focused(terminal, "Generaciones")
+        visible(terminal, "Entero entre 1")
+        edit(terminal, "3")
+        field(terminal, "Calentamientos", "0")
+        field(terminal, "Repeticiones", "2")
+        field(terminal, "Hilos OpenMP", "2")
+        execute(terminal)
+        wait_state(terminal, "Finalizado")
+        visible(terminal, "Ejecución #1", "Entrada: cedar.txt", "Equivalencia: SI", "Validez: SI", "Mediana secuencial:")
+        before = terminal.raw
+        terminal.send("\r" * 12)
+        assert terminal.raw == before, "Enter duplicó el experimento finalizado"
         terminal.send(ESC)
-        terminal.send(ESC)
-        terminal.send("C\r")
-        terminal.send("1\r")
-        visible(terminal, "cedar.txt")
-        assert "Sin patrón cargado." not in " ".join(terminal.screen().values())
-        terminal.send("\x1b[F\r" + TAB)
-        focused(terminal, "Ancho", "1000")
-        edit(terminal, "0")
-        terminal.send(BACK_TAB * 2 + "\r")
-        focused(terminal, "Ancho")
-        visible(terminal, "Ancho entero positivo")
-        edit(terminal, "17")
-        terminal.send(TAB)
-        edit(terminal, "9")
-        invalid = ["30.001", "4294967296", "0", "-1", "0", "0"]
-        labels = ["Densidad (%)", "Semilla", "Generaciones", "Calentamientos", "Repeticiones", "Hilos OpenMP"]
-        for value in invalid:
-            terminal.send(TAB)
-            edit(terminal, value)
-        terminal.send(TAB * 2 + "\r")
-        corrections = ["30.25", "4294967295", "23", "0", "7", "123"]
-        errors = ["precisión exacta", "Semilla entera", "Entero entre 1", "Entero entre 0", "Entero entre 1", "Entero entre 1"]
-        for index, (label, value, error) in enumerate(zip(labels, corrections, errors)):
-            focused(terminal, label)
-            visible(terminal, error)
-            edit(terminal, value)
-            if index < len(labels) - 1:
-                terminal.send(TAB)
-        terminal.send(TAB * 2 + "\r")
-        focused(terminal, "Ejecutar experimento")
-        visible(terminal, "Configuración válida.", "La ejecución se habilitará en la siguiente fase")
-        terminal.send("\r" * 8)
-        visible(terminal, "Configuración válida.")
-        terminal.send(ESC)
-        expect_focus(terminal, "Comparación de motores")
-        terminal.send("\r" + TAB * 2)  # Desde Ejecutar: Entrada, Ancho.
-        focused(terminal, "Ancho", "17")
-        # Comprobar cada valor conservado, incluyendo los que quedaron fuera de pantalla.
-        saved = ["9"] + corrections
-        for value in saved:
-            terminal.send(TAB)
-            focused(terminal, value)
-        check_sources(terminal, ["17", "9", "30.25", "4294967295"])
-        move_to(terminal, "Restaurar valores estándar")
-        terminal.send("\r")
-        focused(terminal, "Restaurar valores estándar")
-        terminal.send(TAB * 2 + "\x1b[F\r" + TAB)  # Ejecutar, Entrada, generado, Ancho.
-        focused(terminal, "Ancho", "1000")
-        move_to(terminal, "Hilos OpenMP")
-        focused(terminal, "Hilos OpenMP", "3")
+        expect_identity_heading(terminal, "COMPARACIÓN DE MOTORES")
         terminal.send(ESC)
         terminal.send("\x1b[B\r")
         expect_identity_heading(terminal, "ESCALABILIDAD OPENMP")
-        terminal.send("\x1b[F\r")  # Elegir generado también en escalabilidad.
-        check_sources(terminal, ["1234", "567", "31.25", "987"], change=True)
-        move_to(terminal, "Tablero generado")
-        terminal.send(BACK_TAB * 3)  # Desde Entrada: Ejecutar, Restaurar, Lista.
-        focused(terminal, "Lista de hilos", "1, 2, 4, 8")
-        edit(terminal, "1, 2, 1")
-        terminal.send(TAB * 2 + "\r")
+        terminal.send("\x1b[F\r")
+        check_sources(terminal, ["7", "5", "30", "42"], change=True)
+        field(terminal, "Generaciones", "3")
+        field(terminal, "Calentamientos", "0")
+        field(terminal, "Repeticiones", "2")
+        field(terminal, "Lista de hilos", "1,1")
+        execute(terminal)
         focused(terminal, "Lista de hilos")
         visible(terminal, "hilos duplicados")
-        edit(terminal, "8, 1, 3")
-        terminal.send(TAB * 2 + "\r")
-        visible(terminal, "Configuración válida.")
-        terminal.send(ESC)
-        expect_focus(terminal, "Escalabilidad OpenMP")
-        terminal.send("\r" + BACK_TAB * 2)
-        focused(terminal, "Lista de hilos", "8, 1, 3")
-        terminal.send(TAB + "\r" + BACK_TAB)
-        focused(terminal, "Lista de hilos", "1, 2, 4, 8")
+        edit(terminal, "1,2")
+        execute(terminal)
+        wait_state(terminal, "Finalizado")
+        visible(terminal, "Ejecución #2", "Entrada: Tablero generado", "7 × 5")
+        terminal.send("\x1b[F")
+        visible(terminal, "OpenMP · 2 hilos solicitados", "Equivalencia: SI", "Contexto conservado:")
         terminal.send(ESC)
         terminal.send(ESC)
-        # El patrón de la aplicación sigue siendo el origen vivo de los formularios.
-        terminal.send("C\r")
-        terminal.send("1\x1b[A\r")
-        move_to(terminal, "Restaurar valores estándar")
-        terminal.send("\r")
-        move_to(terminal, "Ejecutar experimento")
-        terminal.send("\r")
-        visible(terminal, "Configuración válida.")
-        terminal.send(TAB)  # Entrada.
-        terminal.send("\x1b[H\r")
-        visible(terminal, "cedar.txt", "7 × 3")
-        terminal.send(TAB)
-        focused(terminal, "Generaciones", "20")  # Campos generados ocultos del foco.
-        terminal.expect("Patrón: cedar.txt", "3 × 7")
+        terminal.send("\x1b[A\r")
+        # Preparación rechazada por presupuesto total: formulario válido, sin reservar el tablero.
+        move_to(terminal, "Patrón cargado")
+        terminal.send("\x1b[F\r")
+        field(terminal, "Ancho", "8000")
+        field(terminal, "Alto", "8000")
+        execute(terminal)
+        wait_state(terminal, "Error")
+        visible(terminal, "presupuesto de 256 MiB")
+        terminal.send(ESC)
+        move_to(terminal, "Ancho")
+        focused(terminal, "8000")
         terminal.send(ESC)
         terminal.send("\x1b[B\x1b[B\r")
         expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
-        visible(terminal, "El historial de resultados")
+        terminal.send("\x1b[F")
+        visible(terminal, "Resultado conservado · ejecución #2", "Equivalencia: SI")
+        terminal.send(ESC)
+        terminal.send("\x1b[A\x1b[A\r")
+        field(terminal, "Ancho", "7")
+        field(terminal, "Alto", "5")
+        execute(terminal)
+        wait_state(terminal, "Finalizado")
+        visible(terminal, "Ejecución #4", "Equivalencia: SI")
         assert terminal.identity() == identity
-        raw = terminal.raw.decode(errors="replace")
-        assert not any(value in raw for value in ("Ejecutando mediciones", "Mediana secuencial:", "Benchmark finalizado."))
         assert b"\x1b[2J" not in terminal.raw
-        before = terminal.raw
-        terminal.read()
-        assert terminal.raw == before, "Repintado periódico inesperado"
+        terminal.send(ESC)
         terminal.send(ESC)
         terminal.send(ESC)
         terminal.send("q")
         assert terminal.process.wait(timeout=5) == 0
-        print(f"PASS: formularios, edición, errores, restauración, foco y no ejecución {columns}x{rows}")
+        print(f"PASS: comparación/patrón, escalabilidad/generado, errores, recuperación, IDs y foco {columns}x{rows}")
     finally:
         terminal.close()
 
 
+def check_active_close(binary, cwd):
+    import os
+    gate = str(Path(cwd) / "worker-gate")
+    os.mkfifo(gate)
+    os.environ["CONWAY_TEST_GATE"] = gate
+    terminal = Terminal(binary, cwd, 120, 40)
+    try:
+        terminal.send("\r\r")
+        field(terminal, "Ancho", "7")
+        field(terminal, "Alto", "5")
+        field(terminal, "Generaciones", "3")
+        field(terminal, "Calentamientos", "0")
+        field(terminal, "Repeticiones", "1")
+        field(terminal, "Hilos OpenMP", "2")
+        execute(terminal)
+        wait_state(terminal, "Preparando entrada")
+        terminal.send(ESC)
+        focused(terminal, "Ejecutar experimento")
+        terminal.send("\r" * 8)
+        visible(terminal, "Ya hay un experimento activo")
+        terminal.send(ESC)
+        terminal.send(ESC)
+        terminal.send("2")
+        visible(terminal, "Simulación disponible al finalizar")
+        terminal.send("\x1b[B" * 5 + "\r")
+        visible(terminal, "Modo didáctico disponible al finalizar")
+        terminal.send("C")
+        visible(terminal, "Catálogo disponible al finalizar")
+        # Navegar a Resultados y completar sin que el worker cambie la página activa.
+        terminal.send("1\x1b[B\x1b[B\r")
+        expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
+        with open(gate, "w") as stream:
+            stream.write("1")
+        wait_state(terminal, "Finalizado")
+        expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
+        visible(terminal, "Ejecución #1", "Equivalencia: SI")
+        terminal.send(ESC)
+        terminal.send("\x1b[A\x1b[A\r")
+        execute(terminal)
+        wait_state(terminal, "Preparando entrada")
+        terminal.send(ESC)
+        terminal.send(ESC)
+        terminal.send(ESC)
+        terminal.send("q")
+        visible(terminal, "Salida pendiente")
+        assert terminal.process.poll() is None
+        with open(gate, "w") as stream:
+            stream.write("2")
+        import time
+        deadline = time.monotonic() + 15
+        while terminal.process.poll() is None:
+            assert time.monotonic() < deadline
+            terminal.read()
+        assert terminal.process.returncode == 0
+        assert b"\x1b[2J" not in terminal.raw
+        print("PASS: duplicados, navegación activa, exclusión de cálculos, publicación y cierre diferido con compuerta")
+    finally:
+        # Desbloquear el worker también si falla una aserción de la prueba.
+        try:
+            fd = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+            os.write(fd, b"x")
+            os.close(fd)
+        except OSError:
+            pass
+        terminal.close()
+        os.environ.pop("CONWAY_TEST_GATE", None)
+
+
 if __name__ == "__main__":
+    import os
+    os.environ["OMP_THREAD_LIMIT"] = "2"
     binary = str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix="conway-forms-") as cwd:
         patterns = Path(cwd) / "patterns"
@@ -209,3 +256,4 @@ if __name__ == "__main__":
         (patterns / "cedar.txt").write_text("3 7\n" + "0000000\n" * 3)
         for size in [(120, 40), (80, 24)]:
             check(binary, cwd, *size)
+        check_active_close(str(Path(sys.argv[2]).resolve()), cwd)

@@ -1,5 +1,5 @@
 #pragma once
-#include "input/input.hpp"
+#include "app/experiment_form.hpp"
 #include <ftxui/component/component.hpp>
 #include <functional>
 #include <string>
@@ -9,5 +9,6 @@ namespace conway::app {
 ftxui::Component makeExperimentFormView(
     bool scaling, std::function<const InputData*()> input,
     std::function<std::string()> patternName, std::function<int()> currentThreads,
-    std::function<ftxui::Element(ftxui::Element)> focusedStyle);
+    std::function<ftxui::Element(ftxui::Element)> focusedStyle,
+    std::function<std::string(bool, ExperimentFormConfig)> submit);
 } // namespace conway::app

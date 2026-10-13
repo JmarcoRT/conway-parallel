@@ -11,9 +11,10 @@ class ExperimentFormView final : public ComponentBase {
 public:
     ExperimentFormView(bool scaling, std::function<const InputData*()> input,
                        std::function<std::string()> name, std::function<int()> threads,
-                       std::function<Element(Element)> style)
+                       std::function<Element(Element)> style,
+                       std::function<std::string(bool, ExperimentFormConfig)> submit)
         : scaling_(scaling), input_(std::move(input)), name_(std::move(name)),
-          threads_(std::move(threads)), style_(std::move(style)) {
+          threads_(std::move(threads)), style_(std::move(style)), submit_(std::move(submit)) {
         MenuOption sourceOption = MenuOption::Vertical();
         sourceOption.focused_entry = &draft_.source;
         sourceOption.entries_option.transform = [this](const EntryState& entry) {
@@ -55,7 +56,7 @@ public:
             const auto validation = validateExperimentForm(draft_, scaling_, input_());
             errors_ = validation.errors;
             message_ = validation.config
-                ? "Configuración válida. La ejecución se habilitará en la siguiente fase"
+                ? submit_(scaling_, *validation.config)
                 : "Revisa los campos señalados.";
             if (!validation.config) {
                 if (!errors_[static_cast<std::size_t>(ExperimentField::Source)].empty()) {
@@ -142,6 +143,7 @@ private:
     std::function<std::string()> name_;
     std::function<int()> threads_;
     std::function<Element(Element)> style_;
+    std::function<std::string(bool, ExperimentFormConfig)> submit_;
     const InputData* previousInput_{nullptr};
     std::string previousName_;
     std::size_t previousWidth_{0}, previousHeight_{0};
@@ -156,8 +158,9 @@ private:
 ftxui::Component makeExperimentFormView(
     bool scaling, std::function<const InputData*()> input,
     std::function<std::string()> patternName, std::function<int()> currentThreads,
-    std::function<ftxui::Element(ftxui::Element)> focusedStyle) {
+    std::function<ftxui::Element(ftxui::Element)> focusedStyle,
+    std::function<std::string(bool, ExperimentFormConfig)> submit) {
     return ftxui::Make<ExperimentFormView>(scaling, std::move(input), std::move(patternName),
-                                          std::move(currentThreads), std::move(focusedStyle));
+                                          std::move(currentThreads), std::move(focusedStyle), std::move(submit));
 }
 } // namespace conway::app

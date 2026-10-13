@@ -2,6 +2,8 @@
 
 #include "app/benchmark.hpp"
 #include "app/experiment_form_view.hpp"
+#include "app/experiment_execution.hpp"
+#include "experiment_input_detail.hpp"
 #include "app/controls.hpp"
 #include "app/didactic_session.hpp"
 #include "app/pattern_catalog.hpp"
@@ -121,6 +123,7 @@ enum class Page {
     PathInput,
     ThreadInput,
     Simulation,
+    ExperimentExecution,
     ComparisonConfig,
     BenchmarkMenu,
     BenchmarkScaling,
@@ -808,7 +811,8 @@ std::string benchmarkReport(const BenchmarkResult& result) {
 
 class InteractiveApp final : public ftxui::ComponentBase {
 public:
-    InteractiveApp(ftxui::ScreenInteractive& screen, DifferentialOutputBuffer& output)
+    InteractiveApp(ftxui::ScreenInteractive& screen, DifferentialOutputBuffer& output,
+                   ExperimentExecution::Backend backend = {})
         : screen_(screen),
           output_(output),
           mainMenu_(makeMenu(mainItems_, state_.mainSelection, [this] { selectMain(); })),
@@ -865,14 +869,21 @@ public:
             return colorsEnabled() ? row | ftxui::bgcolor(identityCyan()) |
                 ftxui::color(ftxui::Color::RGB(25, 32, 38)) : row | ftxui::inverted;
         };
-        comparisonForm_ = makeExperimentFormView(false, input, name, threads, style);
-        scalingForm_ = makeExperimentFormView(true, input, name, threads, style);
+        experiment_ = std::make_unique<ExperimentExecution>([this] {
+            screen_.PostEvent(Event::Custom);
+        }, std::move(backend));
+        auto submit = [this](bool scaling, ExperimentFormConfig config) {
+            return launchExperiment(scaling, std::move(config));
+        };
+        comparisonForm_ = makeExperimentFormView(false, input, name, threads, style, submit);
+        scalingForm_ = makeExperimentFormView(true, input, name, threads, style, submit);
         Add(comparisonForm_);
         Add(scalingForm_);
         refreshPatterns();
     }
 
     ~InteractiveApp() override {
+        experiment_->shutdown();
         playbackTimer_.request_stop();
         // Destruir el didactic antes que el worker thread termine,
         // para que joinWorker() se ejecute y no quede colgando.
@@ -925,6 +936,9 @@ public:
             case Page::BenchmarkMenu:
                 content = renderBenchmarkMenu();
                 break;
+            case Page::ExperimentExecution:
+                content = renderExperiment(false);
+                break;
             case Page::ComparisonConfig:
                 content = panel("COMPARACIÓN DE MOTORES", comparisonForm_->Render());
                 break;
@@ -932,9 +946,7 @@ public:
                 content = panel("ESCALABILIDAD OPENMP", scalingForm_->Render());
                 break;
             case Page::BenchmarkResults:
-                content = panel("RESULTADOS DE LA SESIÓN", ftxui::paragraph(
-                    "El historial de resultados de la sesión se incorporará "
-                    "en próximas iteraciones."));
+                content = renderExperiment(true);
                 break;
             case Page::Benchmark:
                 content = renderBenchmark();
@@ -970,6 +982,10 @@ public:
 
     bool OnEvent(Event event) override {
         if (event == Event::Custom) {
+            if (exitWhenExperimentFinishes_ && !experiment_->snapshot().active()) {
+                screen_.Exit();
+                return true;
+            }
             const unsigned pending = pendingEvents_.exchange(0, std::memory_order_acq_rel);
             if ((pending & kBenchmarkEvent) != 0) {
                 receiveBenchmarkResult();
@@ -991,6 +1007,14 @@ public:
                     }
                 }
             }
+            return true;
+        }
+        if ((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
+            && (event == Event::ArrowDown || event == Event::ArrowUp || event == Event::Home || event == Event::End)) {
+            if (event == Event::Home) resultRow_ = 0;
+            else if (event == Event::End) resultRow_ = resultRows_ - 1;
+            else resultRow_ += event == Event::ArrowDown ? 1 : -1;
+            resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
             return true;
         }
         if (event == Event::Escape) {
@@ -1146,6 +1170,7 @@ private:
         switch (state_.page) {
             case Page::Main: return mainMenu_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
+            case Page::ExperimentExecution: return benchmarkView_;
             case Page::ComparisonConfig: return comparisonForm_;
             case Page::BenchmarkScaling: return scalingForm_;
             case Page::BenchmarkResults: return benchmarkView_;
@@ -1271,12 +1296,13 @@ private:
             case 2: state_.page = Page::Engines; break;
             case 3: state_.page = Page::Threads; break;
             case 4:
+                if (experiment_->snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; break; }
                 state_.returnAfterCatalog = Page::Main;
                 refreshPatterns();
                 state_.page = Page::Patterns;
                 break;
             case 5: startDidactic(); break;
-            case 6: screen_.Exit(); break;
+            case 6: requestExit(); break;
             default: break;
         }
     }
@@ -1401,6 +1427,7 @@ private:
     }
 
     void startSimulation() {
+        if (experiment_->snapshot().active()) { state_.message = "Simulación disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Simulation;
             refreshPatterns();
@@ -1417,6 +1444,7 @@ private:
     }
 
     void startDidactic() {
+        if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
             refreshPatterns();
@@ -1439,6 +1467,7 @@ private:
     }
 
     void startBenchmark() {
+        if (experiment_->snapshot().active()) return;
         if (state_.benchmarkRunning) {
             state_.page = Page::Benchmark;
             return;
@@ -1499,10 +1528,11 @@ private:
     bool handleShortcut(const std::string& key) {
         if (state_.page == Page::Main) {
             if (key == "0" || key == "q" || key == "Q") {
-                screen_.Exit();
+                requestExit();
                 return true;
             }
             if (key == "c" || key == "C") {
+                if (experiment_->snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; return true; }
                 state_.returnAfterCatalog = Page::Main;
                 refreshPatterns();
                 state_.page = Page::Patterns;
@@ -1561,7 +1591,7 @@ private:
     void goBack() {
         switch (state_.page) {
             case Page::Main:
-                screen_.Exit();
+                requestExit();
                 break;
             case Page::Patterns:
                 state_.page = state_.returnAfterCatalog;
@@ -1570,6 +1600,10 @@ private:
             case Page::Threads:
             case Page::BenchmarkMenu:
                 state_.page = Page::Main;
+                break;
+            case Page::ExperimentExecution:
+                state_.page = experiment_->snapshot().description.scaling
+                    ? Page::BenchmarkScaling : Page::ComparisonConfig;
                 break;
             case Page::Benchmark:
             case Page::ComparisonConfig:
@@ -1800,11 +1834,120 @@ private:
         }) | ftxui::border;
     }
 
+    void requestExit() {
+        if (experiment_->snapshot().active()) {
+            exitWhenExperimentFinishes_ = true;
+            state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
+        } else screen_.Exit();
+    }
+
+    std::size_t retainedUiPayload() const {
+        using detail::checkedAdd;
+        using detail::checkedMultiply;
+        auto bytes = state_.input ? state_.input->cells.capacity() : 0;
+        auto gameBytes = [&](const Game& game) {
+            return checkedMultiply(2, checkedMultiply(checkedAdd(game.width(), 2), checkedAdd(game.height(), 2)));
+        };
+        if (preview_) bytes = checkedAdd(bytes, gameBytes(*preview_));
+        for (const auto* game : {&catalogPreview_.current, &catalogPreview_.next})
+            if (*game) bytes = checkedAdd(bytes, gameBytes(**game));
+        if (state_.simulation) {
+            const auto& game = state_.simulation->game();
+            bytes = checkedAdd(bytes, checkedAdd(gameBytes(game), checkedMultiply(game.width(), game.height())));
+        }
+        if (state_.didactic) {
+            bytes = checkedAdd(bytes, state_.didactic->initialInput().cells.capacity());
+            for (const auto* game : {state_.didactic->preStep(), state_.didactic->postStep()})
+                if (game) bytes = checkedAdd(bytes, gameBytes(*game));
+            if (const auto* trace = state_.didactic->stepTrace())
+                bytes = checkedAdd(bytes, checkedMultiply(trace->workers.capacity(), sizeof(core::WorkerRecord)));
+        }
+        if (state_.benchmark)
+            bytes = checkedAdd(bytes, checkedMultiply(state_.benchmark->samples.capacity(), sizeof(BenchmarkSample)));
+        return bytes;
+    }
+
+    std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
+        if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
+        if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
+        if (state_.benchmarkRunning || (state_.didactic && state_.didactic->isPreparing()))
+            return "Espera a que termine la preparación o medición activa.";
+        try {
+            const auto bytes = retainedUiPayload();
+            if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
+                                    std::filesystem::path(state_.path).filename().string(), bytes))
+                return "Ya hay un experimento activo.";
+            resultRow_ = 0;
+            state_.page = Page::ExperimentExecution;
+            return {};
+        } catch (const std::exception& error) { return error.what(); }
+    }
+
+    Element renderExperiment(bool session) {
+        const auto snapshot = experiment_->snapshot();
+        const auto& d = snapshot.description;
+        std::vector<Element> rows;
+        const char* status = "Listo";
+        switch (snapshot.phase) {
+            case ExecutionPhase::Ready: break;
+            case ExecutionPhase::Preparing: status = "Preparando entrada"; break;
+            case ExecutionPhase::Running: status = "Ejecutando mediciones"; break;
+            case ExecutionPhase::Finished: status = "Finalizado"; break;
+            case ExecutionPhase::Error: status = "Error"; break;
+        }
+        rows.push_back(ftxui::text(std::string("Estado: ") + status) |
+            ftxui::color(snapshot.phase == ExecutionPhase::Finished
+                ? ftxui::Color::RGB(98, 232, 137) : identityCyan()));
+        if (d.id) {
+            rows.push_back(ftxui::text("Ejecución #" + std::to_string(d.id) + " · " +
+                (d.scaling ? "Escalabilidad OpenMP" : "Comparación de motores")));
+            rows.push_back(ftxui::paragraph("Entrada: " + (d.config.generated ? std::string("Tablero generado") : d.patternName) +
+                " · " + std::to_string(d.width) + " × " + std::to_string(d.height) + " (ancho × alto)"));
+            const auto& c = d.config.comparison;
+            const auto& sc = d.config.scaling;
+            rows.push_back(ftxui::paragraph("Generaciones: " + std::to_string(d.scaling ? sc.generations : c.generations) +
+                " · Calentamientos: " + std::to_string(d.scaling ? sc.warmups : c.warmups) +
+                " · Repeticiones: " + std::to_string(d.scaling ? sc.repetitions : c.repetitions)));
+            std::string threads = "Hilos solicitados: ";
+            if (d.scaling) { for (auto t : sc.requestedThreads) threads += std::to_string(t) + " "; }
+            else threads += std::to_string(c.requestedThreads);
+            rows.push_back(ftxui::paragraph(threads));
+        }
+        if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
+        if (snapshot.latest && (session || snapshot.phase == ExecutionPhase::Finished)) {
+            const auto& stored = *snapshot.latest;
+            rows.push_back(ftxui::separator());
+            rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
+            auto number = [](double value) { std::ostringstream out; out << std::setprecision(8) << value; return out.str(); };
+            auto summary = [&](std::string label, const ExperimentSummary& data) {
+                rows.push_back(ftxui::text(std::move(label)));
+                rows.push_back(ftxui::text(std::string("Equivalencia: ") + (data.equivalent ? "SI" : "NO") +
+                    " · Validez: " + (data.validForComparison ? "SI" : "NO")));
+                if (data.sequentialStatistics) rows.push_back(ftxui::text("Mediana secuencial: " + number(data.sequentialStatistics->medianMs) + " ms"));
+                if (data.openMPStatistics) rows.push_back(ftxui::text("Mediana OpenMP: " + number(data.openMPStatistics->medianMs) + " ms"));
+                rows.push_back(ftxui::text("Speedup: " + (data.speedup ? number(*data.speedup) : "N/D") +
+                    " · Eficiencia: " + (data.efficiency ? number(*data.efficiency) : "N/D")));
+            };
+            std::visit([&](const auto& result) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(result)>, ExperimentResult>) summary("Comparación de motores", result.summary);
+                else for (const auto& point : result.summary.points)
+                    summary("OpenMP · " + std::to_string(point.requestedThreads) + " hilos solicitados", point.summary);
+            }, stored.result);
+            rows.push_back(ftxui::text("Contexto conservado: " + stored.context.studyId) | ftxui::dim);
+        }
+        resultRows_ = static_cast<int>(rows.size());
+        resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
+        if (!rows.empty()) rows[static_cast<std::size_t>(resultRow_)] =
+            rows[static_cast<std::size_t>(resultRow_)] | ftxui::focus;
+        return panel(session ? "RESULTADOS DE LA SESIÓN · ÚLTIMO EXPERIMENTO" : "EXPERIMENTO",
+                     ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex);
+    }
+
     Element renderBenchmarkMenu() {
         static const std::array<const char*, 3> descriptions{
             "Configura la comparación de los motores Secuencial y OpenMP.",
             "Configura el estudio de escalabilidad OpenMP.",
-            "Historial de resultados de la sesión: próximamente.",
+            "Consulta la ejecución activa y el último resultado conservado.",
         };
         return panel("BENCHMARK", ftxui::vbox({
             benchmarkMenu_->Render(),
@@ -2117,9 +2260,10 @@ private:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
+            case Page::ExperimentExecution: return "↑↓ desplazar · Esc configuración";
             case Page::ComparisonConfig:
             case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter activar · Esc volver a Benchmark";
-            case Page::BenchmarkResults: return "Esc volver a Benchmark";
+            case Page::BenchmarkResults: return "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
             case Page::Didactic: return "Espacio reproducir · N siguiente · R reiniciar · + más rápido · - más lento · Esc menú";
         }
@@ -2148,6 +2292,9 @@ private:
     std::optional<BenchmarkResult> benchmarkResult_;
     std::string benchmarkError_;
     std::thread benchmarkWorker_;
+    std::unique_ptr<ExperimentExecution> experiment_;
+    bool exitWhenExperimentFinishes_{false};
+    int resultRow_{0}, resultRows_{1};
     ftxui::Component comparisonForm_, scalingForm_;
     ftxui::Component mainMenu_;
     ftxui::Component benchmarkMenu_;
