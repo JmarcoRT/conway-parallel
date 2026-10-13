@@ -271,13 +271,13 @@ Element heading(std::string label) {
     return colorsEnabled() ? output | ftxui::color(identityCyan()) : output;
 }
 
-// Tres filas de 57 columnas: suficiente presencia sin ocupar un banner grande.
+// Tres filas de 60 columnas: suficiente presencia sin ocupar un banner grande.
 Element renderAppTitle(bool expanded) {
     if (!expanded) return heading("CONWAY PARALLEL") | ftxui::hcenter;
     static constexpr std::array<std::string_view, 3> lettering{
-        "╔═╗ ╔═╗ ╔╗╔ ╦ ╦ ╔═╗ ╦ ╦   ╔═╗ ╔═╗ ╦═╗ ╔═╗ ╦   ╦   ╔═╗ ╦  ",
-        "║   ║ ║ ║║║ ║║║ ╠═╣ ╚╦╝   ╠═╝ ╠═╣ ╠╦╝ ╠═╣ ║   ║   ║╣  ║  ",
-        "╚═╝ ╚═╝ ╝╚╝ ╚╩╝ ╩ ╩  ╩    ╩   ╩ ╩ ╩╚═ ╩ ╩ ╩═╝ ╩═╝ ╚═╝ ╩═╝",
+        "█▀▀ █▀█ █▄ █ █   █ ▄▀▄ █ █   █▀█ ▄▀▄ █▀█ ▄▀▄ █   █   █▀▀ █  ",
+        "█   █ █ █▀▄█ █ █ █ █▄█  █    █▀▀ █▄█ ██▀ █▄█ █   █   █▀  █  ",
+        "█▄▄ █▄█ █ ▀█ ▀▄▀▄▀ █ █  █    █   █ █ █ █ █ █ █▄▄ █▄▄ █▄▄ █▄▄",
     };
     ftxui::Elements lines;
     for (const auto row : lettering) lines.push_back(heading(std::string(row)));
