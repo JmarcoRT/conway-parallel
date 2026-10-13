@@ -5,6 +5,7 @@ project(conway_parallel LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
 
@@ -39,6 +40,32 @@ add_library(conway_experiments STATIC
 )
 target_include_directories(conway_experiments PUBLIC include)
 target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX)
+
+# Snapshot generated compile commands and Git only in a controlled build step.
+set(experiment_snapshot_multi_config FALSE)
+if(CMAKE_CONFIGURATION_TYPES)
+    set(experiment_snapshot_multi_config TRUE)
+endif()
+add_custom_target(experiment_build_snapshot
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
+        "-DCOMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}"
+        "-DCOMPILER_PATH=${CMAKE_CXX_COMPILER}"
+        "-DCONFIG=$<CONFIG>"
+        "-DMULTI_CONFIG=${experiment_snapshot_multi_config}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CaptureExperimentBuild.cmake"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/experiment_build_info.hpp"
+    VERBATIM)
+add_library(conway_experiment_export STATIC
+    src/app/experiment_metadata.cpp
+    src/app/experiment_csv.cpp)
+add_dependencies(conway_experiment_export experiment_build_snapshot)
+target_include_directories(conway_experiment_export PUBLIC include
+    PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(conway_experiment_export PRIVATE CONWAY_CAPTURED_BUILD_INFO=1)
+target_link_libraries(conway_experiment_export PUBLIC conway_experiments)
 
 # Ejecutable principal del proyecto
 add_executable(conway
@@ -88,6 +115,12 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(experiment_csv_tests tests/experiment_csv_tests.cpp src/input/input.cpp)
+    target_link_libraries(experiment_csv_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experiment_csv COMMAND experiment_csv_tests "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experiment_csv PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+
     add_executable(scaling_study_tests tests/scaling_study_tests.cpp src/input/input.cpp)
     target_link_libraries(scaling_study_tests PRIVATE conway_experiments conway_generated_input)
     add_test(NAME scaling_study COMMAND scaling_study_tests "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -323,6 +356,11 @@ target_link_libraries(didactic_layout_tests PRIVATE OpenMP::OpenMP_CXX MPI::MPI_
     ftxui::component ftxui::dom ftxui::screen)
 add_test(NAME didactic_layout COMMAND didactic_layout_tests)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME experiment_csv_roundtrip
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"
+            "$<TARGET_FILE:experiment_csv_tests>" "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(experiment_csv_roundtrip PROPERTIES
+    ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
 add_test(NAME ftxui_header_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_header.py"
             "$<TARGET_FILE:conway>")

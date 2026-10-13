@@ -186,3 +186,6 @@ y ejecutan 2 generaciones, 1 calentamiento y 3 rondas, solicitudes 1/2/4/8.
 No se exige speedup > 1 ni un tiempo máximo. Son validaciones funcionales
 controladas, no una campaña de rendimiento certificada. CSV/metadatos completos
 y gráficas quedan para fases posteriores.
+
+La captura de metadatos y exportación independiente de Fase 6 se documenta en
+[EXPERIMENT_CSV.md](EXPERIMENT_CSV.md).

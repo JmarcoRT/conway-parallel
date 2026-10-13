@@ -202,3 +202,6 @@ Fases siguientes: integración experimental, conservación de muestras,
 orden equilibrado, comparación de escalabilidad con referencia secuencial
 compartida por estudio/bloque y exportación. Los parámetros de campaña y
 políticas correspondientes requieren revisión antes de implementarse.
+
+La captura de metadatos y exportación independiente de Fase 6 se documenta en
+[EXPERIMENT_CSV.md](EXPERIMENT_CSV.md).

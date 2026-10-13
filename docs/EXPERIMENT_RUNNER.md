@@ -137,3 +137,6 @@ No se añaden estudios de múltiples hilos, CSV, gráficas ni controles interact
 
 La Fase 5 añade una API separada de escalabilidad fuerte con referencia
 secuencial compartida: [SCALING_STUDY.md](SCALING_STUDY.md).
+
+La captura de metadatos y exportación independiente de Fase 6 se documenta en
+[EXPERIMENT_CSV.md](EXPERIMENT_CSV.md).
