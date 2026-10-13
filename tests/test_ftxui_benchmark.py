@@ -49,6 +49,35 @@ def edit(terminal, value):
     terminal.send("\x1b[H" + "\x1b[3~" * 40 + value)
 
 
+def form_text(terminal):
+    # Excluir la barra contextual y el pie global: siguen mostrando el patrón de la aplicación.
+    return " ".join(line.strip("│ ") for row, line in terminal.screen().items()
+                    if terminal.identity_end() + 1 < row <= terminal.rows - 3)
+
+
+def check_sources(terminal, values, change=False):
+    move_to(terminal, "Tablero generado")
+    terminal.send("\x1b[F\r")
+    text = form_text(terminal)
+    assert not any(value in text for value in ("cedar.txt", "7 × 3", "Sin patrón cargado")), text
+    if change:
+        for value in values:
+            terminal.send(TAB)
+            edit(terminal, value)
+        move_to(terminal, "Tablero generado")
+    terminal.send("\x1b[H\r")
+    text = form_text(terminal)
+    assert "cedar.txt" in text and "7 × 3" in text, text
+    assert not any(label in text for label in ("Ancho:", "Alto:", "Densidad (%):", "Semilla:")), text
+    terminal.send("\x1b[F\r")
+    text = form_text(terminal)
+    assert "cedar.txt" not in text and "7 × 3" not in text, text
+    for label, value in zip(("Ancho", "Alto", "Densidad (%)", "Semilla"), values):
+        terminal.send(TAB)
+        focused(terminal, label, value)
+    terminal.expect("Patrón: cedar.txt", "3 × 7")
+
+
 def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
@@ -56,7 +85,7 @@ def check(binary, cwd, columns, rows):
         terminal.send("4c3\r")  # Configurar antes de abrir el formulario por primera vez.
         terminal.send("\r\r")
         expect_identity_heading(terminal, "COMPARACIÓN DE MOTORES")
-        visible(terminal, "Sin patrón cargado")
+        assert "Sin patrón cargado" not in form_text(terminal)
         move_to(terminal, "Hilos OpenMP")
         focused(terminal, "Hilos OpenMP", "3")
         move_to(terminal, "Tablero generado")
@@ -107,7 +136,9 @@ def check(binary, cwd, columns, rows):
         for value in saved:
             terminal.send(TAB)
             focused(terminal, value)
-        terminal.send(TAB + "\r")
+        check_sources(terminal, ["17", "9", "30.25", "4294967295"])
+        move_to(terminal, "Restaurar valores estándar")
+        terminal.send("\r")
         focused(terminal, "Restaurar valores estándar")
         terminal.send(TAB * 2 + "\x1b[F\r" + TAB)  # Ejecutar, Entrada, generado, Ancho.
         focused(terminal, "Ancho", "1000")
@@ -117,6 +148,8 @@ def check(binary, cwd, columns, rows):
         terminal.send("\x1b[B\r")
         expect_identity_heading(terminal, "ESCALABILIDAD OPENMP")
         terminal.send("\x1b[F\r")  # Elegir generado también en escalabilidad.
+        check_sources(terminal, ["1234", "567", "31.25", "987"], change=True)
+        move_to(terminal, "Tablero generado")
         terminal.send(BACK_TAB * 3)  # Desde Entrada: Ejecutar, Restaurar, Lista.
         focused(terminal, "Lista de hilos", "1, 2, 4, 8")
         edit(terminal, "1, 2, 1")

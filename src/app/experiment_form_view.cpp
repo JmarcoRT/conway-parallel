@@ -115,9 +115,11 @@ public:
         }
         sources_[0] = loaded ? "Patrón cargado" : "Patrón cargado (no disponible)";
         Elements entry{text("ENTRADA") | bold, source_->Render()};
-        entry.push_back(paragraph(loaded
-            ? name + " · " + std::to_string(loaded->width) + " × " + std::to_string(loaded->height) + " (ancho × alto)"
-            : "Sin patrón cargado: esta opción no está disponible.") | dim);
+        if (draft_.source == 0) {
+            entry.push_back(paragraph(loaded
+                ? name + " · " + std::to_string(loaded->width) + " × " + std::to_string(loaded->height) + " (ancho × alto)"
+                : "Sin patrón cargado: esta opción no está disponible.") | dim);
+        }
         const auto& sourceError = errors_[static_cast<std::size_t>(ExperimentField::Source)];
         if (!sourceError.empty()) entry.push_back(paragraph(sourceError) | color(Color::Red));
         entry.push_back(generated_->Render());
