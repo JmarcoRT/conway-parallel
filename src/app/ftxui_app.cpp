@@ -4,6 +4,7 @@
 #include "app/experiment_form_view.hpp"
 #include "app/experiment_execution.hpp"
 #include "app/comparison_view.hpp"
+#include "app/scaling_view.hpp"
 #include "experiment_input_detail.hpp"
 #include "app/controls.hpp"
 #include "app/didactic_session.hpp"
@@ -959,7 +960,7 @@ public:
 
         Element bottom = ftxui::hbox({
             ftxui::text(((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
-                && showingComparison()) ? "" : state_.message) | ftxui::color(state_.message.starts_with("Error")
+                && (showingComparison() || showingScaling())) ? "" : state_.message) | ftxui::color(state_.message.starts_with("Error")
                 ? ftxui::Color::Red : ftxui::Color::Green),
             ftxui::filler(),
             ftxui::text(footerText()) | ftxui::dim,
@@ -1012,8 +1013,9 @@ public:
             return true;
         }
         if ((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
-            && showingComparison() && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
-            comparisonTab_ = (comparisonTab_ + (event == Event::ArrowRight ? 1 : 2)) % 3;
+            && (showingComparison() || showingScaling()) && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
+            auto& tab = showingScaling() ? scalingTab_ : comparisonTab_;
+            tab = (tab + (event == Event::ArrowRight ? 1 : 2)) % 3;
             resultRow_ = 0;
             return true;
         }
@@ -1897,6 +1899,36 @@ private:
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished);
     }
 
+    bool showingScaling() const {
+        const auto snapshot = experiment_->snapshot();
+        return snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
+            && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished);
+    }
+
+    Element renderScaling(const ExecutionSnapshot& snapshot, bool session) {
+        const auto& stored = *snapshot.latest;
+        std::vector<Element> rows;
+        if (snapshot.phase != ExecutionPhase::Finished) {
+            const char* status = snapshot.phase == ExecutionPhase::Error ? "Error" :
+                snapshot.phase == ExecutionPhase::Preparing ? "Preparando entrada" : "Ejecutando mediciones";
+            rows.push_back(ftxui::paragraph(std::string("Estado: ") + status +
+                " · ejecución actual #" + std::to_string(snapshot.description.id)));
+            if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
+            rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
+        } else rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
+            ftxui::color(ftxui::Color::RGB(98,232,137)));
+        auto presentation = scalingRows(std::get<ScalingResult>(stored.result), stored.description.patternName,
+            static_cast<ScalingTab>(scalingTab_), static_cast<int>(controls::terminalSize().columns) - 2,
+            identityCyan(), ftxui::Color::RGB(98,232,137));
+        rows.insert(rows.end(), std::make_move_iterator(presentation.begin()), std::make_move_iterator(presentation.end()));
+        rows.push_back(ftxui::paragraph("Contexto conservado: " + stored.context.studyId) | ftxui::dim);
+        resultRows_ = static_cast<int>(rows.size());
+        resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
+        rows[static_cast<std::size_t>(resultRow_)] = rows[static_cast<std::size_t>(resultRow_)] | ftxui::focus;
+        return panel(session ? "RESULTADOS DE LA SESIÓN" : "ESCALABILIDAD OPENMP",
+            ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex);
+    }
+
     Element renderComparison(const ExecutionSnapshot& snapshot, bool session) {
         const auto& stored = *snapshot.latest;
         std::vector<Element> rows;
@@ -1925,6 +1957,8 @@ private:
         const auto snapshot = experiment_->snapshot();
         if (snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (session || snapshot.phase == ExecutionPhase::Finished)) return renderComparison(snapshot, session);
+        if (snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
+            && (session || snapshot.phase == ExecutionPhase::Finished)) return renderScaling(snapshot, session);
         const auto& d = snapshot.description;
         std::vector<Element> rows;
         const char* status = "Listo";
@@ -2300,12 +2334,12 @@ private:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
-            case Page::ExperimentExecution: return showingComparison()
+            case Page::ExperimentExecution: return (showingComparison() || showingScaling())
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración"
                 : "↑↓ desplazar · Esc configuración";
             case Page::ComparisonConfig:
             case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter activar · Esc volver a Benchmark";
-            case Page::BenchmarkResults: return showingComparison()
+            case Page::BenchmarkResults: return (showingComparison() || showingScaling())
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark"
                 : "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
@@ -2340,6 +2374,7 @@ private:
     bool exitWhenExperimentFinishes_{false};
     int resultRow_{0}, resultRows_{1};
     int comparisonTab_{0};
+    int scalingTab_{0};
     ftxui::Component comparisonForm_, scalingForm_;
     ftxui::Component mainMenu_;
     ftxui::Component benchmarkMenu_;

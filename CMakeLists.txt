@@ -87,6 +87,7 @@ add_executable(conway
     src/app/ftxui_app.cpp
     src/app/experiment_execution.cpp
     src/app/comparison_view.cpp
+    src/app/scaling_view.cpp
     src/app/experiment_form.cpp
     src/app/experiment_form_view.cpp
     src/app/benchmark.cpp
@@ -120,6 +121,10 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp)
+    target_include_directories(scaling_view_tests PRIVATE include)
+    target_link_libraries(scaling_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME scaling_view COMMAND scaling_view_tests)
     add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp)
     target_include_directories(comparison_view_tests PRIVATE include)
     target_link_libraries(comparison_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
