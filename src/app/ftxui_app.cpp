@@ -1048,6 +1048,17 @@ private:
     ) {
         ftxui::MenuOption option;
         option.focused_entry = &selection;
+        option.entries_option.transform = [](const ftxui::EntryState& entry) {
+            Element row = ftxui::text((entry.active ? "> " : "  ") + entry.label);
+            if (entry.active) row = row | ftxui::bold;
+            if (entry.focused) {
+                row = colorsEnabled()
+                    ? row | ftxui::bgcolor(ftxui::Color::RGB(83, 191, 208)) |
+                        ftxui::color(ftxui::Color::RGB(25, 32, 38))
+                    : row | ftxui::inverted;
+            }
+            return row;
+        };
         option.on_enter = std::move(onEnter);
         option.on_change = std::move(onChange);
         return ftxui::Menu(&items, &selection, std::move(option));
