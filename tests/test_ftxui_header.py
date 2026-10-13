@@ -172,8 +172,9 @@ def check(binary, cwd, columns, rows):
         terminal.expect("Patrón: willow.txt", "6 × 4", "OpenMP solicitado: 2")
         # El mismo contexto aparece en todas las pantallas de ejecucion.
         saved_context = terminal.context()
-        terminal.send("1")
+        terminal.send("1\r")
         assert terminal.context() == saved_context
+        terminal.send("\x1b")
         terminal.send("\x1b")
         terminal.send("\x1b[B" * 5 + "\r")
         assert terminal.context() == saved_context

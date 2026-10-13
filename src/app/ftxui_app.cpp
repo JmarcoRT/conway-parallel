@@ -120,6 +120,9 @@ enum class Page {
     PathInput,
     ThreadInput,
     Simulation,
+    BenchmarkMenu,
+    BenchmarkScaling,
+    BenchmarkResults,
     Benchmark,
     Didactic
 };
@@ -134,6 +137,7 @@ struct InteractiveState {
     Page page{Page::Main};
     Page returnAfterCatalog{Page::Main};
     int mainSelection{0};
+    int benchmarkSelection{0};
     int patternSelection{0};
     int patternActionSelection{0};
     int engineSelection{0};
@@ -806,6 +810,8 @@ public:
         : screen_(screen),
           output_(output),
           mainMenu_(makeMenu(mainItems_, state_.mainSelection, [this] { selectMain(); })),
+          benchmarkMenu_(makeMenu(benchmarkItems_, state_.benchmarkSelection,
+                                  [this] { selectBenchmarkOption(); })),
           patternMenu_(makeMenu(patternItems_, state_.patternSelection,
                                  [this] { selectPattern(); },
                                  [this] { updateCatalogPreview(); })),
@@ -820,6 +826,7 @@ public:
           threadInput_(makeThreadInput()) {
         omp_set_num_threads(state_.requestedThreads);
         Add(mainMenu_);
+        Add(benchmarkMenu_);
         Add(patternMenu_);
         Add(patternActionsMenu_);
         Add(engineMenu_);
@@ -837,6 +844,10 @@ public:
             "Catálogo de patrones",
             "Visualización didáctica",
             "Salir",
+        };
+        benchmarkItems_ = {
+            "Comparación de motores", "Escalabilidad OpenMP",
+            "Resultados de la sesión",
         };
         engineItems_ = {"Secuencial", "OpenMP", "Volver"};
         threadItems_ = {
@@ -895,6 +906,19 @@ public:
                 break;
             case Page::Simulation:
                 content = renderSimulation(size.columns, layoutHeight, compact);
+                break;
+            case Page::BenchmarkMenu:
+                content = renderBenchmarkMenu();
+                break;
+            case Page::BenchmarkScaling:
+                content = panel("ESCALABILIDAD OPENMP", ftxui::paragraph(
+                    "La configuración y ejecución desde esta interfaz se "
+                    "integrarán en próximas iteraciones."));
+                break;
+            case Page::BenchmarkResults:
+                content = panel("RESULTADOS DE LA SESIÓN", ftxui::paragraph(
+                    "El historial de resultados de la sesión se incorporará "
+                    "en próximas iteraciones."));
                 break;
             case Page::Benchmark:
                 content = renderBenchmark();
@@ -1033,9 +1057,9 @@ public:
                 return true;
             }
         }
-        if (state_.page == Page::Benchmark && event == Event::Return &&
-            !state_.benchmarkRunning) {
-            state_.page = Page::Main;
+        // Enter repetido permanece en la comparación, incluso al finalizar.
+        // Esc vuelve al submenú sin iniciar otra medición accidentalmente.
+        if (state_.page == Page::Benchmark && event == Event::Return) {
             return true;
         }
         if (event == Event::Return && state_.page == Page::PathInput) {
@@ -1105,6 +1129,9 @@ private:
     ftxui::Component activeComponent() const {
         switch (state_.page) {
             case Page::Main: return mainMenu_;
+            case Page::BenchmarkMenu: return benchmarkMenu_;
+            case Page::BenchmarkScaling:
+            case Page::BenchmarkResults: return benchmarkView_;
             case Page::Patterns:
                 return state_.patternActionsFocused
                     ? patternActionsMenu_ : patternMenu_;
@@ -1222,7 +1249,7 @@ private:
 
     void selectMain() {
         switch (state_.mainSelection) {
-            case 0: startBenchmark(); break;
+            case 0: state_.page = Page::BenchmarkMenu; break;
             case 1: startSimulation(); break;
             case 2: state_.page = Page::Engines; break;
             case 3: state_.page = Page::Threads; break;
@@ -1233,6 +1260,15 @@ private:
                 break;
             case 5: startDidactic(); break;
             case 6: screen_.Exit(); break;
+            default: break;
+        }
+    }
+
+    void selectBenchmarkOption() {
+        switch (state_.benchmarkSelection) {
+            case 0: startBenchmark(); break;
+            case 1: state_.page = Page::BenchmarkScaling; break;
+            case 2: state_.page = Page::BenchmarkResults; break;
             default: break;
         }
     }
@@ -1254,7 +1290,7 @@ private:
             state_.page = state_.returnAfterCatalog;
             if (state_.page == Page::Simulation) {
                 createSimulation();
-            } else if (state_.page == Page::Benchmark) {
+            } else if (state_.page == Page::BenchmarkMenu) {
                 startBenchmark();
             } else if (state_.page == Page::Didactic) {
                 createDidactic();
@@ -1312,7 +1348,7 @@ private:
             state_.page = destinationAfterPath_;
             if (state_.page == Page::Simulation) {
                 createSimulation();
-            } else if (state_.page == Page::Benchmark) {
+            } else if (state_.page == Page::BenchmarkMenu) {
                 startBenchmark();
             } else if (state_.page == Page::Didactic) {
                 createDidactic();
@@ -1391,7 +1427,7 @@ private:
             return;
         }
         if (!state_.input) {
-            state_.returnAfterCatalog = Page::Benchmark;
+            state_.returnAfterCatalog = Page::BenchmarkMenu;
             refreshPatterns();
             state_.page = Page::Patterns;
             return;
@@ -1455,7 +1491,7 @@ private:
                 state_.page = Page::Patterns;
                 return true;
             }
-            if (key == "1") { startBenchmark(); return true; }
+            if (key == "1") { state_.page = Page::BenchmarkMenu; return true; }
             if (key == "2") { startSimulation(); return true; }
             if (key == "3") { state_.page = Page::Engines; return true; }
             if (key == "4") { state_.page = Page::Threads; return true; }
@@ -1515,8 +1551,13 @@ private:
                 break;
             case Page::Engines:
             case Page::Threads:
-            case Page::Benchmark:
+            case Page::BenchmarkMenu:
                 state_.page = Page::Main;
+                break;
+            case Page::Benchmark:
+            case Page::BenchmarkScaling:
+            case Page::BenchmarkResults:
+                state_.page = Page::BenchmarkMenu;
                 break;
             case Page::PathInput:
                 state_.page = pathReturnPage_;
@@ -1741,6 +1782,20 @@ private:
         }) | ftxui::border;
     }
 
+    Element renderBenchmarkMenu() {
+        static const std::array<const char*, 3> descriptions{
+            "Compara los motores Secuencial y OpenMP con el patrón cargado.",
+            "Configuración y ejecución desde esta interfaz: próximamente.",
+            "Historial de resultados de la sesión: próximamente.",
+        };
+        return panel("BENCHMARK", ftxui::vbox({
+            benchmarkMenu_->Render(),
+            ftxui::separator(),
+            ftxui::paragraph(descriptions.at(
+                static_cast<std::size_t>(state_.benchmarkSelection))) | ftxui::dim,
+        }));
+    }
+
     Element renderBenchmark() {
         if (state_.benchmarkRunning) {
             return panel("BENCHMARK · Secuencial vs OpenMP",
@@ -1769,7 +1824,7 @@ private:
                 ftxui::color(ftxui::Color::Yellow));
         }
         reportRows.push_back(
-            ftxui::text("Pulsa Enter o Esc para volver.") | ftxui::dim);
+            ftxui::text("Pulsa Esc para volver.") | ftxui::dim);
         return panel("BENCHMARK · " + activePattern(state_),
             ftxui::vbox(std::move(reportRows)));
     }
@@ -2043,7 +2098,10 @@ private:
             case Page::PathInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
-            case Page::Benchmark: return "Espacio/Esc volver · resultados comparan estados equivalentes";
+            case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
+            case Page::BenchmarkScaling:
+            case Page::BenchmarkResults: return "Esc volver a Benchmark";
+            case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
             case Page::Didactic: return "Espacio reproducir · N siguiente · R reiniciar · + más rápido · - más lento · Esc menú";
         }
         return {};
@@ -2053,6 +2111,7 @@ private:
     DifferentialOutputBuffer& output_;
     InteractiveState state_;
     std::vector<std::string> mainItems_;
+    std::vector<std::string> benchmarkItems_;
     std::vector<std::string> patternItems_;
     std::vector<std::string> patternActionItems_;
     std::vector<std::string> engineItems_;
@@ -2071,6 +2130,7 @@ private:
     std::string benchmarkError_;
     std::thread benchmarkWorker_;
     ftxui::Component mainMenu_;
+    ftxui::Component benchmarkMenu_;
     ftxui::Component patternMenu_;
     ftxui::Component patternActionsMenu_;
     ftxui::Component engineMenu_;

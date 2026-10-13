@@ -504,8 +504,10 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.3
         printf '\033'
         sleep 0.3
-        printf '1'
+        printf '1\r'
         sleep 2
+        printf '\033'
+        sleep 0.2
         printf '\033'
         sleep 0.3
         printf 'q'
@@ -564,8 +566,10 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf '\r'
         sleep 0.2
-        printf '1'
+        printf '1\r'
         sleep 2
+        printf '\033'
+        sleep 0.2
         printf '\033'
         sleep 0.2
         printf '0'
