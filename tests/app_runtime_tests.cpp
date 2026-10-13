@@ -341,6 +341,37 @@ int main(int argc, char** argv) {
               result.speedup >= 0.0 && result.efficiency >= 0.0,
           "benchmark_reports_nonnegative_metrics");
 
+    check(result.samples.size() == 6, "benchmark_excludes_warmups_and_reference");
+    std::vector<double> sequentialTimes, parallelTimes;
+    for (std::size_t index = 0; index < result.samples.size(); ++index) {
+        const auto& sample = result.samples[index];
+        const bool parallel = index >= 3;
+        check(sample.engine == (parallel ? Engine::OpenMP : Engine::Sequential)
+                  && sample.repetitionIndex == static_cast<int>(index % 3)
+                  && sample.generations == 8 && sample.equivalent && sample.elapsedMs >= 0,
+              "benchmark_samples_preserve_execution_order_and_equivalence");
+        check(parallel ? sample.requestedThreads == requestedThreads
+                       : !sample.requestedThreads,
+              "benchmark_sample_requested_threads_are_engine_specific");
+        check(sample.minEffectiveThreads == (parallel ? expectedEffectiveThreads : 1)
+                  && sample.maxEffectiveThreads == (parallel ? expectedEffectiveThreads : 1),
+              "benchmark_samples_record_observed_teams_including_thread_limit");
+        (parallel ? parallelTimes : sequentialTimes).push_back(sample.elapsedMs);
+    }
+    const auto sequentialStats = conway::app::calculateBenchmarkStatistics(sequentialTimes);
+    const auto parallelStats = conway::app::calculateBenchmarkStatistics(parallelTimes);
+    check(sequentialStats && parallelStats && result.sequentialStatistics && result.openMPStatistics
+              && sequentialStats->medianMs == result.sequentialMedianMs
+              && parallelStats->medianMs == result.openMPMedianMs
+              && result.sequentialStatistics->medianMs == result.sequentialMedianMs
+              && result.openMPStatistics->medianMs == result.openMPMedianMs
+              && result.sequentialStatistics->meanMs == sequentialStats->meanMs
+              && result.openMPStatistics->populationStddevMs == parallelStats->populationStddevMs,
+          "benchmark_statistics_use_only_retained_measured_times");
+    check(result.openMPMedianMs > 0 ? result.speedup == result.sequentialMedianMs / result.openMPMedianMs
+                                   : result.speedup == 0,
+          "benchmark_preserves_speedup_formula");
+
     const InputData empty{3, 2, std::vector<std::uint8_t>(6, 0)};
     const auto emptyResult = conway::app::runBenchmark(empty, 3, 2, 1);
     SimulationSession emptySession(empty, Engine::Sequential);
@@ -348,6 +379,14 @@ int main(int argc, char** argv) {
     check(emptyResult.equivalent && emptyResult.sequentialMedianMs >= 0.0 &&
               emptySession.game().aliveCount() == 0 && emptySession.game().generation() == 1,
           "empty_pattern_is_supported");
+
+    std::vector<double> evenSequential, evenParallel;
+    for (const auto& sample : emptyResult.samples)
+        (sample.engine == Engine::Sequential ? evenSequential : evenParallel).push_back(sample.elapsedMs);
+    check(evenSequential.size() == 2 && evenParallel.size() == 2
+              && conway::app::calculateBenchmarkStatistics(evenSequential)->medianMs == emptyResult.sequentialMedianMs
+              && conway::app::calculateBenchmarkStatistics(evenParallel)->medianMs == emptyResult.openMPMedianMs,
+          "benchmark_even_medians_match_retained_samples");
 
     bool rejectedInvalidInput = false;
     try {

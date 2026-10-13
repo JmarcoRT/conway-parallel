@@ -75,6 +75,18 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(benchmark_statistics_tests
+        tests/benchmark_statistics_tests.cpp
+        src/app/benchmark.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+    )
+    target_include_directories(benchmark_statistics_tests PRIVATE include)
+    target_link_libraries(benchmark_statistics_tests PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME benchmark_statistics COMMAND benchmark_statistics_tests)
+
     add_executable(generated_input_tests
         tests/generated_input_tests.cpp
         src/core/game.cpp

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -95,7 +96,8 @@ std::vector<double> measure(
     const Game& reference,
     bool& equivalent,
     int& minEffectiveThreads,
-    int& maxEffectiveThreads
+    int& maxEffectiveThreads,
+    std::vector<BenchmarkSample>& samples
 ) {
     const TimedRun warmup = runOnce(input, engine, threads, generations);
     if (engine == Engine::OpenMP) {
@@ -107,7 +109,11 @@ std::vector<double> measure(
     for (int repetition = 0; repetition < repetitions; ++repetition) {
         TimedRun run = runOnce(input, engine, threads, generations);
         times.push_back(run.elapsedMs);
-        equivalent = equivalent && sameState(run.finalGame, reference);
+        const bool runEquivalent = sameState(run.finalGame, reference);
+        equivalent = equivalent && runEquivalent;
+        samples.push_back({engine, repetition, run.elapsedMs, generations,
+                           engine == Engine::OpenMP ? std::optional<int>{threads} : std::nullopt,
+                           run.minEffectiveThreads, run.maxEffectiveThreads, runEquivalent});
         if (engine == Engine::OpenMP) {
             minEffectiveThreads = std::min(minEffectiveThreads, run.minEffectiveThreads);
             maxEffectiveThreads = std::max(maxEffectiveThreads, run.maxEffectiveThreads);
@@ -117,6 +123,36 @@ std::vector<double> measure(
 }
 
 } // namespace
+
+std::optional<BenchmarkStatistics> calculateBenchmarkStatistics(std::span<const double> times) {
+    if (times.empty()) return std::nullopt;
+    for (double value : times) {
+        if (!std::isfinite(value) || value < 0.0)
+            throw std::invalid_argument("Benchmark times must be finite and nonnegative");
+    }
+    // Scale before accumulating moments: avoids overflow even for DBL_MAX data.
+    const auto [minimum, maximum] = std::minmax_element(times.begin(), times.end());
+    const long double scale = *maximum;
+    long double mean = 0.0L;
+    long double squaredDeviations = 0.0L;
+    std::size_t count = 0;
+    for (double value : times) {
+        const long double normalized = scale > 0 ? value / scale : 0.0L;
+        const long double delta = normalized - mean;
+        mean += delta / static_cast<long double>(++count);
+        squaredDeviations += delta * (normalized - mean);
+    }
+    std::vector<double> sorted(times.begin(), times.end());
+    std::sort(sorted.begin(), sorted.end());
+    const auto middle = sorted.size() / 2;
+    const double centralSum = sorted.size() % 2 ? 0.0 : sorted[middle - 1] + sorted[middle];
+    const double medianValue = sorted.size() % 2 ? sorted[middle]
+        : std::isfinite(centralSum) ? centralSum / 2.0
+        : sorted[middle - 1] + (sorted[middle] - sorted[middle - 1]) / 2.0;
+    return BenchmarkStatistics{*minimum, *maximum, medianValue,
+        static_cast<double>(mean * scale),
+        static_cast<double>(std::sqrt(std::max(0.0L, squaredDeviations / count)) * scale)};
+}
 
 int benchmarkThreadCount() noexcept {
     return std::max(1, std::min(8, omp_get_max_threads()));
@@ -140,16 +176,18 @@ BenchmarkResult runBenchmark(
     OpenMPSettingsGuard settings;
     omp_set_dynamic(0);
 
+    std::vector<BenchmarkSample> samples;
+    samples.reserve(static_cast<std::size_t>(repetitions) * 2);
     bool equivalent = true;
     const TimedRun sequential = runOnce(input, Engine::Sequential, 1, generations);
     int minEffectiveThreads = std::numeric_limits<int>::max();
     int maxEffectiveThreads = 0;
     const auto sequentialTimes = measure(
         input, Engine::Sequential, 1, generations, repetitions, sequential.finalGame, equivalent,
-        minEffectiveThreads, maxEffectiveThreads);
+        minEffectiveThreads, maxEffectiveThreads, samples);
     const auto openMPTimes = measure(
         input, Engine::OpenMP, threads, generations, repetitions, sequential.finalGame, equivalent,
-        minEffectiveThreads, maxEffectiveThreads);
+        minEffectiveThreads, maxEffectiveThreads, samples);
 
     const double sequentialMedian = median(sequentialTimes);
     const double openMPMedian = median(openMPTimes);
@@ -160,6 +198,9 @@ BenchmarkResult runBenchmark(
     const double efficiency = efficiencyValid
         ? speedup / static_cast<double>(minEffectiveThreads)
         : 0.0;
+
+    auto sequentialStatistics = calculateBenchmarkStatistics(sequentialTimes);
+    auto openMPStatistics = calculateBenchmarkStatistics(openMPTimes);
 
     return {
         sequentialMedian,
@@ -173,7 +214,10 @@ BenchmarkResult runBenchmark(
         efficiencyValid,
         generations,
         repetitions,
-        equivalent
+        equivalent,
+        std::move(samples),
+        sequentialStatistics,
+        openMPStatistics
     };
 }
 
