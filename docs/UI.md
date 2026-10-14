@@ -150,15 +150,20 @@ se mantienen dos paneles si caben horizontalmente y hay espacio para cinco
 filas lógicas (o todo el patrón, si es más corto). Las flechas desplazan el
 viewport del tablero. El indicador informa el intervalo visible.
 
-En el catálogo compacto, `D` alterna lista/detalle y `V` alterna ACTUAL/SIGUIENTE.
-Las flechas desplazan el tablero del detalle; `PgUp`/`PgDn` permiten consultar
-su contenido vertical. Enter carga el patrón seleccionado en cualquiera de
-las vistas. La selección nativa se conserva al redimensionar.
+En el catálogo, `D` activa el detalle o devuelve el control a la lista.
+La región activa se identifica en su encabezado. En la lista, ↑/↓ seleccionan
+patrones; en el detalle, las flechas desplazan el viewport compartido de
+ACTUAL/SIGUIENTE sin cambiar el patrón. En compacto se muestra una región
+a la vez y `V` alterna ACTUAL/SIGUIENTE. `PgUp`/`PgDn` desplazan únicamente
+los metadatos, mientras el tablero y su indicador permanecen visibles.
+Enter carga el patrón seleccionado en cualquiera de las vistas. La selección nativa se conserva al redimensionar.
 
-En didáctica compacta, `V` alterna los tableros y `T` muestra el trabajo por
-hilo. Las flechas desplazan el tablero o la lista de trabajadores;
-`PgUp`/`PgDn` desplazan el contenido. Los controles de reproducción mantienen
-su funcionamiento. Los formularios experimentales conservan el desplazamiento
+En didáctica, las flechas desplazan el viewport compartido por CURRENT/NEXT
+en todos los tamaños. `T` alterna los tableros y la lista completa de
+trabajadores; ↑/↓ y `PgUp`/`PgDn` recorren esa lista sin limitarla a ocho
+trabajadores. En compacto, `V` alterna los tableros. Cuando ambas generaciones
+están visibles, `V` no cambia ninguna selección interna. Los controles de
+reproducción mantienen su funcionamiento. Los formularios experimentales conservan el desplazamiento
 al mover el foco con Tab/Mayús+Tab; los resultados conservan sus pestañas y
 el desplazamiento con flechas, Inicio y Fin.
 
@@ -168,3 +173,11 @@ insuficiente. Este mínimo reserva espacio para la identidad, un panel con sus
 controles y la ayuda inferior. Los tableros grandes usan un viewport: para
 ver otras células hay que desplazarlo. La vista amplia conserva su presentación
 original, incluida la tabla resumida de trabajadores.
+
+La geometría de Catálogo y Didáctica se calcula a partir del rectángulo que
+FTXUI asigna finalmente al área de tableros, después del contenido circundante.
+Se reserva espacio para cuadrículas completas y un indicador compartido con
+los intervalos de filas y columnas visibles. Si ni siquiera cabe una celda
+con sus controles, esa región muestra un aviso de espacio insuficiente.
+Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
+los demás offsets se ajustan al nuevo rango sin reiniciar el estado.

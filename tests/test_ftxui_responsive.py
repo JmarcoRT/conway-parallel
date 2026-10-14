@@ -82,7 +82,7 @@ def check(binary, cwd, size):
         t.send("t")
         visible(t, "TRABAJO POR HILO")
         resize(t, 160, 45)
-        visible(t, "CURRENT · generación 0", "NEXT · generación 1")
+        visible(t, "TRABAJO POR HILO")
         resize(t, 80, 24)
         visible(t, "TRABAJO POR HILO")
         t.send("t")

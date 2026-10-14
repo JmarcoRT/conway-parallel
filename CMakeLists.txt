@@ -394,6 +394,10 @@ add_executable(responsive_layout_tests tests/responsive_layout_tests.cpp)
 target_include_directories(responsive_layout_tests PRIVATE include)
 target_compile_options(responsive_layout_tests PRIVATE -UNDEBUG)
 add_test(NAME responsive_layout COMMAND responsive_layout_tests)
+add_test(NAME ftxui_accessibility_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_accessibility.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_accessibility_pty PROPERTIES TIMEOUT 150)
 add_test(NAME ftxui_responsive_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_responsive.py"
             "$<TARGET_FILE:conway>")
