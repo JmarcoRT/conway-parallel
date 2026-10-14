@@ -16,14 +16,10 @@
 
 ## Acerca del proyecto
 
-Conway Parallel explora distintos modelos de ejecución para simular y analizar
-el Juego de la Vida. Este autómata celular permite observar cómo reglas sencillas
-producen patrones complejos a lo largo de generaciones.
-
-El proyecto utiliza ese mismo problema para estudiar programación paralela:
-comparar resultados, visualizar el trabajo y analizar cómo cambia el rendimiento
-al distribuir el cómputo. Su alcance contempla memoria compartida y distribuida,
-con implementaciones en distintas etapas de desarrollo.
+Conway Parallel es un proyecto académico que utiliza el Juego de la Vida de
+Conway para implementar, visualizar y comparar distintos modelos de programación
+paralela. Permite explorar el comportamiento de la simulación y evaluar su
+rendimiento mediante experimentos reproducibles.
 
 ## Características
 
@@ -43,17 +39,17 @@ con implementaciones en distintas etapas de desarrollo.
 | MPI | Prototipo independiente |
 | Pthreads | Pendiente |
 
-## Demostración
-
-Las capturas reales de la aplicación están pendientes de incorporar. Esta sección
-mostrará la simulación, el modo didáctico y los resultados experimentales.
-
 ## Inicio rápido
 
-Requisitos: Linux/WSL, compilador C++20 con OpenMP, CMake ≥ 3.20, MPI C++, Git y
-Python 3 para las pruebas. CMake obtiene FTXUI en la primera configuración;
-se necesita acceso a red o una copia local verificada. Más detalles en el
-[protocolo de compilación y experimentos](docs/BENCHMARK_PROTOCOL.md).
+Para compilar y ejecutar: Linux/WSL, un compilador C++20 con OpenMP,
+CMake ≥ 3.20, MPI C++ y Git. La configuración actual requiere MPI incluso para
+la aplicación local. CMake descarga FTXUI en la primera configuración; se necesita
+acceso a red o una copia local verificada.
+
+Python 3 se requiere cuando se habilitan las pruebas, como en los comandos
+siguientes y en el preset Release.
+
+**Desarrollo**
 
 Desde la raíz del repositorio, configura, compila y ejecuta:
 
@@ -63,8 +59,9 @@ cmake --build build -j2
 ./build/conway
 ```
 
-Para una compilación **Release** destinada a experimentos, el preset requiere
-G++ 14 en `/usr/bin/g++-14`:
+**Release**
+
+Para experimentos, el preset requiere G++ 14 en `/usr/bin/g++-14`:
 
 ```bash
 cmake --preset experimental-release
@@ -73,7 +70,8 @@ cmake --build --preset experimental-release
 ```
 
 En el menú, `C` abre el catálogo de patrones. Usa flechas y Enter para navegar.
-Consulta los [controles de la interfaz](docs/UI.md) y la [guía de pruebas](docs/TESTING.md).
+Consulta los [controles](docs/UI.md), los [requisitos avanzados de compilación
+y experimentación](docs/BENCHMARK_PROTOCOL.md) y la [guía de pruebas](docs/TESTING.md).
 
 ## Estructura del repositorio
 
@@ -99,9 +97,12 @@ conway-parallel/
 
 ## Equipo
 
-Proyecto académico desarrollado en la UNMSM. La documentación versionada
-referencia aportes de **Álvaro** y **R. Munayco**. La nómina completa y los nombres
-completos de los integrantes están pendientes de confirmar para esta portada.
+| Integrante | Integrante |
+|---|---|
+| Ryan Bernal | Manuel Guzmán |
+| Iris Hanampa | Jeanmarco Rosales |
+| Álvaro Díaz | Ronald Munayco |
+| Valeria Ccahuana | Claudia Bautista |
 
 ---
 
