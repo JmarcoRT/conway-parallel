@@ -227,13 +227,24 @@ Todos los integrantes deben respetar `docs/ARCHITECTURE.md`.
 En particular:
 
 - no crear versiones alternativas del `core`;
-- no agregar dependencias MPI, OpenMP o Pthreads dentro del `core`;
+- mantener GameState y B3/S23 sin dependencias MPI/OpenMP/Pthreads; los motores
+  específicos de `core/engines/` sí pueden usar su runtime;
 - no colocar lógica de Conway en la interfaz;
 - no colocar renderizado dentro de los motores de ejecución;
 - no cambiar interfaces compartidas sin coordinación;
 - reutilizar las interfaces comunes del proyecto.
 
 Si una tarea requiere cambiar la arquitectura, debe discutirse antes de implementarla.
+
+Para añadir un nuevo motor de ejecución (OpenMP, Pthreads, MPI u otro), el patrón es:
+
+1. Crear `include/core/engines/<motor>.hpp` y `src/core/engines/<motor>.cpp` con una API coherente con `step_<motor>(GameState&, StepTraceSink* = nullptr)`,
+   coordinando el contrato para motores futuros.
+2. Implementar **el recorrido** propio del motor (paralelo, con reparto de filas, etc.).
+3. Para cada celda lógica `(r, c)` del recorrido, llamar a `conway::core::next_cell_state(current, stride, r, c)` — **no redefinir la regla B3/S23**.
+4. Mantener la propia estrategia de `aliveCount` (counter local, `reduction`, parciales por hilo + suma, `MPI_Reduce`, etc.).
+5. Antes de retornar, llamar a `swap_buffers(state)` y `++state.generation`.
+6. Registrar el nuevo `.cpp` en el(los) target(s) apropiado(s) de `CMakeLists.txt`.
 
 ---
 

@@ -1,4 +1,7 @@
 #include "input/input.hpp"
+#include "input/validated_dimensions.hpp"
+#include <charconv>
+#include <string_view>
 
 #include <fstream>
 #include <stdexcept>
@@ -13,23 +16,23 @@ InputData loadInput(const std::string& path) {
         );
     }
 
-    std::size_t height;
-    std::size_t width;
-
-    if (!(file >> height >> width)) {
-        throw std::runtime_error(
-            "No se pudieron leer las dimensiones del tablero."
-        );
-    }
-
-    if (height == 0 || width == 0) {
-        throw std::runtime_error(
-            "Las dimensiones deben ser mayores que cero."
-        );
-    }
-
+    std::string heightToken, widthToken;
+    if (!(file >> heightToken >> widthToken))
+        throw std::runtime_error("No se pudieron leer las dimensiones del tablero.");
+    auto dimension = [](std::string_view token) {
+        if (!token.empty() && token.front() == '+') token.remove_prefix(1);
+        std::size_t value{};
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (token.empty() || parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size())
+            throw std::runtime_error("No se pudieron leer las dimensiones del tablero: valor no representable.");
+        return value;
+    };
+    const auto height = dimension(heightToken), width = dimension(widthToken);
+    conway::input::detail::BoardDimensions shape;
+    try { shape = conway::input::detail::validateDimensions(width, height); }
+    catch (const std::logic_error& error) { throw std::runtime_error(error.what()); }
     std::vector<std::uint8_t> cells;
-    cells.reserve(width * height);
+    cells.reserve(shape.cells);
 
     std::string row;
 
