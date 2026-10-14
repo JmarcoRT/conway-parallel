@@ -1,0 +1,116 @@
+Evidencia: visualización del patrón Blinker
+
+Base ejecutada: develop, commit 49eedc6
+Comando: ./build/conway_view_demo patterns/blinker.txt 2
+Código de salida: 0
+
+Resultado observado: Blinker aparece vertical en generación 0, horizontal en
+generación 1 y vertical otra vez en generación 2. La vista también presenta
+NEXT para cada estado.
+
+Salida:
+=== Patron: patterns/blinker.txt (5 x 5) ===
+
+----------------------------------------
+Generacion 0 / 2
+Celulas vivas: 3
+
+CURRENT (generacion 0):
+.....
+..#..
+..#..
+..#..
+.....
+
+NEXT (generacion 1):
+.....
+.....
+.###.
+.....
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+Ejecución adicional de la aplicación integrada:
+
+Comando ejecutado:
+printf 'C\npatterns/blinker.txt\n2\nn\nn\nx\n0\n' | ./build/conway
+
+La secuencia carga el patrón con C, abre Visualización con 2, avanza dos
+generaciones con N, vuelve al menú y sale. Código de salida: 0. Se eliminaron
+los códigos ANSI del extracto para facilitar su lectura.
+
+Entrada cargada: patterns/blinker.txt
+
+Generación 0 — CURRENT vertical; NEXT horizontal:
+CURRENT              NEXT
+.....                .....
+..#..                .....
+..#..                .###.
+..#..                .....
+.....                .....
+Generación: 0    Células vivas: 3
+
+Generación 1 — CURRENT horizontal; NEXT vertical:
+CURRENT              NEXT
+.....                .....
+.....                ..#..
+.###.                ..#..
+.....                ..#..
+.....                .....
+Generación: 1    Células vivas: 3
+
+Generación 2 — CURRENT vertical; NEXT horizontal:
+CURRENT              NEXT
+.....                .....
+..#..                .....
+..#..                .###.
+..#..                .....
+.....                .....
+Generación: 2    Células vivas: 3
+
+----------------------------------------
+Generacion 1 / 2
+Celulas vivas: 3
+
+CURRENT (generacion 1):
+.....
+.....
+.###.
+.....
+.....
+
+NEXT (generacion 2):
+.....
+..#..
+..#..
+..#..
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+----------------------------------------
+Generacion 2 / 2
+Celulas vivas: 3
+
+CURRENT (generacion 2):
+.....
+..#..
+..#..
+..#..
+.....
+
+NEXT (generacion 3):
+.....
+.....
+.###.
+.....
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta

@@ -1,0 +1,111 @@
+=== Patron: patterns/blinker.txt (5 x 5) ===
+
+----------------------------------------
+Generacion 0 / 4
+Celulas vivas: 3
+
+CURRENT (generacion 0):
+.....
+..#..
+..#..
+..#..
+.....
+
+NEXT (generacion 1):
+.....
+.....
+.###.
+.....
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+----------------------------------------
+Generacion 1 / 4
+Celulas vivas: 3
+
+CURRENT (generacion 1):
+.....
+.....
+.###.
+.....
+.....
+
+NEXT (generacion 2):
+.....
+..#..
+..#..
+..#..
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+----------------------------------------
+Generacion 2 / 4
+Celulas vivas: 3
+
+CURRENT (generacion 2):
+.....
+..#..
+..#..
+..#..
+.....
+
+NEXT (generacion 3):
+.....
+.....
+.###.
+.....
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+----------------------------------------
+Generacion 3 / 4
+Celulas vivas: 3
+
+CURRENT (generacion 3):
+.....
+.....
+.###.
+.....
+.....
+
+NEXT (generacion 4):
+.....
+..#..
+..#..
+..#..
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
+
+----------------------------------------
+Generacion 4 / 4
+Celulas vivas: 3
+
+CURRENT (generacion 4):
+.....
+..#..
+..#..
+..#..
+.....
+
+NEXT (generacion 5):
+.....
+.....
+.###.
+.....
+.....
+
+Leyenda:
+  # = celula viva
+  . = celula muerta
