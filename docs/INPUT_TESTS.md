@@ -36,10 +36,13 @@ Este archivo representa un tablero de alto 2 y ancho 3, con tres células vivas:
 101
 ```
 
-Al iniciar, la aplicación integrada no tiene una entrada activa. Se puede
-cargar una ruta con la opción `C` del menú o al entrar a Visualización sin
-haber cargado un patrón. Las rutas como `patterns/blinker.txt` se resuelven
-desde el directorio actual.
+Al iniciar, la aplicación integrada no tiene una entrada activa. En una TTY,
+`C` abre el catálogo dinámico de `patterns/*.txt`; se elige un patrón con las
+flechas y Enter. `M` permite introducir una ruta manual. En entrada no TTY,
+`C` solicita la ruta como una línea de texto, para conservar la compatibilidad
+con scripts. También se puede entrar a Visualización sin patrón y cargarlo
+cuando la aplicación lo solicite. Las rutas como `patterns/blinker.txt` se
+resuelven desde el directorio actual.
 
 ## Patrones disponibles y momentos para la demo
 
@@ -83,14 +86,16 @@ La aplicación integrada inicia sin una entrada activa. Ejecuta:
 ./build/conway
 ```
 
-En el menú, elige `C` y escribe, por ejemplo, `patterns/blinker.txt`; luego
+En TTY, `C` abre el catálogo: elige Blinker con flechas/Enter o `M` para
+una ruta manual. En pipe, `C` pide la ruta directamente; luego
 elige `2` para Visualización. También puedes elegir Visualización primero y
 la aplicación pedirá una ruta si aún no hay una entrada cargada. Ejecuta desde
 la raíz para que las rutas `patterns/...` se resuelvan correctamente.
 
 La pantalla muestra `CURRENT` y `NEXT` calculado desde el estado real del
 motor. Dentro de la simulación, `N` avanza una generación, Espacio o `P`
-inician/pausan la reproducción, `R` reinicia y `X` o `Q` vuelve al menú.
+inician/pausan la reproducción y `R` reinicia. En TTY, `Esc`, `X` o `Q`
+vuelven al menú; en modo no TTY, `X` o `Q` lo hacen.
 
 Para una ejecución corta que imprime tableros y progreso en texto:
 
@@ -209,37 +214,31 @@ directorio temporal y comprueba la selección de entrada mediante el menú:
 Estas comprobaciones cubren la carga y los errores de entrada. La evolución
 visual se reproduce aparte con los comandos descritos en la sección anterior.
 
-## Regresiones pendientes de dimensiones
+## Regresiones de dimensiones corregidas
 
-Se incluyen aparte tres comprobaciones que **fallan con el lector actual**:
+Las tres regresiones históricas se ejecutan en CTest normal mediante
+`input_dimension_regressions`. También pueden aislarse:
 
 ```bash
-bash tests/run_input_tests.sh --dimension-regressions
-# O con el binario ya compilado:
 ./build/input_tests "$PWD" --dimension-regressions
+ctest --test-dir build -R '^input_' --output-on-failure
 ```
 
-Este modo ejecuta solamente las tres regresiones y devuelve 1 si persisten.
-No convierte defectos conocidos en resultados aprobados. No forma parte del
-CTest normal; debe ejecutarse explícitamente al revisar la validación de dimensiones.
+Dimensiones negativas/no representables se rechazan antes de reservar. Se
+comprueban producto, halo, capacidad y límite de índices del motor. Game exige
+cantidad exacta de células y valores binarios antes de construir buffers.
+El caso desbordado usa alto SIZE_MAX/2+1 y ancho 2, sin reservar un tablero grande.
+La suite de entradas en memoria cubre ceros, células faltantes/sobrantes,
+valores 2/255, productos/halo y límites representables.
 
-| Caso | Resultado deseado | Resultado actual |
-|---|---|---|
-| `negative_height.txt` (`-1 1`) | Rechazo explícito de dimensiones inválidas | `std::length_error` desde `vector::reserve` |
-| `negative_width.txt` (`1 -1`) | Rechazo explícito de dimensiones inválidas | `std::length_error` desde `vector::reserve` |
-| `dimension_product_overflow` | Rechazo explícito del tamaño no representable | Error de filas faltantes después de desbordar el producto |
-
-La última entrada se genera con `height = SIZE_MAX / 2 + 1`, `width = 2` y sin
-filas. El producto sin signo se convierte en cero, por lo que el caso no solicita
-una reserva enorme. No es un benchmark ni una prueba de agotamiento de memoria.
-
-Los detalles y propuestas de corrección se registran en
-[INPUT_TEST_EVIDENCE.md](INPUT_TEST_EVIDENCE.md). No se modifica la interfaz ni
-la implementación del lector en esta entrega.
+[INPUT_TEST_EVIDENCE.md](INPUT_TEST_EVIDENCE.md) conserva el fallo original de
+Semana 5 como antecedente, no como estado actual. `bad_alloc` aún puede ocurrir
+para entradas representables: estas comprobaciones no garantizan RAM disponible.
 
 ## Trazabilidad
 
-Fuentes revisadas para esta actualización: `README.md`,
+Antecedente de la documentación original (la consolidación actual revisa también
+Game, validación compartida y CTest): `README.md`,
 `docs/ARCHITECTURE.md`, `docs/CONTRIBUTING.md`, `src/input/input.cpp`,
 `include/input/input.hpp`, `src/app/app.cpp`, `src/ui/demo_view.cpp`,
 `tests/input_tests.cpp`, `tests/conway_correctness_tests.cpp` y los archivos

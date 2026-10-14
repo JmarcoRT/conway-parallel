@@ -1,5 +1,11 @@
 # Evidencia — Semana 4 (actualización tras revisión)
 
+> Registro histórico de la revisión indicada, no guía del HEAD actual.
+> Para comandos y estado vigente, consultar [el índice](README.md) y
+> [pruebas actuales](TESTING.md). No reinterpretar las salidas originales como
+> resultados del HEAD vigente.
+
+
 ## Estado revisado
 
 - Rama `test/core-validation`, actualizada con `origin/develop` mediante

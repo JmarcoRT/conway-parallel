@@ -1,4 +1,5 @@
 #include "core/game.hpp"
+#include "input/validated_dimensions.hpp"
 
 #include "core/engines/openmp.hpp"
 #include "core/engines/sequential.hpp"
@@ -10,17 +11,16 @@ namespace conway {
 
 Game::Game(const InputData& input)
     : state_{} {
+    const auto shape = conway::input::detail::validateDimensions(input.width, input.height);
+    if (input.cells.size() != shape.cells)
+        throw std::invalid_argument("La cantidad de celulas no coincide con las dimensiones.");
+    if (std::any_of(input.cells.begin(), input.cells.end(), [](auto cell) { return cell > 1; }))
+        throw std::invalid_argument("El tablero solo puede contener 0 y 1.");
     state_.width = input.width;
     state_.height = input.height;
-    state_.stride = input.width + 2;
-    state_.current.assign(state_.stride * (state_.height + 2), 0);
-    state_.next.assign(state_.stride * (state_.height + 2), 0);
-
-    if (state_.width == 0 || state_.height == 0) {
-        throw std::invalid_argument(
-            "El tablero debe tener dimensiones mayores que cero"
-        );
-    }
+    state_.stride = shape.stride;
+    state_.current.assign(shape.padded, 0);
+    state_.next.assign(shape.padded, 0);
 
     for (std::size_t row = 0; row < state_.height; ++row) {
         for (std::size_t col = 0; col < state_.width; ++col) {
@@ -39,6 +39,13 @@ Game::Game(const InputData& input)
             }
         }
     }
+}
+
+Game::Game(const InputData& input, std::size_t start_generation)
+    : Game(input) {
+    // El constructor base asigna state_.generation = 0; forzamos
+    // el valor de partida. aliveCount y celdas se conservan.
+    state_.generation = start_generation;
 }
 
 std::size_t Game::width() const noexcept {
@@ -107,6 +114,18 @@ void Game::step() {
             return;
         case Engine::OpenMP:
             core::step_openmp(state_);
+            return;
+    }
+    throw std::logic_error("Motor de ejecucion desconocido");
+}
+
+void Game::step(core::StepTraceSink* sink) {
+    switch (engine_) {
+        case Engine::Sequential:
+            core::step_sequential(state_, sink);
+            return;
+        case Engine::OpenMP:
+            core::step_openmp(state_, sink);
             return;
     }
     throw std::logic_error("Motor de ejecucion desconocido");

@@ -1,5 +1,11 @@
 # Evidencia — Semana 5
 
+> Registro histórico de la revisión indicada, no guía del HEAD actual.
+> Para comandos y estado vigente, consultar [el índice](README.md) y
+> [pruebas actuales](TESTING.md). Las regresiones de dimensiones fueron
+> corregidas en la consolidación técnica; no reinterpretar las salidas originales.
+
+
 ## Estado revisado
 
 - Fecha: 25 de septiembre de 2026.

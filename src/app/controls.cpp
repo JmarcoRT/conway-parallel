@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <poll.h>
 #include <system_error>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <termios.h>
 
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <cstdlib>
 
 namespace conway::app::controls {
 
@@ -18,6 +20,7 @@ namespace {
 
 termios g_originalTermios{};
 bool g_rawEnabled = false;
+bool g_alternateScreenEnabled = false;
 
 bool readByteWithTimeout(unsigned char& byte) {
     pollfd input{STDIN_FILENO, POLLIN, 0};
@@ -70,7 +73,15 @@ std::optional<KeyPress> readKeyByte() {
 }
 
 void restoreFromSignal(int sig) {
-    disableRawMode();
+    if (g_rawEnabled) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_originalTermios);
+        g_rawEnabled = false;
+    }
+    if (g_alternateScreenEnabled) {
+        constexpr char restore[] = "\033[0m\033[?25h\033[?1049l";
+        (void)::write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+        g_alternateScreenEnabled = false;
+    }
     std::signal(sig, SIG_DFL);
     std::raise(sig);
 }
@@ -89,6 +100,53 @@ std::string trim(const std::string& text) {
 
 bool isInteractive() {
     return isatty(STDIN_FILENO) == 1;
+}
+
+bool isOutputInteractive() {
+    return isatty(STDOUT_FILENO) == 1;
+}
+
+bool supportsAnsiColors() {
+    const char* noColor = std::getenv("NO_COLOR");
+    const char* term = std::getenv("TERM");
+    return isatty(STDOUT_FILENO) == 1 && !(noColor && *noColor != '\0') &&
+        term && std::string(term) != "dumb";
+}
+
+TerminalSize terminalSize() {
+    winsize size{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+        size.ws_col > 0 && size.ws_row > 0) {
+        return {
+            static_cast<std::size_t>(size.ws_col),
+            static_cast<std::size_t>(size.ws_row)
+        };
+    }
+    return {};
+}
+
+void beginTerminalSession() {
+    if (!isInteractive() || !isatty(STDOUT_FILENO)) {
+        return;
+    }
+    constexpr char enter[] = "\033[?1049h\033[?25l\033[2J\033[H";
+    if (::write(STDOUT_FILENO, enter, sizeof(enter) - 1) >= 0) {
+        g_alternateScreenEnabled = true;
+    }
+    std::signal(SIGINT, restoreFromSignal);
+    std::signal(SIGTERM, restoreFromSignal);
+}
+
+void endTerminalSession() noexcept {
+    disableRawMode();
+    if (!g_alternateScreenEnabled) {
+        return;
+    }
+    constexpr char restore[] = "\033[0m\033[?25h\033[?1049l";
+    (void)::write(STDOUT_FILENO, restore, sizeof(restore) - 1);
+    g_alternateScreenEnabled = false;
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
 }
 
 void enableRawMode() {
@@ -112,8 +170,10 @@ void enableRawMode() {
 
     g_rawEnabled = true;
 
-    std::signal(SIGINT, restoreFromSignal);
-    std::signal(SIGTERM, restoreFromSignal);
+    if (!g_alternateScreenEnabled) {
+        std::signal(SIGINT, restoreFromSignal);
+        std::signal(SIGTERM, restoreFromSignal);
+    }
 }
 
 void disableRawMode() {

@@ -5,9 +5,67 @@ project(conway_parallel LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+include(FetchContent)
+
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS_FUZZER OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+    GIT_TAG cdf28903a7781f97ba94d30b79c3a4b0c97ccce7
+    GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(ftxui)
 
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
+
+# Standalone reproducible input module: standard C++ only, no engine or UI.
+add_library(conway_generated_input STATIC src/input/generated_input.cpp)
+target_include_directories(conway_generated_input PUBLIC include)
+
+# Experimental runner remains independent of FTXUI/MPI and its presentation.
+add_library(conway_experiments STATIC
+    src/app/scaling_study.cpp
+    src/app/experiment_runner.cpp
+    src/app/benchmark.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+)
+target_include_directories(conway_experiments PUBLIC include)
+target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX)
+
+# Snapshot generated compile commands and Git only in a controlled build step.
+set(experiment_snapshot_multi_config FALSE)
+if(CMAKE_CONFIGURATION_TYPES)
+    set(experiment_snapshot_multi_config TRUE)
+endif()
+add_custom_target(experiment_build_snapshot
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
+        "-DCOMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}"
+        "-DCOMPILER_PATH=${CMAKE_CXX_COMPILER}"
+        "-DCONFIG=$<CONFIG>"
+        "-DMULTI_CONFIG=${experiment_snapshot_multi_config}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CaptureExperimentBuild.cmake"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/experiment_build_info.hpp"
+    VERBATIM)
+add_library(conway_experiment_export STATIC
+    src/app/experiment_metadata.cpp
+    src/app/experiment_csv.cpp)
+add_dependencies(conway_experiment_export experiment_build_snapshot)
+target_include_directories(conway_experiment_export PUBLIC include
+    PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(conway_experiment_export PRIVATE CONWAY_CAPTURED_BUILD_INFO=1)
+target_link_libraries(conway_experiment_export PUBLIC conway_experiments)
 
 # Ejecutable principal del proyecto
 add_executable(conway
@@ -22,6 +80,16 @@ add_executable(conway
     src/app/app.cpp
     src/app/controls.cpp
     src/app/simulation.cpp
+    src/app/thread_config.cpp
+    src/app/pattern_catalog.cpp
+    src/app/pattern_preview.cpp
+    src/app/didactic_session.cpp
+    src/app/ftxui_app.cpp
+    src/app/experiment_execution.cpp
+    src/app/comparison_view.cpp
+    src/app/scaling_view.cpp
+    src/app/experiment_form.cpp
+    src/app/experiment_form_view.cpp
     src/app/benchmark.cpp
     src/ui/board_view.cpp
     src/ui/simulation_layout.cpp
@@ -30,8 +98,12 @@ add_executable(conway
 target_include_directories(conway PRIVATE include)
 
 target_link_libraries(conway PRIVATE
+    conway_experiment_export conway_generated_input
     OpenMP::OpenMP_CXX
     MPI::MPI_CXX
+    ftxui::component
+    ftxui::dom
+    ftxui::screen
 )
 
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
@@ -49,6 +121,73 @@ target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp)
+    target_include_directories(scaling_view_tests PRIVATE include)
+    target_link_libraries(scaling_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME scaling_view COMMAND scaling_view_tests)
+    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp)
+    target_include_directories(comparison_view_tests PRIVATE include)
+    target_link_libraries(comparison_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME comparison_view COMMAND comparison_view_tests)
+    add_executable(experiment_execution_tests tests/experiment_execution_tests.cpp src/app/experiment_execution.cpp src/app/experiment_form.cpp)
+    target_include_directories(experiment_execution_tests PRIVATE include)
+    target_link_libraries(experiment_execution_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experiment_execution COMMAND experiment_execution_tests)
+    set_tests_properties(experiment_execution PROPERTIES ENVIRONMENT "OMP_THREAD_LIMIT=2" TIMEOUT 30)
+    add_executable(experiment_form_tests tests/experiment_form_tests.cpp src/app/experiment_form.cpp)
+    target_include_directories(experiment_form_tests PRIVATE include)
+    add_test(NAME experiment_form COMMAND experiment_form_tests)
+
+    add_executable(experiment_csv_tests tests/experiment_csv_tests.cpp src/input/input.cpp)
+    target_link_libraries(experiment_csv_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experiment_csv COMMAND experiment_csv_tests "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experiment_csv PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+
+    add_executable(scaling_study_tests tests/scaling_study_tests.cpp src/input/input.cpp)
+    target_link_libraries(scaling_study_tests PRIVATE conway_experiments conway_generated_input)
+    add_test(NAME scaling_study COMMAND scaling_study_tests "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(scaling_study PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+    add_test(NAME scaling_study_thread_limit
+        COMMAND scaling_study_tests "${CMAKE_CURRENT_SOURCE_DIR}" --thread-limit-one)
+    set_tests_properties(scaling_study_thread_limit PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1")
+
+    add_executable(experiment_runner_tests tests/experiment_runner_tests.cpp src/input/input.cpp)
+    target_link_libraries(experiment_runner_tests PRIVATE conway_experiments conway_generated_input)
+    add_test(NAME experiment_runner COMMAND experiment_runner_tests "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experiment_runner PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+    add_test(NAME experiment_runner_thread_limit
+        COMMAND experiment_runner_tests "${CMAKE_CURRENT_SOURCE_DIR}" --thread-limit-one)
+    set_tests_properties(experiment_runner_thread_limit PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1")
+
+    add_executable(benchmark_statistics_tests
+        tests/benchmark_statistics_tests.cpp
+        src/app/benchmark.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+    )
+    target_include_directories(benchmark_statistics_tests PRIVATE include)
+    target_link_libraries(benchmark_statistics_tests PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME benchmark_statistics COMMAND benchmark_statistics_tests)
+
+    add_executable(generated_input_tests
+        tests/generated_input_tests.cpp
+        src/core/game.cpp
+        src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp
+        src/core/bs23.cpp
+    )
+    target_link_libraries(generated_input_tests PRIVATE conway_generated_input OpenMP::OpenMP_CXX)
+    add_test(NAME generated_input COMMAND generated_input_tests)
+    set_tests_properties(generated_input PROPERTIES
+        ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+
     add_executable(input_tests
         tests/input_tests.cpp
         src/input/input.cpp
@@ -62,6 +201,8 @@ if(BUILD_TESTING)
     add_test(NAME input_functional
         COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}"
     )
+
+    add_test(NAME input_dimension_regressions COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}" --dimension-regressions)
 
     add_executable(next_cell_state_tests
         tests/test_next_cell_state.cpp
@@ -140,17 +281,24 @@ if(BUILD_TESTING)
     # persistencia entre cargas de patron.
     add_test(NAME engine_selection_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_selection.sh"
+                "$<TARGET_FILE:conway>"
     )
 
     add_executable(app_runtime_tests
         tests/app_runtime_tests.cpp
         src/app/simulation.cpp
+        src/app/thread_config.cpp
+        src/app/pattern_catalog.cpp
+        src/app/pattern_preview.cpp
         src/app/benchmark.cpp
+        src/ui/layout.cpp
+        src/ui/simulation_layout.cpp
         src/ui/board_view.cpp
         src/core/game.cpp
         src/core/engines/sequential.cpp
         src/core/engines/openmp.cpp
         src/core/bs23.cpp
+        src/input/input.cpp
     )
     target_include_directories(app_runtime_tests PRIVATE include)
     target_link_libraries(app_runtime_tests PRIVATE OpenMP::OpenMP_CXX)
@@ -159,16 +307,19 @@ if(BUILD_TESTING)
     )
     set_tests_properties(app_runtime PROPERTIES
         ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
     add_test(NAME app_runtime_thread_limit
         COMMAND app_runtime_tests --thread-limit-one
     )
     set_tests_properties(app_runtime_thread_limit PROPERTIES
         ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=1"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
     add_test(NAME app_functional_smoke
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_app_functional.sh"
+                "$<TARGET_FILE:conway>"
     )
     set_tests_properties(app_functional_smoke PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -186,6 +337,72 @@ target_link_libraries(openmp_vs_sequential PRIVATE OpenMP::OpenMP_CXX)
 add_test(NAME openmp_vs_sequential
     COMMAND openmp_vs_sequential "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+# Tests de la instrumentación opcional de motores (StepTrace / WorkerRecord
+# / StepTraceSink). Cubre: equivalencia con/sin sink, cobertura sin
+# solapes, sinks concurrentes, no residual, height == 0, hilos ociosos.
+add_executable(step_trace_tests
+    tests/step_trace_tests.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(step_trace_tests PRIVATE include)
+target_link_libraries(step_trace_tests PRIVATE OpenMP::OpenMP_CXX)
+add_test(NAME step_trace
+    COMMAND step_trace_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+# Tests del controlador de visualizacion didactica. Cubre equivalencia
+# con el motor, reproduccion, play/pause, velocidad, cobertura y
+# navegacion entre generaciones. No usa FTXUI.
+add_executable(didactic_session_tests
+    tests/didactic_session_tests.cpp
+    src/app/didactic_session.cpp
+    src/core/game.cpp
+    src/core/engines/sequential.cpp
+    src/core/engines/openmp.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(didactic_session_tests PRIVATE include)
+target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX)
+add_test(NAME didactic_session
+    COMMAND didactic_session_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+# Compila los helpers reales de FTXUI para comprobar coordenadas renderizadas.
+get_target_property(didactic_layout_sources conway SOURCES)
+list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
+add_executable(didactic_layout_tests tests/didactic_layout_tests.cpp ${didactic_layout_sources})
+target_include_directories(didactic_layout_tests PRIVATE include)
+target_link_libraries(didactic_layout_tests PRIVATE conway_experiment_export conway_generated_input OpenMP::OpenMP_CXX MPI::MPI_CXX
+    ftxui::component ftxui::dom ftxui::screen)
+add_test(NAME didactic_layout COMMAND didactic_layout_tests)
+add_executable(ftxui_execution_fixture tests/ftxui_execution_fixture.cpp ${didactic_layout_sources})
+target_include_directories(ftxui_execution_fixture PRIVATE include)
+target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
+    OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME experiment_csv_roundtrip
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"
+            "$<TARGET_FILE:experiment_csv_tests>" "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(experiment_csv_roundtrip PROPERTIES
+    ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+add_test(NAME ftxui_header_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_header.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_header_pty PROPERTIES TIMEOUT 150)
+add_test(NAME ftxui_menu_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_menu.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_menu_pty PROPERTIES TIMEOUT 60)
+add_test(NAME ftxui_benchmark_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
+            "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")
+set_tests_properties(ftxui_benchmark_pty PROPERTIES TIMEOUT 150)
+
 endif()
 
 # Target independiente de demostración para la UI (Semana 5)

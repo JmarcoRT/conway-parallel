@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "experimental-release",
+      "displayName": "Experimental Release (G++ 14, WSL/Linux)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++-14",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "BUILD_TESTING": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "experimental-release",
+      "configurePreset": "experimental-release",
+      "jobs": 2
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "experimental-release",
+      "configurePreset": "experimental-release",
+      "environment": {
+        "NO_COLOR": ""
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
