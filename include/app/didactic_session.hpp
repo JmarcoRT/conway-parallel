@@ -70,7 +70,7 @@ struct DidacticFrame {
     std::vector<std::uint8_t> next_alive_map;
     std::vector<std::uint8_t> current_alive_map;
 
-    // Lista de trabajadores en el orden en que aparecen en la traza.
+    // Lista en orden de la traza (thread_id); no es orden temporal observado.
     std::vector<DidacticWorkerView> workers;
 
     std::uint64_t total_playback_ns = 0;

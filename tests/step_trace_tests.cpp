@@ -454,17 +454,21 @@ int main(int argc, char** argv) {
             g.setEngine(conway::Engine::OpenMP);
             RecordingSink sink;
             for (int i = 0; i < 3; ++i) g.step(&sink);
-            bool ok = true;
+            bool ok = true, ordered = true;
             for (const auto& t : sink.traces()) {
+                int previousId = -1;
                 for (const auto& w : t.workers) {
-                    // loop_duration no debe倒退; la suma de todas las
-                    // duraciones no debe superar el step.
+                    ordered = ordered && w.thread_id > previousId;
+                    previousId = w.thread_id;
+                    // Cada intervalo individual esta contenido en el global.
+                    // No se suman intervalos concurrentes ni se infiere su orden.
                     if (w.loop_duration > t.step_duration) {
                         ok = false;
                     }
                 }
             }
             report(ok, "worker_loop_duration_does_not_exceed_step_duration");
+            report(ordered, "workers_ordered_by_id_not_temporal_order");
         }
 
         // -----------------------------------------------------------------

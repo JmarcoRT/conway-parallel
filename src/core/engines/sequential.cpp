@@ -52,6 +52,8 @@ void step_sequential(GameState& s, StepTraceSink* sink) {
     // Captura separada para la duración del bucle (no incluye la
     // sección posterior: aliveCount, swap_buffers, etc.).
     const auto t_loop_end = tracing ? Clock::now() : Clock::time_point{};
+    // Alcance historico: step_duration tambien termina antes del commit.
+    // El cronometro externo experimental es independiente de esta traza.
     const auto t_step_end  = t_loop_end;
 
     s.aliveCount = nextAlive;

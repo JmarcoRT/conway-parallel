@@ -78,6 +78,7 @@ void step_openmp(GameState& s, StepTraceSink* sink) {
 #pragma omp master
         g_lastOpenMPTeamSize = nthreads;
 
+// La barrera implicita de este for queda DENTRO de loop_duration.
 #pragma omp for schedule(static)
         for (std::ptrdiff_t r = 1; r <= height; ++r) {
             const std::size_t row = static_cast<std::size_t>(r);
@@ -100,6 +101,8 @@ void step_openmp(GameState& s, StepTraceSink* sink) {
         }
 
         if (tracing) {
+            // El reloj final se toma despues del for y su espera de barrera;
+            // no representa exclusivamente computo activo del trabajador.
             // workers[tid] es único: omp_get_thread_num() es único en el
             // team paralelo. No hay race con otros hilos.
             WorkerRecord& rec = workers[static_cast<std::size_t>(tid)];

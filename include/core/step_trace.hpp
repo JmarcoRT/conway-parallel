@@ -28,16 +28,20 @@ namespace conway::core {
 //                    generalizarse a planificadores que puedan asignar
 //                    rangos discontinuos.
 //   cells_processed  (end_row - first_row) * width. Derivado.
-//   loop_duration    Duración del bucle observada DENTRO del worker, medida
-//                    con std::chrono::steady_clock entre la primera y la
-//                    última iteración del worker (no cubre el setup del
-//                    team ni la barrera final). Unidad: nanosegundos.
+//   loop_duration    Intervalo observado por trabajador, en nanosegundos.
+//                    Secuencial: reloj anterior al bucle hasta su final,
+//                    antes de actualizar contadores e intercambiar buffers.
+//                    OpenMP: reloj dentro del parallel antes del reparto,
+//                    hasta registrar la duracion despues del omp for.
+//                    INCLUYE la espera en la barrera implicita del for y
+//                    preparacion del registro; excluye creacion del team y
+//                    la barrera de cierre del parallel. No es tiempo de CPU
+//                    ni una medida exclusiva de trabajo util.
 //
-// Las duraciones son magnitudes por hilo, no instantes absolutos. No se
-// mezclan con marcas de otros hilos para reconstruir orden con precisión
-// sub-microsegundo. Para la reproducción didáctica, se ofrecen duraciones
-// (cuánto trabajó cada worker) y un orden de ejecución observado (a través
-// de step.begin_worker_durations_ms, ver StepTrace).
+// No se registran instantes de inicio/fin ni orden temporal entre hilos.
+// workers se entrega en orden de thread_id, no de comienzo o finalizacion.
+// Las duraciones son magnitudes relativas; no deben sumarse para obtener
+// el tiempo del step. La reproduccion es didactica, no una cronologia real.
 struct WorkerRecord {
     int          thread_id       = -1;
     std::size_t  first_row       = 0;
@@ -65,18 +69,20 @@ struct WorkerRecord {
 //   width, height       Dimensiones lógicas del tablero en este step.
 //   generation_before   s.generation al entrar al step.
 //   generation_after    s.generation al salir del step.
-//   step_duration       Duración total del step, medida con steady_clock
-//                       en el hilo original, desde antes de cualquier trabajo
-//                       hasta después de la barrera final. Unidad: nanosegundos.
+//   step_duration       Intervalo global instrumentado, en nanosegundos.
+//                       Secuencial: desde antes del bucle hasta su final;
+//                       EXCLUYE actualizacion de aliveCount, swap e incremento.
+//                       OpenMP: despues de reservar workers, antes del parallel,
+//                       hasta despues de cerrar la region y actualizar estado;
+//                       INCLUYE creacion del team, barreras, reduccion y commit.
+//                       Ambos excluyen construccion de la traza y callback.
+//                       Estos alcances historicos NO son identicos entre motores.
 //   workers             Un WorkerRecord por worker activo. El vector puede
-//                       estar vacío si height == 0.
+//                       estar vacio si height == 0.
 //
-// step_duration y los loop_duration de los workers NO se deben combinar
-// para reconstruir el orden exacto de eventos entre hilos: la precisión
-// de steady_clock entre threads del mismo proceso es coherente, pero no
-// permite afirmar causalidad sub-microsegundo. La reproducción didáctica
-// debe usar las duraciones como magnitudes relativas, no como línea de
-// tiempo absoluta.
+// No se reconstruye orden entre hilos a partir de estas duraciones. StepTrace
+// no es el cronometro experimental: runOnce mide externamente el lote de pasos
+// sin sink, con el mismo alcance para ambos motores. Ver docs/STEP_TRACE.md.
 struct StepTrace {
     std::string  engine_name;
     int          requested_threads = 0;
