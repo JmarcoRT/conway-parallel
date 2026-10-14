@@ -202,6 +202,8 @@ if(BUILD_TESTING)
         COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
+    add_test(NAME input_dimension_regressions COMMAND input_tests "${CMAKE_CURRENT_SOURCE_DIR}" --dimension-regressions)
+
     add_executable(next_cell_state_tests
         tests/test_next_cell_state.cpp
         src/core/bs23.cpp

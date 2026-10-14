@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
         TemporaryDirectory temporary;
         Suite suite;
         if (argc == 3) {
-            // Pending fixes are deliberately reproducible and return failure, never a false PASS.
+            // Also registered in normal CTest; retain the focused diagnostic mode.
             for (const auto* name : {"negative_height.txt", "negative_width.txt"}) {
                 suite.test(name, [&] { expectRejected(invalid / name, "dimensiones"); });
             }
@@ -121,6 +121,26 @@ int main(int argc, char** argv) {
             return suite.result();
         }
 
+        const auto maximum = std::numeric_limits<std::size_t>::max();
+        const auto signedMaximum = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max());
+        for (const auto& [name, input] : std::vector<std::pair<std::string, InputData>>{
+            {"zero_width_memory", {0,1,{}}}, {"zero_height_memory", {1,0,{}}},
+            {"missing_cells", {1,1,{}}}, {"extra_cells", {1,1,{0,1}}},
+            {"nonbinary_cells", {1,1,{2}}}, {"nonbinary_byte", {1,1,{255}}},
+            {"product_overflow_memory", {2,maximum/2+1,{}}},
+            {"halo_add_overflow", {maximum,1,{}}},
+            {"halo_product_overflow", {maximum/3,2,{}}},
+            {"signed_engine_limit", {1,signedMaximum,{}}},
+            {"vector_capacity", {maximum/2,1,{}}}}) {
+            suite.test(name, [&] {
+                try { conway::Game game(input); }
+                catch (const std::logic_error&) { return; }
+                throw std::runtime_error("Game acepto entrada invalida o intento reservar memoria");
+            });
+        }
+        suite.test("explicit_positive_dimensions", [&] {
+            expectInput(loadInput(temporary.write("positive.txt", "+1 +1\n1\n").string()),1,1,"1");
+        });
         const std::string block = "0000" "0110" "0110" "0000";
         const std::string blinker = "00000" "00100" "00100" "00100" "00000";
         const std::string glider = "0000000" "0010000" "0001000" "0111000" "0000000" "0000000";
