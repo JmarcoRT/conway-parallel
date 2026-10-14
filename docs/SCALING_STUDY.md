@@ -184,8 +184,8 @@ OMP_DYNAMIC=FALSE OMP_THREAD_LIMIT=8 ./build-release/scaling_study_tests "$PWD" 
 Generan una vez cada tablero 1000×1000 y 2000×2000 (densidad 3000, semilla 42)
 y ejecutan 2 generaciones, 1 calentamiento y 3 rondas, solicitudes 1/2/4/8.
 No se exige speedup > 1 ni un tiempo máximo. Son validaciones funcionales
-controladas, no una campaña de rendimiento certificada. CSV/metadatos completos
-y gráficas quedan para fases posteriores.
+controladas, no una campaña de rendimiento certificada. CSV/metadatos completos existen como API separada; las gráficas y vistas de
+resultados están integradas en FTXUI. No hay exportación interactiva.
 
 La captura de metadatos y exportación independiente de Fase 6 se documenta en
 [EXPERIMENT_CSV.md](EXPERIMENT_CSV.md).

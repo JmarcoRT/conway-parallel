@@ -10,8 +10,9 @@ auto generated = conway::input::generateInput({2000, 2000, 3000, 42});
 // alive_count, observed_density (fracción entre 0 y 1), version.
 ```
 
-No está conectado a FTXUI ni a `runBenchmark()`. El futuro ejecutor puede
-usar `generated.input` por referencia sin copiar el tablero. La generación,
+Está integrado en los formularios experimentales FTXUI y los ejecutores
+configurables; no en `runBenchmark()`. Los ejecutores usan `generated.input`
+por referencia sin regenerarlo. La generación,
 la construcción de Game y la consulta de metadatos quedan fuera del cronómetro.
 
 ## Contrato del algoritmo v1
@@ -59,13 +60,14 @@ de detección del host. Se puede ajustar explícitamente pasando
 `GenerationLimits{presupuesto_en_bytes}`; no es un límite del algoritmo.
 
 El presupuesto no estima RSS, sobrecarga del asignador, pilas OpenMP ni varios
-Game simultáneos. El futuro ejecutor experimental debe presupuestar estos
+Game simultáneos. El llamante experimental debe presupuestar estos
 costes y la concurrencia. La disponibilidad real de memoria puede cambiar:
 `std::bad_alloc` se propaga si la reserva falla después de validar. No se
 reservan buffers Game en este módulo ni se duplica el vector generado.
 
-Esta validación protege exclusivamente la API nueva. No cambia las limitaciones
-conocidas del cargador `.txt` ni el contrato actual de construcción de Game.
+Esta política de memoria protege la API del generador. El cargador y Game también
+validan ahora dimensiones, halo y células; sus límites representables no añaden
+por sí solos el presupuesto de 256 MiB ni lo aplican a toda la aplicación.
 
 ## Verificación
 

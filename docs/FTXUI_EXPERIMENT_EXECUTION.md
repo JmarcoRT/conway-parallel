@@ -42,5 +42,6 @@ forzada. La duración del cierre depende de la ejecución que esté pendiente.
 
 Resultados de la sesión ofrece el trabajo actual y el último resultado recibido,
 con desplazamiento mediante flechas/Home/End. No constituye un historial completo.
-No hay gráficas ni exportación desde FTXUI. Configuración, resultado y contexto
-permanecen juntos para una futura integración de exportación.
+Comparación y escalabilidad tienen Resumen/Muestras/Método; escalabilidad incluye
+un gráfico de speedup y comparación barras de tiempos. No hay exportación desde
+FTXUI: configuración, resultado y contexto permanecen juntos para esa integración.

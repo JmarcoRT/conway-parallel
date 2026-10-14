@@ -56,9 +56,10 @@ repeticiones y consultas de equipo efectivo existentes.
 
 El registro consume memoria proporcional a las repeticiones y añade trabajo
 fuera del cronómetro; no elimina posibles efectos sobre cachés entre ejecuciones.
-No se conectan entradas generadas ni se exportan datos. Permanecen las
-limitaciones de validez de métricas y validación general de entradas documentadas
-en `BENCHMARK_PROTOCOL.md`; esta fase no las corrige ni cambia su presentación.
+El benchmark histórico no integra el generador ni exportación. Esas funciones
+existen en los ejecutores configurables y su API de CSV. La consolidación validó
+Game y el cargador; las fórmulas históricas conservan su semántica de compatibilidad
+explicada en `BENCHMARK_PROTOCOL.md`.
 
 Pruebas: datos sintéticos con cardinalidad par/impar, valores iguales, cero,
 fracciones, extremos finitos y datos inválidos; compatibilidad de agregados

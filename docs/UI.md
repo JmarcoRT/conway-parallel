@@ -77,15 +77,40 @@ estado. En OpenMP muestra los hilos solicitados y el tamaño de equipo observado
 en una evolución. La disponibilidad reportada corresponde a procesadores
 lógicos, no a núcleos físicos.
 
-## Benchmark
+## Didáctica y experimentos
 
-El benchmark muestra primero un estado de ejecución mientras trabaja fuera del
-hilo de interfaz. Compara los motores Secuencial y OpenMP con la misma entrada,
-generaciones y repeticiones; conserva calentamiento, medianas y verificación de
-equivalencia. Los tiempos usan `std::chrono::steady_clock` y no incluyen
-renderizado ni entrada/salida. La eficiencia se calcula solo para resultados
-equivalentes y un conteo efectivo estable. Un tablero pequeño puede no ser
-representativo por el overhead de paralelización.
+El modo didáctico prepara una generación real en un worker con StepTrace.
+Muestra CURRENT/NEXT y trabajo por hilo con reproducción relativa, pausa,
+velocidad y avance. `N` siguiente, espacio reproducir, `R` reiniciar, `+`/`-`
+velocidad, Esc volver. No es una cronología real entre hilos; ver
+[STEP_TRACE.md](STEP_TRACE.md).
+
+Benchmark abre Comparación de motores, Escalabilidad OpenMP y Resultados de la
+sesión. Los formularios permiten patrón cargado o tablero generado, generaciones,
+calentamientos, repeticiones y solicitud/lista de hilos. Tab/Mayús+Tab cambia
+campo; Enter activa. La entrada generada no reemplaza el patrón de simulación.
+
+La ejecución congela configuración, genera/copia entrada antes de medir y usa
+un worker persistente. Esc regresa sin cancelar el trabajo ni modificarlo al
+editar. Solo hay un experimento activo; se bloquean otros cálculos competidores.
+Al salir con trabajo activo se anuncia cierre pendiente hasta terminar, sin
+cancelación forzada. Los errores conservan el último resultado.
+
+Comparación y Escalabilidad presentan Resumen/Muestras/Método: ←→ cambia vista,
+↑↓ desplaza, Home/End extremos, Esc configuración o Benchmark según procedencia.
+La tabla de escalabilidad se ordena por solicitud; las muestras conservan orden
+experimental. El gráfico muestra speedups válidos, referencia 1.00× y eje X
+categórico explícito, con escala lineal o log1p(S). No dibuja línea ideal.
+
+En 120×40 tabla/gráfico pueden convivir si caben; en 80×24 se prioriza acceso por
+desplazamiento. Valores extensos usan registros etiquetados. El redondeo es solo
+visual; N/D no significa cero. Equipos efectivos son observados y pueden diferir
+de solicitudes. El catálogo conserva una limitación de espacio en 50×24.
+
+El benchmark histórico `runBenchmark()` sigue disponible para compatibilidad y
+consola; su orden y resumen de equipos difieren del ejecutor configurable. Ver
+[BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md). CSV existe como API, sin acción
+FTXUI. Resultados de sesión no es un historial persistente.
 
 ## Dependencia y compilación
 

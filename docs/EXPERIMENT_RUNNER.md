@@ -133,7 +133,8 @@ identificación, metadatos, restauración al terminar y ante fallo de asignació
 parámetros inválidos y compatibilidad con el benchmark antiguo. Las reglas de
 validez se prueban con tiempos sintéticos, sin umbrales de rendimiento.
 
-No se añaden estudios de múltiples hilos, CSV, gráficas ni controles interactivos.
+Este módulo no contiene UI ni exportación. El proyecto integra formularios y
+vistas FTXUI, un módulo separado de escalabilidad y CSV por API.
 
 La Fase 5 añade una API separada de escalabilidad fuerte con referencia
 secuencial compartida: [SCALING_STUDY.md](SCALING_STUDY.md).

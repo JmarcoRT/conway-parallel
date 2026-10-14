@@ -1,5 +1,11 @@
 # Prototipo OpenMP aislado (Semana 6)
 
+> Registro histórico de la revisión indicada, no guía del HEAD actual.
+> Para comandos y estado vigente, consultar [el índice](README.md) y
+> [pruebas actuales](TESTING.md). No reinterpretar las salidas originales como
+> resultados del HEAD vigente.
+
+
 Primer prototipo de ejecución de **una generación** con OpenMP sobre el core
 existente en `develop`. No está integrado en `Game`, `main` ni en el menú; eso
 y las mediciones con 1, 2, 4 y 8 hilos corresponden a S7.

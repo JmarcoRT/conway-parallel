@@ -1,5 +1,11 @@
 # OpenMP integrado y validado (Semana 7)
 
+> Registro histórico de la revisión indicada, no guía del HEAD actual.
+> Para comandos y estado vigente, consultar [el índice](README.md) y
+> [pruebas actuales](TESTING.md). No reinterpretar las salidas originales como
+> resultados del HEAD vigente.
+
+
 Integra el motor `core::step_openmp(GameState&)` (S6, sin cambios) en la
 fachada `conway::Game`, valida que produce los mismos resultados que el
 secuencial a través de `Game` con 1, 2, 4 y 8 hilos y deja una medición inicial
@@ -36,7 +42,7 @@ omp_set_num_threads(4);
 for (int g = 0; g < 100; ++g) game.step();
 ```
 
-La opción **Benchmark** del menú sigue siendo el placeholder: no hizo falta
+En la revisión S7, la opción **Benchmark** era un placeholder: no hizo falta
 tocarla para esta integración (`src/app` no cambia).
 
 ## Archivos
@@ -154,7 +160,7 @@ openmp      8              418.6       418.4       421.8  SI
 ### Evidencia en entorno **multi-núcleo** (`docs/evidence/openmp_timing_multicore.txt`)
 
 Re-medición realizada durante la integración en S7, en una máquina con
-20 núcleos lógicos (i7-12700F, 12 P-cores + 8 E-cores) corriendo Ubuntu 24.04
+20 procesadores lógicos visibles (i7-12700F) corriendo Ubuntu 24.04
 dentro de WSL2 sobre Windows. **Esta es la única evidencia de la rama
 `feature/openmp-s7` apta para discutir speedup/eficiencia.**
 
@@ -184,15 +190,13 @@ Resumen (speedup y eficiencia frente al secuencial = 658.5 ms)
 Lectura de los resultados (sin asumir mejoras donde no las hay):
 
 - **1 hilo** ≈ **secuencial**: como se espera (1 hilo = sin paralelismo real).
-  La pequeña diferencia (< 7 %) entra dentro del ruido entre corridas.
-- **2 hilos**: speedup de 2.04x, eficiencia 102 % (superlineal por
-  localidad de cache: con 2 hilos cada uno accede a una fracción del
-  tablero y los misses L2/L3 bajan).
+  No se demuestra aquí la causa ni significancia de esa diferencia.
+- **2 hilos**: speedup de 2.04x, eficiencia 102 %. La localidad de caché sería una hipótesis; no se midieron
+  fallos de caché para demostrarla.
 - **4 hilos**: speedup de 3.98x, eficiencia 99.4 % (escalado prácticamente
   lineal, el mejor resultado de la prueba).
-- **8 hilos**: speedup de 5.28x, eficiencia 66 % (rendimientos decrecientes:
-  WSL2 comparte CPU con el host Windows y OpenMP ya está mezclando P-cores
-  con E-cores del i7-12700F, por lo que la mejora marginal cae).
+- **8 hilos**: speedup de 5.28x, eficiencia 66 %. La ganancia marginal observada es menor; estos tiempos
+  no demuestran contención del host ni qué clases de CPU ejecutaron los hilos.
 
 Estos números son exploratorios. La forma de la curva (2x, 4x, 8x con
 rendimientos decrecientes) es coherente con la memoria como cuello de botella
@@ -207,9 +211,9 @@ varias veces, en una máquina con CPUs dedicados y midiendo también con
   no sirven para evaluar el escalado. Que OpenMP con 1 hilo salga más rápido
   que el secuencial no se ha investigado; no debe tomarse como una conclusión.
 - Las cifras **multi-núcleo** (esta rama) sí muestran aceleración real hasta
-  4 hilos (≈ 4x). Por encima de 8 hilos los rendimientos caen por la mezcla
-  de P-cores y E-cores del i7-12700F y por la contención de WSL2 con el host
-  Windows. Para resultados más firmes se necesitan más repeticiones, en una
+  4 hilos (≈ 4x). La tabla llega a 8 hilos y no acredita comportamiento por encima de ese
+  número. Mezcla de clases de CPU o contención del host son hipótesis sin
+  observaciones de afinidad/topología o contadores que las demuestren. Para resultados más firmes se necesitan más repeticiones, en una
   máquina con CPUs dedicados, midiendo también con 12 y 20 hilos.
 - Por la misma razón, la validación con 1 núcleo no ejercita condiciones de
   carrera reales: al quitar a propósito la cláusula `reduction` de
@@ -236,7 +240,8 @@ varias veces, en una máquina con CPUs dedicados y midiendo también con
 ## Qué no se hizo (a propósito)
 
 - No se reescribió ni optimizó `step_openmp`; no se probaron otros `schedule` ni `collapse`.
-- No hay CSV, gráficas, speedup, eficiencia ni throughput.
+- En S7 no se integraron CSV, gráficas ni throughput; los speedups y
+  eficiencias de arriba son resúmenes exploratorios, no el benchmark final.
 - No se conectó el menú **Benchmark** ni se construyó una interfaz de benchmark definitiva.
 - No se trabajó en Pthreads ni en MPI.
 
