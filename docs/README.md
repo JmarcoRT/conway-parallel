@@ -20,6 +20,7 @@
 - [Alcances temporales de StepTrace](STEP_TRACE.md)
 - [Metadatos y exportación CSV por API](EXPERIMENT_CSV.md)
 - [Prototipo MPI, sin evolución](MPI_PROTOTYPE.md)
+- [Validación secuencial vs OpenMP por volcados de tablero (Semana 7)](OPENMP_VALIDATION.md)
 
 ## Registros históricos
 

@@ -26,6 +26,7 @@ El preset exige G++ 14 en `/usr/bin/g++-14`. Ejecutar desde la raíz del reposit
 | input_functional, input_dimension_regressions | Formato, cargas, signo/rango/productos/halo, Game exacto y binario |
 | rule_bs23_per_cell, conway_correctness | Regla, patrones, borde muerto y estados completos |
 | game_openmp_vs_sequential, openmp_vs_sequential | Equivalencia de motores y cambios de motor |
+| openmp_equivalence_files | Equivalencia secuencial vs OpenMP por volcados de tablero con 1, 2, 4 y 8 hilos; [OPENMP_VALIDATION.md](OPENMP_VALIDATION.md) |
 | generated_input | Casos dorados, rechazo, semilla cero, límites y compatibilidad |
 | benchmark_statistics, app_runtime y thread_limit | Estadísticas, benchmark histórico y equipos reales |
 | experiment_runner y thread_limit | Alternancia, muestras, validez, restauración y referencia |
@@ -83,8 +84,10 @@ Release. UBSan no demuestra ausencia de carreras ni sustituye las pruebas funcio
 ## Demos, scripts y herramientas
 
 `conway_view_demo` usa Game real; `conway_simulation_demo` usa datos mock.
-`dump_board`/`compare_boards.py` ayudan a comparar estados. Al compilar Game a mano
-hay que incluir ambos motores y `-fopenmp`, aunque se seleccione Secuencial.
+`dump_board`/`compare_boards.py` ayudan a comparar estados; `dump_board` acepta
+`--engine seq|openmp` y `--require-threads N` (hilos por `OMP_NUM_THREADS`). Al
+compilar Game a mano hay que incluir ambos motores y `-fopenmp`, aunque se
+seleccione Secuencial.
 
 Los scripts de tests usan compilaciones temporales. Las herramientas
 scripts/measure_openmp.sh, scripts/measure_trace_overhead.sh y

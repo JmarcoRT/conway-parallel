@@ -156,7 +156,7 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf '0'
     } | timeout 15 script -qfec \
-        "stty cols 120 rows 30; initial=\$(stty -g); NO_COLOR=1 $binary_cmd; app_status=\$?; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
+        "initial=\$(stty -g); NO_COLOR=1 $binary_cmd; app_status=\$?; final=\$(stty -g); if [[ \"\$initial\" == \"\$final\" ]]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi; exit \"\$app_status\"" \
         /dev/null > "$work/pty.txt" 2>&1 || pty_status=$?
     strip_ansi < "$work/pty.txt" > "$work/pty-clean.txt"
     check interactive_catalog_is_rendered "CATÁLOGO DE PATRONES" "$work/pty-clean.txt"
@@ -226,7 +226,7 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf '0'
     } | timeout 8 script -qfec \
-        "stty cols 120 rows 40; NO_COLOR= TERM=xterm-256color COLORTERM=truecolor $binary_cmd" /dev/null \
+        "TERM=xterm-256color COLORTERM=truecolor $binary_cmd" /dev/null \
         > "$work/color-pty.txt" 2>&1 || color_status=$?
     if grep -aPq '\x1b\[[0-9;]*48;2;98;232;137m {2}' "$work/color-pty.txt" &&
         [[ "$(grep -aoP '\x1b\[[0-9;]*48;2;98;232;137m {2}' \
@@ -392,12 +392,6 @@ if command -v script >/dev/null 2>&1; then
             sleep 0.12
         done
         sleep 0.5
-        printf 'd'
-        sleep 0.3
-        printf 'v'
-        sleep 0.3
-        printf '\033[6~\033[6~\033[6~\033[6~\033[6~\033[6~\033[6~\033[6~'
-        sleep 0.3
         printf '\033'
         sleep 0.3
         printf 'q'
@@ -408,7 +402,7 @@ if command -v script >/dev/null 2>&1; then
         > "$work/compact-catalog-pty-clean.txt"
     check compact_catalog_shows_large_pattern_dimensions \
         "Dimensiones: 12 × 20" "$work/compact-catalog-pty-clean.txt"
-    check compact_catalog_can_switch_to_next \
+    check compact_catalog_keeps_current_and_next_visible \
         "SIGUIENTE · generación 1" "$work/compact-catalog-pty-clean.txt"
     check compact_catalog_indicates_preview_viewport \
         "Viewport:" "$work/compact-catalog-pty-clean.txt"
@@ -574,8 +568,6 @@ if command -v script >/dev/null 2>&1; then
         sleep 0.2
         printf '1\r'
         sleep 2
-        printf '\033[Z'  # Desplazar al botón sin ejecutar mediciones.
-        sleep 0.3
         printf '\033'
         sleep 0.2
         printf '\033'

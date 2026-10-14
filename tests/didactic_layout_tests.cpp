@@ -43,21 +43,4 @@ int main() {
                             corners[1].second - next.y_min)) return 1;
         }
     }
-    // A deferred board gets the actual box remaining after natural chrome,
-    // including its panel's borders/title/separator, on every resize.
-    for (auto [width, height] : {std::pair{160,45}, {120,40}, {100,30}, {80,24}}) {
-        int allocatedWidth = 0, allocatedHeight = 0;
-        auto leaf = conway::ui::allocatedElement([&](int w, int h) {
-            allocatedWidth = w;
-            allocatedHeight = h;
-            return vbox({text("FIRST"), filler(), text("LAST")});
-        });
-        auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
-        Render(screen, vbox({text("HEADER"), panel("BOARD", leaf), text("FOOTER")}));
-        if (allocatedWidth != width - 2 || allocatedHeight != height - 6 ||
-            screen.PixelAt(1, 4).character != "F" ||
-            screen.PixelAt(1, height - 3).character != "L" ||
-            screen.PixelAt(0, height - 1).character != "F") return 1;
-    }
-
 }

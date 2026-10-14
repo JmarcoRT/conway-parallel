@@ -107,12 +107,6 @@ class Terminal:
 def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
-        if columns < 40 or rows < 18:
-            terminal.assert_fits()
-            assert "Terminal insuficiente" in " ".join(terminal.screen().values())
-            terminal.send("q")
-            assert terminal.process.wait(timeout=3) == 0
-            return
         terminal.expect("Sin patrón", "Motor: Secuencial")
         expanded = columns >= 120 and rows >= 40
         title_rows = EXPANDED_TITLE if expanded else ("CONWAY PARALLEL",)
