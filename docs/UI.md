@@ -68,7 +68,7 @@ En la simulación:
 - `Esc`, `X` o `Q`: regresar al menú.
 
 Los paneles CURRENT/NEXT se organizan lado a lado en terminales amplias y
-verticalmente en las estrechas. Cada celda se delimita con bordes verticales y
+con una vista alternable cuando falta espacio. Cada celda se delimita con bordes verticales y
 líneas horizontales con uniones consistentes. Las células vivas y muertas usan
 superficies diferenciables; en modo monocromático se conservan bloques
 distintos. Si el tablero supera el viewport, la interfaz indica las filas y
@@ -136,3 +136,35 @@ Las pruebas funcionales usan una PTY cuando está disponible para comprobar
 renderizado monocromático y la grilla, navegación por submenús con flechas y
 Enter, cambio de patrón, avance, pausa sin escrituras periódicas,
 redimensionamiento y restauración del terminal.
+
+## Adaptación al tamaño de terminal
+
+La composición amplia se conserva desde 120 columnas y 40 filas. Por debajo,
+el encabezado usa el título de una fila; el subtítulo se conserva cuando hay
+al menos 64 columnas y más de 28 filas. La barra contextual sigue mostrando
+el patrón, motor e hilos solicitados.
+
+En simulación, `V` alterna CURRENT/NEXT cuando no caben juntos. Cada panel
+necesita al menos 26 columnas y la cuadrícula reserva tres columnas por celda;
+se mantienen dos paneles si caben horizontalmente y hay espacio para cinco
+filas lógicas (o todo el patrón, si es más corto). Las flechas desplazan el
+viewport del tablero. El indicador informa el intervalo visible.
+
+En el catálogo compacto, `D` alterna lista/detalle y `V` alterna ACTUAL/SIGUIENTE.
+Las flechas desplazan el tablero del detalle; `PgUp`/`PgDn` permiten consultar
+su contenido vertical. Enter carga el patrón seleccionado en cualquiera de
+las vistas. La selección nativa se conserva al redimensionar.
+
+En didáctica compacta, `V` alterna los tableros y `T` muestra el trabajo por
+hilo. Las flechas desplazan el tablero o la lista de trabajadores;
+`PgUp`/`PgDn` desplazan el contenido. Los controles de reproducción mantienen
+su funcionamiento. Los formularios experimentales conservan el desplazamiento
+al mover el foco con Tab/Mayús+Tab; los resultados conservan sus pestañas y
+el desplazamiento con flechas, Inicio y Fin.
+
+El redimensionamiento conserva simulaciones, borradores y resultados; no
+relanza experimentos. Por debajo de 40×18 se muestra un aviso de tamaño
+insuficiente. Este mínimo reserva espacio para la identidad, un panel con sus
+controles y la ayuda inferior. Los tableros grandes usan un viewport: para
+ver otras células hay que desplazarlo. La vista amplia conserva su presentación
+original, incluida la tabla resumida de trabajadores.
