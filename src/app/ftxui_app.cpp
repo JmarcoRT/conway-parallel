@@ -5,6 +5,8 @@
 #include "app/experiment_execution.hpp"
 #include "app/comparison_view.hpp"
 #include "app/scaling_view.hpp"
+#include "ui/responsive_layout.hpp"
+#include "ui/allocated_element.hpp"
 #include "experiment_input_detail.hpp"
 #include "app/controls.hpp"
 #include "app/didactic_session.hpp"
@@ -85,7 +87,7 @@ std::vector<Element> boardRows(
     const conway::Game& game,
     std::size_t rows,
     std::size_t columns,
-    bool colors);
+    bool colors, std::size_t rowOffset = 0, std::size_t columnOffset = 0, bool showViewport = true);
 ftxui::Color workerColor(int index);
 class DifferentialOutputBuffer;
 
@@ -115,7 +117,7 @@ Element renderDidacticBoardPanel(
     const conway::app::DidacticFrame& frame,
     const DidacticBoardGeometry& geom,
     bool is_next,
-    bool colors);
+    bool colors, bool showViewport = true);
 
 enum class Page {
     Main,
@@ -645,7 +647,7 @@ Element renderDidacticBoardPanel(
     const conway::app::DidacticFrame& frame,
     const DidacticBoardGeometry& geom,
     bool is_next,
-    bool colors
+    bool colors, bool showViewport
 ) {
     if (geom.visible_rows == 0 || geom.visible_cols == 0 ||
         frame.width == 0 || frame.height == 0) {
@@ -695,12 +697,12 @@ Element renderDidacticBoardPanel(
         }
     }
 
-    if (!geom.full_board_shown) {
+    if (showViewport && !geom.full_board_shown) {
         rows.push_back(ftxui::text(
-            "Viewport: " + std::to_string(geom.visible_rows) + "/" +
-            std::to_string(frame.height) + " filas, " +
-            std::to_string(geom.visible_cols) + "/" +
-            std::to_string(frame.width) + " columnas") | ftxui::dim);
+            "Viewport: filas " + std::to_string(geom.row_offset + 1) + "–" +
+            std::to_string(geom.row_offset + geom.visible_rows) + "/" + std::to_string(frame.height) +
+            " · col. " + std::to_string(geom.col_offset + 1) + "–" +
+            std::to_string(geom.col_offset + geom.visible_cols) + "/" + std::to_string(frame.width)) | ftxui::dim);
     }
 
     Element board = ftxui::vbox(std::move(rows));
@@ -727,11 +729,13 @@ std::vector<Element> boardRows(
     const Game& game,
     std::size_t rows,
     std::size_t columns,
-    bool colors
+    bool colors, std::size_t rowOffset, std::size_t columnOffset, bool showViewport
 ) {
     std::vector<Element> output;
-    const std::size_t visibleRows = std::min(rows, game.height());
-    const std::size_t visibleColumns = std::min(columns, game.width());
+    rowOffset = std::min(rowOffset, game.height() - 1);
+    columnOffset = std::min(columnOffset, game.width() - 1);
+    const std::size_t visibleRows = std::min(rows, game.height() - rowOffset);
+    const std::size_t visibleColumns = std::min(columns, game.width() - columnOffset);
     if (visibleRows == 0 || visibleColumns == 0) {
         return output;
     }
@@ -743,7 +747,7 @@ std::vector<Element> boardRows(
         cells.reserve(visibleColumns * 2 + 1);
         cells.push_back(gridElement("│", colors));
         for (std::size_t column = 0; column < visibleColumns; ++column) {
-            cells.push_back(cellElement(game.isAlive(row, column), colors));
+            cells.push_back(cellElement(game.isAlive(row + rowOffset, column + columnOffset), colors));
             cells.push_back(gridElement("│", colors));
         }
         output.push_back(ftxui::hbox(std::move(cells)));
@@ -755,12 +759,18 @@ std::vector<Element> boardRows(
                 gridBorder(visibleColumns, "┴", "└", "┘"), colors));
         }
     }
-    if (visibleRows < game.height() || visibleColumns < game.width()) {
+    if (showViewport && (visibleRows < game.height() || visibleColumns < game.width())) {
         output.push_back(ftxui::text(
             "Viewport: " + std::to_string(visibleRows) + "/" +
             std::to_string(game.height()) + " filas, " +
             std::to_string(visibleColumns) + "/" + std::to_string(game.width()) +
             " columnas") | ftxui::dim);
+    }
+    if (showViewport && (rowOffset || columnOffset) && !output.empty()) {
+        output.back() = ftxui::text("Viewport: filas " + std::to_string(rowOffset + 1) + "–" +
+            std::to_string(rowOffset + visibleRows) + "/" + std::to_string(game.height()) +
+            " · col. " + std::to_string(columnOffset + 1) + "–" +
+            std::to_string(columnOffset + visibleColumns) + "/" + std::to_string(game.width())) | ftxui::dim;
     }
     return output;
 }
@@ -907,8 +917,13 @@ public:
         // Compensar aqui su nueva altura mantiene intacto su presupuesto util.
         const auto extraHeaderRows = static_cast<std::size_t>(
             std::max(0, top->requirement().min_y - 4));
-        const auto layoutHeight = size.rows > extraHeaderRows
-            ? size.rows - extraHeaderRows : 0;
+        const bool reduced = !ui::roomyTerminal(size.columns, size.rows);
+        const auto extraFooterRows = reduced && !state_.message.empty()
+            && state_.page != Page::ExperimentExecution && state_.page != Page::BenchmarkResults ? 1u : 0u;
+        const auto helpWidth = static_cast<std::size_t>(ftxui::string_width(footerText()));
+        const auto helpRows = reduced && size.columns > 2 ? (helpWidth + size.columns - 3) / (size.columns - 2) : 1;
+        const auto overhead = extraHeaderRows + extraFooterRows + (helpRows > 1 ? helpRows - 1 : 0);
+        const auto layoutHeight = size.rows > overhead ? size.rows - overhead : 0;
         Element content;
         switch (state_.page) {
             case Page::Main:
@@ -958,13 +973,26 @@ public:
                 break;
         }
 
+        const auto messageWidth = size.columns > helpWidth + 4 ? size.columns - helpWidth - 4 : 0;
         Element bottom = ftxui::hbox({
             ftxui::text(((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
-                && (showingComparison() || showingScaling())) ? "" : state_.message) | ftxui::color(state_.message.starts_with("Error")
+                && (showingComparison() || showingScaling())) ? "" : fitContextLabel(state_.message, messageWidth)) | ftxui::color(state_.message.starts_with("Error")
                 ? ftxui::Color::Red : ftxui::Color::Green),
             ftxui::filler(),
             ftxui::text(footerText()) | ftxui::dim,
         });
+        if (reduced) {
+            ftxui::Elements lines;
+            if (extraFooterRows) lines.push_back(ftxui::text(fitContextLabel(state_.message, size.columns - 2)) |
+                ftxui::color(state_.message.starts_with("Error") ? ftxui::Color::Red : ftxui::Color::Green));
+            lines.push_back(ftxui::paragraph(footerText()) | ftxui::dim);
+            bottom = ftxui::vbox(std::move(lines));
+        }
+        if (!ui::usableTerminal(size.columns, size.rows)) {
+            content = ftxui::vbox({ftxui::paragraph("Terminal insuficiente. Mínimo 40 × 18."),
+                ftxui::paragraph("Amplía la ventana. El estado se conserva.")});
+            bottom = ftxui::text("Esc volver · Q salir");
+        }
         Element frame = ftxui::vbox({
             std::move(top),
             std::move(content) | ftxui::flex,
@@ -1026,6 +1054,47 @@ public:
             else resultRow_ += event == Event::ArrowDown ? 1 : -1;
             resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
             return true;
+        }
+        const auto terminal = controls::terminalSize();
+        const bool reduced = !ui::roomyTerminal(terminal.columns, terminal.rows);
+        if (event.is_character() && (event.character() == "v" || event.character() == "V")) {
+            if (state_.page == Page::Simulation) {
+                if (simulationSingle_) simulationNext_ = !simulationNext_;
+                return true;
+            }
+            if (state_.page == Page::Patterns && reduced) {
+                if (catalogDetail_) catalogNext_ = !catalogNext_;
+                return true;
+            }
+            if (state_.page == Page::Didactic && reduced) {
+                if (!didacticWorkers_) didacticNext_ = !didacticNext_;
+                return true;
+            }
+        }
+        if (state_.page == Page::Patterns && event.is_character()
+            && (event.character() == "d" || event.character() == "D")) {
+            catalogDetail_ = !catalogDetail_; detailRow_ = 0; return true;
+        }
+        if (state_.page == Page::Didactic && event.is_character()
+            && (event.character() == "t" || event.character() == "T")) {
+            didacticWorkers_ = !didacticWorkers_; return true;
+        }
+        if (state_.page == Page::Patterns && catalogDetail_ && event == Event::Return) {
+            selectPattern(); return true;
+        }
+        if (state_.page == Page::Simulation ||
+            (state_.page == Page::Patterns && catalogDetail_) || state_.page == Page::Didactic) {
+            if (event == Event::PageDown || event == Event::PageUp) {
+                auto& scroll = state_.page == Page::Didactic ? workerRow_ : detailRow_;
+                scroll = std::max(0, scroll + (event == Event::PageDown ? 1 : -1)); return true;
+            }
+            const int dy = event == Event::ArrowDown ? 1 : event == Event::ArrowUp ? -1 : 0;
+            const int dx = event == Event::ArrowRight ? 1 : event == Event::ArrowLeft ? -1 : 0;
+            if (dy || dx) {
+                if (state_.page == Page::Didactic && didacticWorkers_) workerRow_ = std::max(0, workerRow_ + dy);
+                else (state_.page == Page::Simulation ? simulationViewport_ : state_.page == Page::Patterns ? catalogViewport_ : didacticViewport_).move(dy,dx);
+                return true;
+            }
         }
         if (event == Event::Escape) {
             goBack();
@@ -1199,6 +1268,7 @@ private:
     }
 
     void refreshPatterns() {
+        catalogDetail_ = false;
         std::string previousPath;
         if (state_.patternSelection >= 0 &&
             static_cast<std::size_t>(state_.patternSelection) <
@@ -1284,6 +1354,8 @@ private:
     }
 
     void updateCatalogPreview() {
+        catalogViewport_ = {};
+        detailRow_ = 0;
         catalogPreview_ = {};
         if (!catalog_.error.empty()) {
             catalogPreview_.error = catalog_.error;
@@ -1448,6 +1520,7 @@ private:
     }
 
     void createSimulation() {
+        simulationViewport_ = {};
         state_.simulation = std::make_unique<SimulationSession>(*state_.input, state_.engine);
         state_.effectiveThreads = 0;
         state_.page = Page::Simulation;
@@ -1465,6 +1538,7 @@ private:
     }
 
     void createDidactic() {
+        didacticViewport_ = {};
         if (!state_.input) return;
         // El controlador prepara una generacion instrumentada en un
         // worker (no bloquea la UI). Mientras prepara, la pantalla
@@ -1648,17 +1722,85 @@ private:
         return panel("MENÚ PRINCIPAL", mainMenu_->Render() | ftxui::flex);
     }
 
+    Element scrollDetail(std::vector<Element> rows) {
+        detailRow_ = std::clamp(detailRow_, 0, std::max(0, static_cast<int>(rows.size()) - 1));
+        if (!rows.empty()) rows[static_cast<std::size_t>(detailRow_)] = rows[static_cast<std::size_t>(detailRow_)] | ftxui::focus;
+        return ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::xflex | ftxui::yflex_shrink;
+    }
+
+    Element viewportLabel(const ui::BoardViewport& view, std::size_t height, std::size_t width,
+                          std::size_t rows, std::size_t columns) {
+        return ftxui::text("Viewport: filas " + std::to_string(view.row + 1) + "–" +
+            std::to_string(std::min(height, view.row + rows)) + "/" + std::to_string(height) +
+            " · col. " + std::to_string(view.column + 1) + "–" +
+            std::to_string(std::min(width, view.column + columns)) + "/" + std::to_string(width)) | ftxui::dim;
+    }
+
+    Element catalogBoards(bool paired) {
+        if (!catalogPreview_.current || !catalogPreview_.next)
+            return ftxui::text("Sin vista previa.");
+        return ui::allocatedElement([this, paired](int width, int height) {
+            const auto& current = *catalogPreview_.current;
+            const int panelWidth = paired ? (width - 1) / 2 : width;
+            // Panel: two borders, title and separator. Grid: 2*r+1,
+            // plus one viewport line even when the origin is zero.
+            if (height < (paired ? 8 : 5) || panelWidth < 4)
+                return ftxui::text("Tablero sin espacio. Amplía la terminal.");
+            const auto rows = static_cast<std::size_t>((height - (paired ? 6 : 3)) / 2);
+            const auto columns = static_cast<std::size_t>((panelWidth - (paired ? 3 : 1)) / 3);
+            catalogViewport_.clamp(current.height(), current.width(), rows, columns);
+            auto board = [&](bool next) {
+                auto body = ftxui::vbox(boardRows(next ? *catalogPreview_.next : current,
+                    rows, columns, colorsEnabled(), catalogViewport_.row, catalogViewport_.column, false));
+                const auto title = next ? "SIGUIENTE · generación 1" : "ACTUAL · generación 0";
+                return paired ? panel(title, std::move(body))
+                    : ftxui::vbox({heading(title), std::move(body) | ftxui::flex});
+            };
+            Element boards = paired ? ftxui::hbox({board(false) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex,
+                ftxui::text(" "), board(true) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex}) : board(catalogNext_);
+            return ftxui::vbox({std::move(boards) | ftxui::flex,
+                viewportLabel(catalogViewport_, current.height(), current.width(), rows, columns)});
+        });
+    }
+
+    Element renderCompactPatterns(Element list, std::size_t width, std::size_t height) {
+        if (!catalogDetail_) return ftxui::vbox({heading("CATÁLOGO DE PATRONES"), std::move(list) | ftxui::flex});
+        std::vector<Element> rows;
+        if (catalog_.entries.empty()) rows.push_back(ftxui::paragraph("No hay patrones disponibles."));
+        else {
+            const auto& entry = catalog_.entries[static_cast<std::size_t>(state_.patternSelection)];
+            rows.push_back(ftxui::paragraph("Patrón: " + entry.name));
+            if (!entry.valid()) rows.push_back(ftxui::paragraph(entry.error) | ftxui::color(ftxui::Color::Red));
+            else {
+                rows.push_back(ftxui::paragraph("Dimensiones: " + std::to_string(entry.height) + " × " +
+                    std::to_string(entry.width) + " · " + std::to_string(entry.aliveCells) + " vivas"));
+                if (!entry.type.empty()) rows.push_back(ftxui::paragraph("Tipo: " + entry.type));
+                if (entry.period) rows.push_back(ftxui::text("Período: " + std::to_string(*entry.period)));
+                if (!entry.description.empty()) rows.push_back(ftxui::paragraph(entry.description) | ftxui::dim);
+                if (!catalogPreview_.error.empty()) rows.push_back(ftxui::paragraph(catalogPreview_.error));
+            }
+        }
+        auto metadata = scrollDetail(std::move(rows)) | ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 5);
+        return panel("DETALLE ACTIVO · D lista · V vista", ftxui::vbox({
+            std::move(metadata), catalogBoards(false) | ftxui::flex}));
+    }
+
     Element renderPatterns(std::size_t width, std::size_t height, bool compact) {
+        Element patternEntries = patternMenu_->Render();
+        if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
+            patternEntries = std::move(patternEntries) | ftxui::yframe;
         Element listBody = ftxui::vbox({
             ftxui::text("Archivos .txt disponibles") | ftxui::dim,
             catalog_.error.empty()
-                ? patternMenu_->Render() | ftxui::flex
+                ? std::move(patternEntries) | ftxui::flex
                 : ftxui::text("Error: " + catalog_.error) | ftxui::color(ftxui::Color::Red),
             ftxui::separator(),
             ftxui::text("ACCIONES") | ftxui::bold,
             patternActionsMenu_->Render(),
         });
-        Element patternList = panel("PATRONES", std::move(listBody));
+        Element patternList = panel(catalogDetail_ ? "PATRONES" : "PATRONES ACTIVOS · D detalle", std::move(listBody));
+        if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
+            return renderCompactPatterns(std::move(patternList), width, height);
 
         std::vector<Element> details;
         if (catalog_.error.empty() && !catalog_.entries.empty() &&
@@ -1681,14 +1823,15 @@ private:
                         "Período: " + std::to_string(*selected.period)));
                 }
                 if (!selected.description.empty()) {
-                    details.push_back(ftxui::text(selected.description) | ftxui::dim);
+                    details.push_back(ftxui::paragraph(selected.description) | ftxui::dim);
                 }
             }
         } else {
             details.push_back(ftxui::text("Selecciona un archivo .txt para ver sus datos."));
         }
 
-        Element detailContent = ftxui::vbox(std::move(details));
+        Element detailContent = scrollDetail(std::move(details)) |
+            ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 5);
         if (!catalogPreview_.error.empty()) {
             detailContent = ftxui::vbox({
                 std::move(detailContent),
@@ -1696,53 +1839,10 @@ private:
                     ftxui::color(ftxui::Color::Red),
             });
         } else if (catalogPreview_.current && catalogPreview_.next) {
-            const PatternEntry& selected = catalog_.entries[
-                static_cast<std::size_t>(state_.patternSelection)];
-            const std::size_t detailWidth = width < 64
-                ? width : width - (width * 2 / 5) - 3;
-            const bool horizontalPreviews = !compact && detailWidth >= 62;
-            const std::size_t previewWidth = horizontalPreviews
-                ? (detailWidth - 5) / 2
-                : detailWidth > 4 ? detailWidth - 4 : 1;
-            const std::size_t previewRows = horizontalPreviews
-                ? (height > 18 ? std::max<std::size_t>(1, (height - 18) / 2) : 1)
-                : (height > 22 ? std::max<std::size_t>(1, (height - 22) / 4) : 1);
-            const std::size_t columns = std::max<std::size_t>(
-                1, std::min(selected.width,
-                    previewWidth > 4 ? (previewWidth - 4) / 3 : 1));
-            const std::size_t rows = std::max<std::size_t>(
-                1, std::min(selected.height, previewRows));
-            const bool colors = colorsEnabled();
-            const auto currentRows = boardRows(
-                *catalogPreview_.current, rows, columns, colors);
-            const auto nextRows = boardRows(
-                *catalogPreview_.next, rows, columns, colors);
-            const bool compactStack = !horizontalPreviews && height <= 28;
-            Element current = compactStack
-                ? ftxui::vbox({
-                      heading("ACTUAL · generación 0"),
-                      ftxui::vbox(currentRows),
-                  })
-                : panel("ACTUAL · generación 0", ftxui::vbox(currentRows));
-            Element next = compactStack
-                ? ftxui::vbox({
-                      heading("SIGUIENTE · generación 1"),
-                      ftxui::vbox(nextRows),
-                  })
-                : panel("SIGUIENTE · generación 1", ftxui::vbox(nextRows));
-            Element previews = horizontalPreviews
-                ? ftxui::hbox({std::move(current) | ftxui::flex,
-                               ftxui::text(" "),
-                               std::move(next) | ftxui::flex})
-                : ftxui::vbox({std::move(current) | ftxui::flex,
-                               std::move(next) | ftxui::flex});
-            detailContent = ftxui::vbox({
-                std::move(detailContent),
-                ftxui::separator(),
-                std::move(previews) | ftxui::flex,
-            });
+            detailContent = ftxui::vbox({std::move(detailContent), ftxui::separator(),
+                catalogBoards(true) | ftxui::flex});
         }
-        Element detailPanel = panel("DETALLE", std::move(detailContent));
+        Element detailPanel = panel(catalogDetail_ ? "DETALLE ACTIVO · D lista" : "DETALLE · D activar", std::move(detailContent));
 
         Element catalogPanels = width < 64
             ? ftxui::vbox({
@@ -1802,21 +1902,25 @@ private:
             state_.effectiveThreads = state_.engine == Engine::OpenMP
                 ? core::last_openmp_team_size() : 1;
         }
-        const std::size_t rows = visibleBoardRows(height, game.height(), compact);
-        const std::size_t panelWidth = compact
+        const bool single = !ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows)
+            && !ui::pairedSimulation(width, height, game.width(), game.height());
+        simulationSingle_ = single;
+        const std::size_t rows = visibleBoardRows(single && height > 2 ? height - 2 : height, game.height(), single ? false : compact);
+        const std::size_t panelWidth = single ? (width > 6 ? width - 6 : 1) : compact
             ? std::max<std::size_t>(1, width > 8 ? width - 8 : 1)
             : std::max<std::size_t>(
                   1, (width - std::min<std::size_t>(width, 10)) / 2);
         const std::size_t columns = std::max<std::size_t>(
-            1, std::min(game.width(), panelWidth / 4));
+            1, std::min(game.width(), single ? (panelWidth - 1) / 3 : panelWidth / 4));
+        simulationViewport_.clamp(game.height(), game.width(), rows, columns);
         const bool colors = colorsEnabled();
         Element current = panel("CURRENT · generación " +
             std::to_string(game.generation()),
-            ftxui::vbox(boardRows(game, rows, columns, colors)));
+            ftxui::vbox(boardRows(game, rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
         Element next = panel("NEXT · generación " +
             std::to_string(game.generation() + 1),
-            ftxui::vbox(boardRows(*preview_, rows, columns, colors)));
-        Element boards = compact
+            ftxui::vbox(boardRows(*preview_, rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
+        Element boards = single ? (simulationNext_ ? std::move(next) : std::move(current)) : compact
             ? ftxui::vbox({std::move(current) | ftxui::flex,
                            ftxui::text(""),
                            std::move(next) | ftxui::flex})
@@ -2067,12 +2171,77 @@ private:
     // Render del modo didactico. Esta vista NO recalcula reglas de
     // Conway; solo muestra la StepTrace capturada por el worker y
     // la revelacion progresiva basada en el reloj de reproduccion.
+    Element renderCompactDidactic(std::shared_ptr<const DidacticFrame> snapshot) {
+        const auto& frame = *snapshot;
+        std::vector<Element> rows;
+        rows.push_back(ftxui::paragraph("REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo") | ftxui::color(ftxui::Color::Cyan));
+        rows.push_back(ftxui::paragraph("Generación actual " + std::to_string(frame.current_generation) +
+            " · " + std::to_string(frame.current_alive) + " vivas · NEXT " + std::to_string(frame.next_alive)));
+        rows.push_back(ftxui::paragraph(frame.engine_name + " · solicitados " + std::to_string(frame.requested_threads) +
+            " · efectivos " + std::to_string(frame.effective_threads)));
+        rows.push_back(ftxui::paragraph("Velocidad: " + speedLabel(frame.speed) + " · " + (frame.playing ? "Reproduciendo" : "En pausa")));
+        Element body = didacticWorkers_ ? allWorkers(frame) : didacticBoards(snapshot, false);
+        return panel("MODO DIDÁCTICO", ftxui::vbox({ftxui::vbox(std::move(rows)), std::move(body) | ftxui::flex}));
+    }
+
+    Element allWorkers(const DidacticFrame& frame) {
+        std::vector<Element> rows;
+        rows.push_back(heading("TRABAJO POR HILO · T tableros"));
+        for (const auto& w : frame.workers) {
+            std::ostringstream duration;
+            duration << std::setprecision(6) << static_cast<double>(w.loop_duration_ns) / 1e6;
+            const auto status = w.is_sequential ? "T0 único" : w.progress >= 1.0 ? "completo" : frame.playing ? "activo" : "pendiente";
+            rows.push_back(ftxui::paragraph("T" + std::to_string(w.thread_id) + " · filas [" +
+                std::to_string(w.first_row) + ", " + std::to_string(w.end_row) + ") · " +
+                std::to_string(w.cells_processed) + " celdas · " + duration.str() + " ms · " +
+                std::to_string(static_cast<int>(w.progress * 100)) + " % · " + status) |
+                ftxui::color(colorsEnabled() ? workerColor(w.color_index) : ftxui::Color::Default));
+        }
+        if (frame.workers.empty()) rows.push_back(ftxui::text("Sin trabajadores registrados."));
+        workerRow_ = std::clamp(workerRow_, 0, static_cast<int>(rows.size()) - 1);
+        rows[static_cast<std::size_t>(workerRow_)] = rows[static_cast<std::size_t>(workerRow_)] | ftxui::focus;
+        return ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex;
+    }
+
+    Element didacticBoards(std::shared_ptr<const DidacticFrame> snapshot, bool paired) {
+        return ui::allocatedElement([this, snapshot, paired](int width, int height) {
+            const auto& frame = *snapshot;
+            const int panelWidth = paired ? (width - 1) / 2 : width;
+            // Each panel owns its title, separator, borders and two partition
+            // rows. Reserve the viewport label before fitting the grid.
+            if (height < (paired ? 10 : 6) || panelWidth < 4)
+                return ftxui::text("Tablero sin espacio. T consulta hilos.");
+            auto geom = computeDidacticBoardGeometry(std::max(0, panelWidth - (paired ? 2 : 0)),
+                std::max(0, height - (paired ? 7 : 3)), frame.width, frame.height);
+            didacticViewport_.clamp(frame.height, frame.width, geom.visible_rows, geom.visible_cols);
+            geom.row_offset = didacticViewport_.row;
+            geom.col_offset = didacticViewport_.column;
+            auto board = [&](bool next) {
+                auto grid = renderDidacticBoardPanel(frame, geom, next, colorsEnabled(), false);
+                const auto title = std::string(next ? "NEXT · generación " : "CURRENT · generación ") +
+                    std::to_string(next ? frame.next_generation : frame.current_generation);
+                auto indicator = (next ? partitionIndicator(frame) : ftxui::text(" ")) |
+                    ftxui::xframe | ftxui::size(ftxui::WIDTH, ftxui::LESS_THAN,
+                        panelWidth - (paired ? 2 : 0));
+                if (!paired) return ftxui::vbox({heading(title), std::move(indicator), std::move(grid) | ftxui::flex});
+                return panel(title + (next ? (frame.fully_revealed ? " · REPRODUCCIÓN COMPLETA" :
+                    frame.playing ? " · REPRODUCIENDO" : " · EN PAUSA") : ""),
+                    didacticBoardBody(std::move(indicator), std::move(grid)));
+            };
+            Element boards = paired ? ftxui::hbox({board(false) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex,
+                ftxui::text(" "), board(true) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex}) : board(didacticNext_);
+            return ftxui::vbox({std::move(boards) | ftxui::flex,
+                viewportLabel(didacticViewport_, frame.height, frame.width, geom.visible_rows, geom.visible_cols)});
+        });
+    }
+
     Element renderDidactic(std::size_t width, std::size_t height, bool compact) {
         if (!state_.didactic) {
             return panel("VISUALIZACIÓN DIDÁCTICA",
                 ftxui::text("No hay un controlador activo."));
         }
-        const DidacticFrame frame = state_.didactic->snapshot();
+        const auto snapshot = std::make_shared<const DidacticFrame>(state_.didactic->snapshot());
+        const auto& frame = *snapshot;
 
         if (frame.is_preparing) {
             return panel("VISUALIZACIÓN DIDÁCTICA",
@@ -2094,76 +2263,14 @@ private:
                 }));
         }
 
-        // Distribucion del espacio vertical entre boards y panel de
-        // trabajadores. El panel de trabajadores toma su tamano
-        // natural (1 titulo + 1 cabecera + N filas). Los boards toman
-        // el resto con `| ftxui::flex`, evitando asi que los dos
-        // compitan por el espacio como antes.
-        const std::size_t fixed_lines = 1 + 1 + 1 + 1 + 1 + 1 +
-            2;  // warning + heading + status + 2 spacers + speed + bordes
-        // Estimar alto del panel de trabajadores para reservar el
-        // espacio de los boards. No es exacto (depende del numero
-        // de workers), pero da una buena aproximacion.
-        const std::size_t approx_workers_lines = 1 + 1 +
-            std::min<std::size_t>(frame.workers.empty() ? 1 : frame.workers.size(), 8) + 1;
-        const std::size_t boards_height = (height > fixed_lines + approx_workers_lines)
-            ? height - fixed_lines - approx_workers_lines
-            : 4;  // minimo
+        if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
+            return renderCompactDidactic(snapshot);
 
-        // Distribucion horizontal. En modo no-compact, dos paneles
-        // lado a lado; en compact, uno encima del otro.
-        std::size_t panel_outer_width;
-        if (compact) {
-            panel_outer_width = (width > 2) ? width - 2 : 0;
-        } else {
-            // 1 char separador entre paneles
-            panel_outer_width = (width > 3) ? (width - 3) / 2 : 0;
-        }
-        const std::size_t panel_outer_height = (boards_height > 2)
-            ? boards_height - 2 : 0;  // menos bordes del panel
-        // Interior: titulo + separador y dos filas para particiones.
-        const std::size_t panel_inner_width = (panel_outer_width > 2)
-            ? panel_outer_width - 2 : 0;
-        const std::size_t panel_inner_height = (panel_outer_height > 4)
-            ? panel_outer_height - 4 : 0;
-
-        // Geometria adaptable: cell_chars optimo + viewport.
-        const DidacticBoardGeometry geom = computeDidacticBoardGeometry(
-            panel_inner_width, panel_inner_height,
-            frame.width, frame.height);
+        Element boards = didacticWorkers_ ? allWorkers(frame) : didacticBoards(snapshot, true);
         const bool colors = colorsEnabled();
-
-        // Construir los dos paneles con la misma geometria. CURRENT y
-        // NEXT siempre usan la misma escala para que se vean
-        // identicos.
-        Element currentBody = didacticBoardBody(
-            ftxui::text(" "),
-            renderDidacticBoardPanel(frame, geom, /*is_next=*/false, colors));
-        Element nextBody = didacticBoardBody(
-            partitionIndicator(frame),
-            renderDidacticBoardPanel(frame, geom, /*is_next=*/true, colors));
-
-        Element currentPanel = panel(
-            "CURRENT · generación " + std::to_string(frame.current_generation),
-            std::move(currentBody));
-        Element nextPanel = panel(
-            "NEXT · generación " + std::to_string(frame.next_generation) +
-                (frame.fully_revealed
-                    ? "  ·  REPRODUCCIÓN COMPLETA"
-                    : (frame.playing ? "  ·  REPRODUCIENDO" : "  ·  EN PAUSA")),
-            std::move(nextBody));
-
-        Element boards = compact
-            ? ftxui::vbox({std::move(currentPanel) | ftxui::flex,
-                           ftxui::text(""),
-                           std::move(nextPanel) | ftxui::flex})
-            : ftxui::hbox({std::move(currentPanel) | ftxui::flex,
-                           ftxui::text(" "),
-                           std::move(nextPanel) | ftxui::flex});
-
         // Panel de trabajadores: sin flex, toma su tamano natural.
         // Asi no compite con los boards por el espacio vertical.
-        Element workersPanel = renderDidacticWorkers(frame, colors);
+        Element workersPanel = didacticWorkers_ ? ftxui::text("") : renderDidacticWorkers(frame, colors);
 
         std::string statusLine = "Motor: " + frame.engine_name +
             "  ·  Generación actual " +
@@ -2325,14 +2432,33 @@ private:
     }
 
     std::string footerText() const {
+        const auto terminal = controls::terminalSize();
+        if (!ui::roomyTerminal(terminal.columns, terminal.rows)) {
+            switch (state_.page) {
+                case Page::Simulation: return std::string(simulationSingle_ ? "V vista · " : "") + "Flechas mover · N paso · Esp pausa · R · Esc";
+                case Page::Patterns: return catalogDetail_
+                    ? "D lista · V vista · Flechas tablero · PgUp/PgDn datos · Enter · M · Esc"
+                    : "↑↓ patrones · D detalle · Enter · M ruta · Esc";
+                case Page::Didactic: return didacticWorkers_
+                    ? "T tableros · ↑↓/PgUp/PgDn hilos · N · Esp · R · +/- · Esc"
+                    : "V vista · T hilos · Flechas tablero · N · Esp · R · +/- · Esc";
+                case Page::ComparisonConfig:
+                case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter · Esc";
+                case Page::ExperimentExecution:
+                case Page::BenchmarkResults: return "←→ vistas · ↑↓ desplazar · Esc volver";
+                default: break;
+            }
+        }
         switch (state_.page) {
             case Page::Main: return "↑↓ navegar · Enter seleccionar · C patrones · 0 salir";
-            case Page::Patterns: return "↑↓ navegar · Enter cargar · M ruta manual · Esc volver";
+            case Page::Patterns: return catalogDetail_
+                ? "D lista · Flechas tablero · PgUp/PgDn datos · Enter · M ruta · Esc"
+                : "↑↓ patrones · D detalle · Enter cargar · M ruta · Esc volver";
             case Page::Engines: return "↑↓ navegar · Enter seleccionar · S/O motor · Esc volver";
             case Page::Threads: return "↑↓ navegar · Enter seleccionar · Esc volver";
             case Page::PathInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
-            case Page::Simulation: return "N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
+            case Page::Simulation: return "Flechas mover · N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
             case Page::ExperimentExecution: return (showingComparison() || showingScaling())
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración"
@@ -2343,7 +2469,7 @@ private:
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark"
                 : "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
-            case Page::Didactic: return "Espacio reproducir · N siguiente · R reiniciar · + más rápido · - más lento · Esc menú";
+            case Page::Didactic: return "T tableros/hilos · Flechas mover · N paso · Esp pausa · R · +/- · Esc";
         }
         return {};
     }
@@ -2375,6 +2501,12 @@ private:
     int resultRow_{0}, resultRows_{1};
     int comparisonTab_{0};
     int scalingTab_{0};
+    bool simulationSingle_{false};
+    int workerRow_{0};
+    bool simulationNext_{false}, catalogNext_{false}, catalogDetail_{false};
+    bool didacticNext_{true}, didacticWorkers_{false};
+    int detailRow_{0};
+    ui::BoardViewport simulationViewport_, catalogViewport_, didacticViewport_;
     ftxui::Component comparisonForm_, scalingForm_;
     ftxui::Component mainMenu_;
     ftxui::Component benchmarkMenu_;
