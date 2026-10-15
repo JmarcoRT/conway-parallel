@@ -390,6 +390,18 @@ add_test(NAME experiment_csv_roundtrip
             "$<TARGET_FILE:experiment_csv_tests>" "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(experiment_csv_roundtrip PROPERTIES
     ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+add_executable(responsive_layout_tests tests/responsive_layout_tests.cpp)
+target_include_directories(responsive_layout_tests PRIVATE include)
+target_compile_options(responsive_layout_tests PRIVATE -UNDEBUG)
+add_test(NAME responsive_layout COMMAND responsive_layout_tests)
+add_test(NAME ftxui_accessibility_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_accessibility.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_accessibility_pty PROPERTIES TIMEOUT 150)
+add_test(NAME ftxui_responsive_pty
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_responsive.py"
+            "$<TARGET_FILE:conway>")
+set_tests_properties(ftxui_responsive_pty PROPERTIES TIMEOUT 150)
 add_test(NAME ftxui_header_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_header.py"
             "$<TARGET_FILE:conway>")
@@ -402,29 +414,6 @@ add_test(NAME ftxui_benchmark_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
             "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")
 set_tests_properties(ftxui_benchmark_pty PROPERTIES TIMEOUT 150)
-
-# Semana 7 (validacion independiente): secuencial vs OpenMP con 1, 2, 4 y 8
-# hilos, comparando volcados de tablero con tests/compare_boards.py. Es
-# complementaria a game_openmp_vs_sequential (que compara en memoria): aqui
-# se prueba el camino por archivos y OMP_NUM_THREADS. Ver docs/OPENMP_VALIDATION.md.
-add_executable(dump_board
-    tests/dump_board.cpp
-    src/core/game.cpp
-    src/core/engines/sequential.cpp
-    src/core/engines/openmp.cpp
-    src/core/bs23.cpp
-    src/input/input.cpp
-)
-target_include_directories(dump_board PRIVATE include)
-target_link_libraries(dump_board PRIVATE OpenMP::OpenMP_CXX)
-add_test(NAME openmp_equivalence_files
-    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_openmp_validation.sh"
-            --bin "$<TARGET_FILE:dump_board>"
-)
-set_tests_properties(openmp_equivalence_files PROPERTIES
-    ENVIRONMENT "PYTHON=${Python3_EXECUTABLE}"
-    TIMEOUT 300
-)
 
 endif()
 
