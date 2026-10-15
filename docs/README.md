@@ -11,6 +11,7 @@
 
 ## Contratos técnicos
 
+- [Documentación académica de algoritmos Secuencial y OpenMP (PDF)](Conway_Parallel_Documentacion_Algoritmos.pdf)
 - [Protocolo experimental y build Release](BENCHMARK_PROTOCOL.md)
 - [Benchmark histórico: muestras y estadísticas](BENCHMARK_RESULTS.md)
 - [Generador reproducible](GENERATED_INPUT.md)
