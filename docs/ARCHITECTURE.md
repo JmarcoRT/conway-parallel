@@ -14,7 +14,7 @@ motores terminados. El [índice](README.md) separa contratos y registros histór
 | app: exportación | Contexto, metadatos y CSV | Resultados experimentales |
 | app: FTXUI | Navegación, formularios, workers y vistas | Servicios de aplicación y FTXUI |
 | ui | Renderizadores textuales, layout y demos | Estado del juego |
-| mpi | Partición y estado local del prototipo | GameState e InputData |
+| mpi | Partición y estado local del prototipo; evolución independiente con halos | GameState, InputData y motor MPI específico |
 
 `src/main.cpp` llama a `app::run()`. Esta función selecciona FTXUI cuando entrada
 y salida son TTY, y conserva el recorrido textual para pipes. La UI no contiene
@@ -43,6 +43,9 @@ ambos buffers conservan el halo cero. El swap se realiza una vez al terminar.
 
 `next_cell_state()` aplica B3/S23 a ocho vecinos. No se duplica en los motores.
 `Game::step()` despacha según `Engine::Sequential` o `Engine::OpenMP`.
+La evolución MPI independiente usa `core::step_mpi` sobre franjas locales y no
+forma parte de este despacho. Intercambia halos con vecinos no vacíos, reutiliza
+el recorrido secuencial y reduce la población global. Véase [MPI_PROTOTYPE.md](MPI_PROTOTYPE.md).
 
 Secuencial recorre filas y columnas; OpenMP reparte filas completas con
 `schedule(static)`. Todos leen current; cada hilo escribe filas disjuntas de next.

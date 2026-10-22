@@ -108,19 +108,44 @@ target_link_libraries(conway PRIVATE
 
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 # Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
+add_library(conway_mpi STATIC
+    src/core/engines/mpi.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/mpi/partition.cpp
+    src/mpi/local_state.cpp)
+target_include_directories(conway_mpi PUBLIC include)
+target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX)
+
 add_executable(mpi_partition_prototype
     src/mpi/partition_prototype.cpp
-    src/mpi/partition.cpp
-    src/mpi/local_state.cpp
     src/input/input.cpp
 )
 target_include_directories(mpi_partition_prototype PRIVATE include)
-target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
+target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
 
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(mpi_evolution_tests tests/mpi_evolution_tests.cpp src/input/input.cpp)
+    target_link_libraries(mpi_evolution_tests PRIVATE conway_mpi)
+    foreach(processes IN ITEMS 1 2 3 4 7 8)
+        add_test(NAME mpi_evolution_${processes}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+                ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_evolution_tests>
+                ${MPIEXEC_POSTFLAGS} "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(mpi_evolution_${processes} PROPERTIES TIMEOUT 45
+            PROCESSORS ${processes} RUN_SERIAL TRUE)
+    endforeach()
+    foreach(processes IN ITEMS 1 8)
+        add_test(NAME mpi_prototype_evolution_${processes}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+                ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_partition_prototype>
+                ${MPIEXEC_POSTFLAGS} --synthetic 3 5 --steps 30)
+        set_tests_properties(mpi_prototype_evolution_${processes} PROPERTIES
+            TIMEOUT 45 PROCESSORS ${processes} RUN_SERIAL TRUE)
+    endforeach()
     add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp)
     target_include_directories(scaling_view_tests PRIVATE include)
     target_link_libraries(scaling_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)

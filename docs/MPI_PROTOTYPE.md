@@ -1,7 +1,52 @@
 # Prototipo MPI aislado — procesos y reparto de filas (Semana 6)
 
-Primer prototipo del módulo `mpi`. **No evoluciona el tablero ni intercambia halos**: solo deja
-comprobada la base de distribución sobre la que se construirá el modo MPI completo.
+Prototipo independiente del módulo `mpi`. Sin opciones conserva la comprobación
+de distribución original. Con `--steps N` intercambia halos, evoluciona N pasos
+y compara células, generación y población global contra el secuencial en cada paso.
+Todavía no está integrado en `Game`, sesiones, menús, modo didáctico ni experimentos.
+
+## Evolución independiente
+
+`core::step_mpi(GameState&, RowPartition, MPI_Comm)` vive en
+`include/core/engines/mpi.hpp` y `src/core/engines/mpi.cpp`. Reutiliza la partición
+y el estado local existentes. Todos los ranks llaman al paso colectivamente.
+Intercambia filas de `current` con dos `MPI_Sendrecv` y reutiliza
+`step_sequential` (incluida B3/S23, doble buffer e incremento de generación).
+Los vecinos se calculan solo entre ranks con filas; los ranks vacíos avanzan
+su generación y participan en las colectivas, sin enviar halos.
+Los bordes exteriores son muertos: los halos se limpian antes de cada intercambio
+y los extremos usan `MPI_PROC_NULL`. `state.aliveCount` sigue siendo local;
+el valor devuelto por el paso es la población global obtenida con `Allreduce`.
+El comunicador debe ser exclusivo para este flujo, sin otros mensajes con sus tags.
+
+La validación de forma/partición se coordina antes del intercambio. Dimensiones
+globales y generación deben coincidir entre ranks; el estado se inicializa con
+células binarias y columnas halo cero. El camino Scatterv/Gatherv limita el tablero
+a `INT_MAX` células mediante `mpi::checked_cell_count`, que valida por división
+antes de multiplicar o convertir. La entrada sintética se valida antes de reservar.
+No hay recuperación ante pérdida de un rank; una excepción
+inesperada en el ejecutable aborta el trabajo. No se generan trazas ni métricas.
+
+```bash
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build --target mpi_partition_prototype mpi_evolution_tests -j2
+timeout --kill-after=5s 45s mpirun --oversubscribe -np 4 \
+  ./build/mpi_partition_prototype patterns/glider.txt --steps 30
+ctest --test-dir build -R '^mpi_(evolution|prototype_evolution)_' --output-on-failure
+```
+
+CTest registra P=1,2,3,4,7,8, cada uno con timeout de 45 segundos. Las pruebas
+comparan la generación cero y los 30 pasos siguientes, células y población contra
+el recorrido secuencial del tablero completo, más contadores locales y halos
+exteriores de ambos buffers en todos los ranks. Incluyen patrones, tableros vacíos/llenos/deterministas,
+una fila/columna, repartos desiguales, ranks sin filas y blinkers sobre fronteras.
+También comprueban el rechazo colectivo de una partición inconsistente.
+La sobresuscripción se habilita con `--oversubscribe` explícito solo en las
+órdenes de estas pruebas locales con Open MPI, sin cambiar el simulador.
+Dos pruebas adicionales ejecutan el prototipo con `--steps 30`, P=1 y P=8,
+con tres filas (incluidos procesos vacíos); también tienen timeout de 45 segundos.
+
+Las secciones siguientes describen el modo original de distribución y su evidencia histórica.
 
 ## Qué comprueba
 
