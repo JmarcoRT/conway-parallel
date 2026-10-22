@@ -20,7 +20,8 @@
 - [Workers y ejecución experimental FTXUI](FTXUI_EXPERIMENT_EXECUTION.md)
 - [Alcances temporales de StepTrace](STEP_TRACE.md)
 - [Metadatos y exportación CSV por API](EXPERIMENT_CSV.md)
-- [Prototipo MPI, sin evolución](MPI_PROTOTYPE.md)
+- [Prototipo y evolución MPI independiente](MPI_PROTOTYPE.md)
+- [Cliente y supervisión MPI local](MPI_SESSION.md)
 
 ## Registros históricos
 

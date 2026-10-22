@@ -117,6 +117,11 @@ add_library(conway_mpi STATIC
 target_include_directories(conway_mpi PUBLIC include)
 target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX)
 
+add_library(conway_mpi_client STATIC src/mpi/protocol.cpp src/mpi/client.cpp)
+target_include_directories(conway_mpi_client PUBLIC include)
+add_executable(conway_mpi_worker src/mpi/worker.cpp src/mpi/protocol.cpp)
+target_link_libraries(conway_mpi_worker PRIVATE conway_mpi)
+
 add_executable(mpi_partition_prototype
     src/mpi/partition_prototype.cpp
     src/input/input.cpp
@@ -128,6 +133,12 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(mpi_client_tests tests/mpi_client_tests.cpp src/input/input.cpp)
+    target_link_libraries(mpi_client_tests PRIVATE conway_mpi_client conway_mpi)
+    add_dependencies(mpi_client_tests conway_mpi_worker)
+    add_test(NAME mpi_client COMMAND mpi_client_tests "${MPIEXEC_EXECUTABLE}"
+        $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mpi_client PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4)
     add_executable(mpi_evolution_tests tests/mpi_evolution_tests.cpp src/input/input.cpp)
     target_link_libraries(mpi_evolution_tests PRIVATE conway_mpi)
     foreach(processes IN ITEMS 1 2 3 4 7 8)

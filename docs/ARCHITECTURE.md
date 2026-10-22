@@ -20,6 +20,10 @@ motores terminados. El [índice](README.md) separa contratos y registros histór
 y salida son TTY, y conserva el recorrido textual para pipes. La UI no contiene
 reglas B3/S23. Los experimentos no dependen de FTXUI ni MPI.
 
+El cliente/trabajador de [MPI_SESSION.md](MPI_SESSION.md) es independiente de
+estos flujos: `mpi::Client` lanza `conway_mpi_worker` por sesión y usa un socket
+Unix con rank 0. No integra aún `SimulationSession` ni la interfaz.
+
 ## Entrada y memoria
 
 `loadInput()` lee alto/ancho y filas binarias. `InputData` contiene exclusivamente
