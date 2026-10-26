@@ -19,8 +19,8 @@ La interfaz interactiva usa FTXUI v5.0.0, fijado en CMake al commit
   estados reales de `conway::Game` mediante elementos FTXUI.
 
 La interfaz no duplica reglas de Conway ni modifica los motores. CURRENT muestra
-la generación actual y NEXT se calcula sobre una copia del juego, sin cambiar la
-simulación activa.
+la generación confirmada. NEXT local se calcula sobre una copia al actualizar
+la sesión, fuera del render; MPI muestra solo CURRENT confirmado.
 
 ## Refresco y ciclo de eventos
 
@@ -65,7 +65,9 @@ En la simulación:
 - `N`: avanzar una generación.
 - Espacio o `P`: pausar/reanudar.
 - `R`: reiniciar desde el patrón original.
-- `Esc`, `X` o `Q`: regresar al menú.
+- `Esc` o `X`: pausar y volver al menú conservando la sesión; Visualización la reanuda.
+- `Q`: abandonar y cerrar la sesión; una nueva visualización comienza en el patrón inicial.
+- `U`: recuperar MPI desde el último snapshot confirmado después de un fallo.
 
 Los paneles CURRENT/NEXT se organizan lado a lado en terminales amplias y
 con una vista alternable cuando falta espacio. Cada celda se delimita con bordes verticales y
@@ -181,3 +183,21 @@ los intervalos de filas y columnas visibles. Si ni siquiera cabe una celda
 con sus controles, esa región muestra un aviso de espacio insuficiente.
 Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
 los demás offsets se ajustan al nuevo rango sin reiniciar el estado.
+
+## Simulación MPI local
+
+En Seleccionar motor, M elige MPI y C abre Procesos MPI (P en el selector textual).
+No se crea ningún rank hasta entrar en Visualización. El valor inicial es P=1;
+se muestra una recomendación basada en afinidad/filas y se aceptan 1..1024.
+No se habilita sobresuscripción. El trabajador se busca junto al ejecutable
+`conway`; CMake configura la ruta compatible de `mpirun` y compila ambos targets.
+
+Cambiar motor o P conserva el tablero, generación y referencia inicial de R.
+El cambio de P se aplica al reanudar y recrea el trabajo MPI. Durante una operación
+pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
+Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
+Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
+
+El modo didáctico MPI no está habilitado y benchmark sigue comparando
+secuencial/OpenMP; debe abandonarse una sesión MPI antes de medir. Véase
+[MPI_SESSION.md](MPI_SESSION.md) para límites, supervisión y validación.

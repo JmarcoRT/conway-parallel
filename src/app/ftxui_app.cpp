@@ -126,6 +126,7 @@ enum class Page {
     Threads,
     PathInput,
     ThreadInput,
+    MPIInput,
     Simulation,
     ExperimentExecution,
     ComparisonConfig,
@@ -143,6 +144,8 @@ struct InteractiveState {
     Engine engine{Engine::Sequential};
     int requestedThreads{defaultOpenMPThreadCount()};
     int effectiveThreads{0};
+    int mpiProcesses{1};
+    std::string mpiDraft;
     Page page{Page::Main};
     Page returnAfterCatalog{Page::Main};
     int mainSelection{0};
@@ -264,7 +267,7 @@ private:
 };
 
 std::string engineName(Engine engine) {
-    return engine == Engine::Sequential ? "Secuencial" : "OpenMP";
+    return engine == Engine::Sequential ? "Secuencial" : engine == Engine::OpenMP ? "OpenMP" : "MPI";
 }
 
 std::string activePattern(const InteractiveState& state) {
@@ -338,13 +341,14 @@ Element renderContextBar(const InteractiveState& state, std::size_t width) {
         label += "Sin cargar";
     }
     const std::string engine = width < 44
-        ? (state.engine == Engine::Sequential ? "Sec." : "OMP")
+        ? (state.engine == Engine::Sequential ? "Sec." : state.engine == Engine::OpenMP ? "OMP" : "MPI")
         : engineName(state.engine);
     std::string suffix = dimensions + " · " + (compact ? "" : "Motor: ") + engine;
     if (state.engine == Engine::OpenMP) {
         suffix += width < 44 ? " · H:" : compact ? " · Hilos: " : " · Hilos solicitados: ";
         suffix += std::to_string(state.requestedThreads);
     }
+    if (state.engine == Engine::MPI) suffix += " · P:" + std::to_string(state.mpiProcesses);
     const auto suffixWidth = static_cast<std::size_t>(ftxui::string_width(suffix));
     const auto labelWidth = width > suffixWidth ? width - suffixWidth : 0;
     return ftxui::text(fitContextLabel(label, labelWidth) + suffix) | ftxui::dim;
@@ -841,7 +845,8 @@ public:
           threadMenu_(makeMenu(threadItems_, state_.threadSelection,
                                [this] { selectThreadOption(); })),
           pathInput_(makePathInput()),
-          threadInput_(makeThreadInput()) {
+          threadInput_(makeThreadInput()),
+          mpiInput_(makeMPIInput()) {
         omp_set_num_threads(state_.requestedThreads);
         Add(mainMenu_);
         Add(benchmarkMenu_);
@@ -851,6 +856,7 @@ public:
         Add(threadMenu_);
         Add(pathInput_);
         Add(threadInput_);
+        Add(mpiInput_);
         Add(simulationView_);
         Add(benchmarkView_);
         Add(didacticView_);
@@ -867,7 +873,7 @@ public:
             "Comparación de motores", "Escalabilidad OpenMP",
             "Resultados de la sesión",
         };
-        engineItems_ = {"Secuencial", "OpenMP", "Volver"};
+        engineItems_ = {"Secuencial", "OpenMP", "MPI", "Configurar procesos MPI", "Volver"};
         threadItems_ = {
             "1 hilo", "2 hilos", "4 hilos", "8 hilos",
             "Número personalizado", "Volver",
@@ -895,6 +901,7 @@ public:
     }
 
     ~InteractiveApp() override {
+        state_.simulation.reset();
         experiment_->shutdown();
         playbackTimer_.request_stop();
         // Destruir el didactic antes que el worker thread termine,
@@ -941,6 +948,11 @@ public:
             case Page::PathInput:
                 content = renderInput("CARGAR PATRÓN", pathInput_,
                                       "Ruta relativa o absoluta al archivo .txt");
+                break;
+            case Page::MPIInput:
+                content = renderInput("PROCESOS MPI", mpiInput_,
+                    "P entre 1 y 1024 · Recomendados: " + std::to_string(recommendedMPIProcesses(state_.input ? state_.input->height : 1024)) +
+                    " según afinidad/filas; slots del runtime pueden diferir. Sin sobresuscripción.");
                 break;
             case Page::ThreadInput:
                 content = renderInput("HILOS OPENMP", threadInput_,
@@ -1013,7 +1025,22 @@ public:
 
     bool OnEvent(Event event) override {
         if (event == Event::Custom) {
-            if (exitWhenExperimentFinishes_ && !experiment_->snapshot().active()) {
+            if (state_.simulation) {
+                state_.simulation->poll();
+                if (!state_.simulation->error().empty()) state_.message = state_.simulation->error();
+                else if (!state_.simulation->busy() &&
+                    (state_.message.starts_with("Recuperando sesión") || state_.message.starts_with("Reiniciando sesión")))
+                    state_.message = "Sesión lista · snapshot confirmado.";
+                if (state_.simulation->closed() && state_.page == Page::Simulation) {
+                    state_.page = Page::Main;
+                    state_.message = "Sesión abandonada. La siguiente visualización comienza desde el patrón inicial.";
+                }
+                if (exitAfterSimulation_ && state_.simulation->closed() && !experiment_->snapshot().active()) {
+                    screen_.Exit(); return true;
+                }
+            }
+            if (exitWhenExperimentFinishes_ && !experiment_->snapshot().active() &&
+                (!state_.simulation || state_.simulation->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1112,10 +1139,16 @@ public:
         }
         if (state_.page == Page::Simulation && event.is_character()) {
             const std::string key = event.character();
-            if (key == "x" || key == "X" || key == "q" || key == "Q") {
-                goBack();
+            if (key == "q" || key == "Q") {
+                playbackTimer_.request_stop();
+                state_.simulation->close();
+                if (state_.simulation->closed()) state_.page = Page::Main;
                 return true;
             }
+            if (key == "u" || key == "U") {
+                state_.message = "Recuperando sesión..."; state_.simulation->recover(); return true;
+            }
+            if (key == "x" || key == "X") { goBack(); return true; }
             if (key == "n" || key == "N") {
                 state_.simulation->step();
                 state_.effectiveThreads = state_.engine == Engine::OpenMP
@@ -1132,6 +1165,7 @@ public:
                 return true;
             }
             if (key == "r" || key == "R") {
+                state_.message = "Reiniciando sesión...";
                 state_.simulation->reset();
                 state_.effectiveThreads = 0;
                 return true;
@@ -1189,6 +1223,9 @@ public:
             applyThreadDraft();
             return true;
         }
+        if (event == Event::Return && state_.page == Page::MPIInput) {
+            applyMPIDraft(); return true;
+        }
         return activeComponent()->OnEvent(event);
     }
 
@@ -1238,6 +1275,13 @@ private:
         return ftxui::Input(&state_.pathDraft, std::move(option));
     }
 
+    ftxui::Component makeMPIInput() {
+        ftxui::InputOption option;
+        option.multiline = false;
+        option.placeholder = "1-1024";
+        return ftxui::Input(&state_.mpiDraft, std::move(option));
+    }
+
     ftxui::Component makeThreadInput() {
         ftxui::InputOption option;
         option.multiline = false;
@@ -1258,6 +1302,7 @@ private:
                     ? patternActionsMenu_ : patternMenu_;
             case Page::Engines: return engineMenu_;
             case Page::Threads: return threadMenu_;
+            case Page::MPIInput: return mpiInput_;
             case Page::PathInput: return pathInput_;
             case Page::ThreadInput: return threadInput_;
             case Page::Simulation: return simulationView_;
@@ -1435,13 +1480,28 @@ private:
     }
 
     void selectEngine() {
-        if (state_.engineSelection == 2) {
-            state_.page = Page::Main;
-            return;
+        if (state_.engineSelection == 4) { state_.page = Page::Main; return; }
+        if (state_.engineSelection == 3) {
+            state_.mpiDraft = std::to_string(state_.mpiProcesses);
+            state_.page = Page::MPIInput; return;
         }
-        state_.engine = state_.engineSelection == 0
-            ? Engine::Sequential : Engine::OpenMP;
+        state_.engine = state_.engineSelection == 0 ? Engine::Sequential
+            : state_.engineSelection == 1 ? Engine::OpenMP : Engine::MPI;
+        if (state_.simulation && !state_.simulation->closed()) {
+            state_.simulation->pause();
+            // Selecting MPI does not launch it until Visualización is entered.
+            if (state_.engine != Engine::MPI)
+                state_.simulation->configure(state_.engine, state_.mpiProcesses);
+        }
         state_.message = "Motor seleccionado: " + engineName(state_.engine);
+        state_.page = Page::Main;
+    }
+
+    void applyMPIDraft() {
+        const auto count = parseMPIProcesses(state_.mpiDraft);
+        if (!count) { state_.message = "Error: P debe ser un entero entre 1 y 1024."; return; }
+        state_.mpiProcesses = *count;
+        state_.message = "Procesos MPI: " + std::to_string(*count) + " · se aplicarán al entrar en Visualización.";
         state_.page = Page::Main;
     }
 
@@ -1500,6 +1560,8 @@ private:
     void loadPath(const std::string& path) {
         try {
             InputData loaded = loadInput(path);
+            if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
+            replaceSimulation_ = true;
             state_.input = std::move(loaded);
             state_.path = path;
             state_.message = "Entrada cargada: " + path;
@@ -1521,12 +1583,24 @@ private:
 
     void createSimulation() {
         simulationViewport_ = {};
-        state_.simulation = std::make_unique<SimulationSession>(*state_.input, state_.engine);
+        if (state_.simulation) state_.simulation->poll();
+        if (replaceSimulation_ && state_.simulation && !state_.simulation->closed()) {
+            state_.page = Page::Main;
+            state_.message = "Cerrando la sesión anterior; vuelve a Visualización al terminar."; return;
+        }
+        if (!state_.simulation || state_.simulation->closed()) {
+            state_.simulation = std::make_unique<SimulationSession>(*state_.input, state_.engine,
+                defaultMPIOptions(state_.mpiProcesses), [this] { screen_.PostEvent(Event::Custom); });
+            replaceSimulation_ = false;
+        } else if (state_.simulation->engine() != state_.engine || state_.simulation->processes() != state_.mpiProcesses) {
+            state_.simulation->configure(state_.engine, state_.mpiProcesses);
+        }
         state_.effectiveThreads = 0;
         state_.page = Page::Simulation;
     }
 
     void startDidactic() {
+        if (state_.engine == Engine::MPI) { state_.message = "El modo didáctico MPI aún no está disponible. Selecciona Secuencial u OpenMP."; return; }
         if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
@@ -1551,6 +1625,7 @@ private:
     }
 
     void startBenchmark() {
+        if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) { state_.message = "Abandona la sesión MPI con Q antes de medir."; return; }
         if (experiment_->snapshot().active()) return;
         if (state_.benchmarkRunning) {
             state_.page = Page::Benchmark;
@@ -1641,6 +1716,8 @@ private:
             }
         }
         if (state_.page == Page::Engines) {
+            if (key == "m" || key == "M") { state_.engineSelection = 2; selectEngine(); return true; }
+            if (key == "c" || key == "C") { state_.engineSelection = 3; selectEngine(); return true; }
             if (key == "s" || key == "S") {
                 state_.engineSelection = 0;
                 selectEngine();
@@ -1698,6 +1775,8 @@ private:
             case Page::PathInput:
                 state_.page = pathReturnPage_;
                 break;
+            case Page::MPIInput:
+                state_.page = Page::Engines; break;
             case Page::ThreadInput:
                 state_.page = Page::Threads;
                 break;
@@ -1893,14 +1972,20 @@ private:
             return panel("SIMULACIÓN", ftxui::text("No hay una simulación activa."));
         }
         const Game& game = state_.simulation->game();
-        if (!preview_ || previewGeneration_ != game.generation() ||
-            previewEngine_ != state_.engine) {
-            preview_ = game;
-            preview_->step();
-            previewGeneration_ = game.generation();
-            previewEngine_ = state_.engine;
-            state_.effectiveThreads = state_.engine == Engine::OpenMP
-                ? core::last_openmp_team_size() : 1;
+        if (state_.simulation->engine() == Engine::MPI || !state_.simulation->preview()) {
+            simulationSingle_ = false;
+            const auto rows = std::max<std::size_t>(1, std::min(game.height(),height>12?(height-12)/2:1));
+            const auto columns = std::max<std::size_t>(1, (width > 6 ? width - 6 : 1) / 3);
+            simulationViewport_.clamp(game.height(), game.width(), rows, columns);
+            const auto status = state_.simulation->busy() ? (state_.simulation->isRunning() ? "Calculando" : "Operación pendiente")
+                : state_.simulation->isRunning() ? "En ejecución" : "Pausado";
+            return panel("SIMULACIÓN · " + engineName(state_.simulation->engine()) +
+                (state_.simulation->engine() == Engine::MPI ? " · P=" + std::to_string(state_.mpiProcesses) : " · cambiando motor"), ftxui::vbox({
+                ftxui::text("Generación " + std::to_string(game.generation()) + " · " + std::to_string(game.aliveCount()) + " vivas · " + status),
+                panel("CURRENT · snapshot confirmado", ftxui::vbox(boardRows(game, rows, columns, colorsEnabled(), simulationViewport_.row, simulationViewport_.column))) | ftxui::flex,
+                ftxui::paragraph(state_.simulation->error()) | ftxui::color(ftxui::Color::Red),
+                ftxui::text("N paso · Esp pausa/reanuda · R reiniciar · U recuperar · Esc menú · Q abandonar"),
+            }));
         }
         const bool single = !ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows)
             && !ui::pairedSimulation(width, height, game.width(), game.height());
@@ -1919,7 +2004,7 @@ private:
             ftxui::vbox(boardRows(game, rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
         Element next = panel("NEXT · generación " +
             std::to_string(game.generation() + 1),
-            ftxui::vbox(boardRows(*preview_, rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
+            ftxui::vbox(boardRows(*state_.simulation->preview(), rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
         Element boards = single ? (simulationNext_ ? std::move(next) : std::move(current)) : compact
             ? ftxui::vbox({std::move(current) | ftxui::flex,
                            ftxui::text(""),
@@ -1949,10 +2034,12 @@ private:
     }
 
     void requestExit() {
+        exitAfterSimulation_ = true;
+        if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
         if (experiment_->snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else screen_.Exit();
+        } else if (!state_.simulation || state_.simulation->closed()) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -1962,12 +2049,12 @@ private:
         auto gameBytes = [&](const Game& game) {
             return checkedMultiply(2, checkedMultiply(checkedAdd(game.width(), 2), checkedAdd(game.height(), 2)));
         };
-        if (preview_) bytes = checkedAdd(bytes, gameBytes(*preview_));
         for (const auto* game : {&catalogPreview_.current, &catalogPreview_.next})
             if (*game) bytes = checkedAdd(bytes, gameBytes(**game));
         if (state_.simulation) {
             const auto& game = state_.simulation->game();
             bytes = checkedAdd(bytes, checkedAdd(gameBytes(game), checkedMultiply(game.width(), game.height())));
+            if (state_.simulation->preview()) bytes = checkedAdd(bytes,gameBytes(*state_.simulation->preview()));
         }
         if (state_.didactic) {
             bytes = checkedAdd(bytes, state_.didactic->initialInput().cells.capacity());
@@ -1982,6 +2069,7 @@ private:
     }
 
     std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
+        if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) return "Abandona la sesión MPI con Q antes de medir.";
         if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
         if (state_.benchmarkRunning || (state_.didactic && state_.didactic->isPreparing()))
@@ -2454,11 +2542,12 @@ private:
             case Page::Patterns: return catalogDetail_
                 ? "D lista · Flechas tablero · PgUp/PgDn datos · Enter · M ruta · Esc"
                 : "↑↓ patrones · D detalle · Enter cargar · M ruta · Esc volver";
-            case Page::Engines: return "↑↓ navegar · Enter seleccionar · S/O motor · Esc volver";
+            case Page::Engines: return "↑↓ navegar · Enter · S/O/M motor · C procesos MPI · Esc volver";
             case Page::Threads: return "↑↓ navegar · Enter seleccionar · Esc volver";
             case Page::PathInput:
+            case Page::MPIInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
-            case Page::Simulation: return "Flechas mover · N paso · Espacio/P pausa/reanuda · R reiniciar · Esc menú";
+            case Page::Simulation: return "Flechas mover · N paso · Espacio/P pausa/reanuda · R reiniciar · U recuperar · Esc menú · Q abandonar";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
             case Page::ExperimentExecution: return (showingComparison() || showingScaling())
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración"
@@ -2487,9 +2576,6 @@ private:
     PatternPreview catalogPreview_;
     Page pathReturnPage_{Page::Main};
     Page destinationAfterPath_{Page::Main};
-    std::optional<Game> preview_;
-    std::size_t previewGeneration_{static_cast<std::size_t>(-1)};
-    Engine previewEngine_{Engine::Sequential};
     std::atomic<unsigned> pendingEvents_{0};
     std::jthread playbackTimer_;
     std::mutex benchmarkMutex_;
@@ -2498,6 +2584,7 @@ private:
     std::thread benchmarkWorker_;
     std::unique_ptr<ExperimentExecution> experiment_;
     bool exitWhenExperimentFinishes_{false};
+    bool exitAfterSimulation_{false}, replaceSimulation_{false};
     int resultRow_{0}, resultRows_{1};
     int comparisonTab_{0};
     int scalingTab_{0};
@@ -2516,6 +2603,7 @@ private:
     ftxui::Component threadMenu_;
     ftxui::Component pathInput_;
     ftxui::Component threadInput_;
+    ftxui::Component mpiInput_;
     ftxui::Component simulationView_ = ftxui::Renderer([] { return ftxui::text(""); });
     ftxui::Component benchmarkView_ = ftxui::Renderer([] { return ftxui::text(""); });
     ftxui::Component didacticView_ = ftxui::Renderer([] { return ftxui::text(""); });

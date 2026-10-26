@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sched.h>
 #include <cerrno>
 #include <cstring>
 #include <algorithm>
@@ -72,7 +73,11 @@ Client::Client(ClientOptions options) : options_(std::move(options)) {
 
         std::vector<std::string> args{options_.launcher};
         args.insert(args.end(),options_.launcherArguments.begin(),options_.launcherArguments.end());
-        args.insert(args.end(),{"--host","localhost","-np",std::to_string(options_.processes),options_.worker,
+        cpu_set_t allowed; CPU_ZERO(&allowed);
+        const int slots=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
+        // Open MPI treats a bare --host localhost as one slot. Declare actual
+        // permitted logical CPUs; P above this still fails without opt-in.
+        args.insert(args.end(),{"--host","localhost:"+std::to_string(slots),"-np",std::to_string(options_.processes),options_.worker,
                                 "--socket",socket_,"--session",std::to_string(session_)});
         std::vector<char*> argv;
         for (auto& a:args) argv.push_back(a.data());

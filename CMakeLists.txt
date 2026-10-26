@@ -79,7 +79,6 @@ add_executable(conway
     src/ui/menu.cpp
     src/app/app.cpp
     src/app/controls.cpp
-    src/app/simulation.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
     src/app/pattern_preview.cpp
@@ -119,6 +118,12 @@ target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX)
 
 add_library(conway_mpi_client STATIC src/mpi/protocol.cpp src/mpi/client.cpp)
 target_include_directories(conway_mpi_client PUBLIC include)
+add_library(conway_simulation STATIC src/app/simulation.cpp)
+target_include_directories(conway_simulation PUBLIC include)
+target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_CXX)
+target_compile_definitions(conway_simulation PRIVATE CONWAY_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
+target_link_libraries(conway PRIVATE conway_simulation)
+
 add_executable(conway_mpi_worker src/mpi/worker.cpp src/mpi/protocol.cpp)
 target_link_libraries(conway_mpi_worker PRIVATE conway_mpi)
 
@@ -133,6 +138,14 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 include(CTest)
 
 if(BUILD_TESTING)
+
+    add_executable(mpi_simulation_tests tests/mpi_simulation_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(mpi_simulation_tests PRIVATE conway_simulation)
+    add_dependencies(mpi_simulation_tests conway_mpi_worker)
+    add_test(NAME mpi_simulation COMMAND mpi_simulation_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(mpi_simulation PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4
+        ENVIRONMENT "OMP_NUM_THREADS=2")
     add_executable(mpi_client_tests tests/mpi_client_tests.cpp src/input/input.cpp)
     target_link_libraries(mpi_client_tests PRIVATE conway_mpi_client conway_mpi)
     add_dependencies(mpi_client_tests conway_mpi_worker)
@@ -322,7 +335,6 @@ if(BUILD_TESTING)
 
     add_executable(app_runtime_tests
         tests/app_runtime_tests.cpp
-        src/app/simulation.cpp
         src/app/thread_config.cpp
         src/app/pattern_catalog.cpp
         src/app/pattern_preview.cpp
@@ -421,6 +433,13 @@ target_include_directories(ftxui_execution_fixture PRIVATE include)
 target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
     OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME ftxui_mpi_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_mpi_pty PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME text_mpi COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_text_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(text_mpi PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+
 add_test(NAME experiment_csv_roundtrip
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"
             "$<TARGET_FILE:experiment_csv_tests>" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -484,3 +503,11 @@ add_executable(conway_simulation_demo
     src/ui/layout.cpp
 )
 target_include_directories(conway_simulation_demo PRIVATE include)
+
+# All applications/fixtures use the same simulation session and MPI runtime path.
+foreach(session_target IN ITEMS app_runtime_tests didactic_layout_tests ftxui_execution_fixture)
+    if(TARGET ${session_target})
+        target_link_libraries(${session_target} PRIVATE conway_simulation)
+    endif()
+endforeach()
+add_dependencies(conway conway_mpi_worker)

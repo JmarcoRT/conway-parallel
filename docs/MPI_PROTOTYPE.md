@@ -3,7 +3,9 @@
 Prototipo independiente del módulo `mpi`. Sin opciones conserva la comprobación
 de distribución original. Con `--steps N` intercambia halos, evoluciona N pasos
 y compara células, generación y población global contra el secuencial en cada paso.
-Todavía no está integrado en `Game`, sesiones, menús, modo didáctico ni experimentos.
+`Game::step()` sigue siendo local. La integración de sesiones y menús se hace
+mediante el cliente/trabajador de [MPI_SESSION.md](MPI_SESSION.md); modo didáctico
+y experimentos MPI siguen pendientes.
 
 ## Evolución independiente
 

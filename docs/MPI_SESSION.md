@@ -1,7 +1,7 @@
-# Cliente y trabajador MPI independientes (Linux/WSL local)
+# Sesión de simulación MPI (Linux/WSL local)
 
-Esta etapa añade `conway_mpi_worker` y la biblioteca `conway_mpi_client`.
-No cambia `Game`, menús, simulación interactiva, modo didáctico ni experimentos.
+`SimulationSession` integra `conway_mpi_worker` y `conway_mpi_client` con los
+controles de simulación. Modo didáctico y experimentos MPI siguen fuera de alcance.
 Reutiliza `core::step_mpi`, la partición por filas, halos y doble buffer existentes.
 
 ## Uso y propiedad
@@ -11,13 +11,15 @@ de inicio, operación y cierre. Su constructor crea un directorio privado 0700,
 un socket Unix y un grupo de procesos mediante `posix_spawnp`. Lanza:
 
 ```text
-mpirun [argumentos explícitos del llamador] --host localhost -np P conway_mpi_worker
+mpirun [argumentos explícitos del llamador] --host localhost:SLOTS -np P conway_mpi_worker
        --socket /tmp/conway-mpi-XXXXXX/control --session ID
 ```
 
 P cuenta procesos de cálculo, incluido rank 0, sin incluir al cliente/lanzador.
 Se valida P en 1..1024 como límite operativo de esta primera versión; no es una
-recomendación de CPU. No se añade sobresuscripción ni se calcula una recomendación.
+recomendación de CPU. SLOTS es el número de CPU lógicas de la afinidad permitida
+(fallback conservador: 1); se declara explícitamente porque un host sin slots
+puede reducir Open MPI a un solo proceso. No se añade sobresuscripción.
 El runtime puede rechazar P por slots/binding disponibles. Cliente y lanzador
 deben ser compatibles con el MPI enlazado al trabajador.
 
@@ -32,6 +34,44 @@ Solo rank 0 usa IPC; difunde las órdenes y reparte el tablero con Scatterv.
 Todos los ranks calculan; los vacíos participan en las colectivas sin halos.
 Las llamadas MPI ocurren en el único hilo de aplicación de cada trabajador,
 inicializado con `MPI_THREAD_SINGLE`. El cliente no hace llamadas MPI.
+
+## Controles y ciclo de vida
+
+La opción MPI y la configuración de P están en Seleccionar motor (M y C en
+FTXUI; M y P en el selector textual). Seleccionarlos no lanza procesos: se
+aplican al entrar/reanudar Visualización. P comienza en 1 y admite 1..1024.
+La recomendación usa CPU de afinidad menos una para la aplicación, limitada por
+filas y 1024; no mide cuotas cgroup, núcleos físicos ni garantiza slots/binding.
+P mayor que filas es válido, aunque haya ranks sin trabajo. P mayor que los
+slots disponibles se rechaza: la aplicación nunca reintenta con sobresuscripción.
+
+- N avanza; Espacio/P reproduce o pausa; R restaura la entrada inicial y pausa.
+- Esc/X vuelve al menú y pausa, conservando la sesión (incluidos ranks MPI).
+  Volver a Visualización reanuda el mismo tablero sin avanzar automáticamente.
+- Q abandona y cierra; una nueva visualización empieza desde el patrón cargado.
+- Cambiar motor/P preserva células, dimensiones, generación y referencia de R.
+  P nuevo se aplica al reanudar. Seleccionar un motor local cierra el trabajo MPI;
+  mientras termina ese cambio los controles de avance no ejecutan otro motor.
+- U recupera desde el último snapshot confirmado; un fallo detiene reproducción
+  y conserva ese snapshot. Un avance sin respuesta confirmada puede perderse al
+  recuperar, nunca se reintenta ambiguamente. También puede elegirse un motor local.
+- Cargar otro patrón correctamente abandona la sesión anterior y establece una
+  referencia inicial nueva; cancelar o fallar la carga conserva la sesión anterior.
+
+Un worker de C++ posee exclusivamente `mpi::Client`. La UI solo envía una operación,
+recibe una entrega mediante evento/poll y publica un `Game` como snapshot local.
+El paso MPI incluye ADVANCE y SNAPSHOT serializados. Los ticks/pasos adicionales
+se descartan mientras hay uno pendiente: no se acumulan generaciones. Pausar deja
+terminar el paso pendiente; reset/configuración/cierre esperan su entrega. Solo
+se conserva el último control pendiente, con prioridad para cierre.
+
+El render nunca comunica ni avanza motores. MPI muestra solo CURRENT confirmado;
+la previsualización local de secuencial/OpenMP se calcula al actualizar la sesión.
+`Engine::MPI` es una selección de sesión: `Game::step()` lo rechaza explícitamente,
+por lo que copiar un snapshot no puede producir una colectiva accidental.
+Volver al menú conserva el worker de aplicación, pero al usar un motor local no
+quedan procesos MPI. Salir de la aplicación solicita cierre antes de terminar
+el bucle de UI; la destrucción final une el worker y limpia sus recursos.
 
 ## Contrato v1
 
@@ -142,3 +182,12 @@ rank 0 detenido (timeout). También prueba frames fragmentados, límite de paylo
 Las pruebas por goteo y escritura parcial deben agotar un plazo absoluto aunque
 haya progreso. El doble que anuncia un PID ajeno comprueba que ese proceso sigue
 vivo; los fallos reales comprueban ausencia de PIDs/grupos/socket/directorio residuales.
+
+La integración añade `mpi_simulation` (45 s) y `ftxui_mpi_pty` (60 s). La primera
+comprueba equivalencia, una sola operación, pausa pendiente, cambios motor/P,
+referencia de reinicio, fallos reales/recuperación y limpieza; habilita
+sobresuscripción explícitamente solo como política de pruebas. La segunda usa
+la aplicación real en PTY con P=1/2, sin sobresuscripción, y comprueba navegación,
+controles, transferencia, recuperación y ausencia de trabajadores residuales.
+`text_mpi` (45 s) verifica también la recepción asíncrona, menú/reanudación,
+reinicio y cierre con stdin/stdout no interactivos.
