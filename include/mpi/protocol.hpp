@@ -8,8 +8,8 @@
 namespace conway::mpi::wire {
 using Bytes = std::vector<std::uint8_t>;
 using Deadline = std::chrono::steady_clock::time_point;
-enum Type : std::uint64_t { Ready=1, Load, Advance, Snapshot, Close, Reply, Closed, Error, RunBatch, BatchResult };
-inline constexpr std::uint64_t version = 2;
+enum Type : std::uint64_t { Ready=1, Load, Advance, Snapshot, Close, Reply, Closed, Error, RunBatch, BatchResult, TraceStep, TraceResult };
+inline constexpr std::uint64_t version = 3;
 inline constexpr std::uint64_t maxPayload = 64u * 1024u * 1024u;
 struct Frame { std::uint64_t type{}, session{}, request{}; Bytes payload; };
 // Called after the fixed header and BEFORE allocating/reading its payload.

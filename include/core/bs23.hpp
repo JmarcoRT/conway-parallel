@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/cell_probe.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -18,11 +19,14 @@ namespace conway::core {
 //   i-stride-1, i-stride, i-stride+1       (noroeste, norte, noreste)
 //   i-1,                            i+1    (oeste, este)
 //   i+stride-1, i+stride, i+stride+1      (suroeste, sur, sureste)
-// El halo del buffer (cuyo valor logico es siempre 0) participa como vecino.
+// Los halos participan como vecinos; en MPI pueden contener filas recibidas.
 std::uint8_t next_cell_state(
     const std::uint8_t* current,
     std::size_t stride,
     std::size_t row,
     std::size_t col);
+// Instrumented overload used ONLY for the selected cell; same evaluation.
+std::uint8_t next_cell_state(const std::uint8_t* current, std::size_t stride,
+                            std::size_t row, std::size_t col, CellEvaluation& capture);
 
 } // namespace conway::core

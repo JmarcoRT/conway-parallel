@@ -61,7 +61,7 @@ int run(int rank,int size,int argc,char** argv) {
     for(;;) {
         // Only rank 0 parses IPC. It validates fully before broadcasting an
         // operation, so invalid requests never strand ranks inside a collective.
-        std::array<std::uint64_t,5> control{};
+        std::array<std::uint64_t,7> control{};
         wire::Frame request;
         if(rank==0) {
             for(;;) {
@@ -76,7 +76,7 @@ int run(int rank,int size,int argc,char** argv) {
                     request=wire::receive(fd,operationDeadline,{},[&](const auto& header,auto){
                         require(header.session==session && header.request>lastRequest,"invalid request identity");
                         require(header.type==wire::Load || header.type==wire::Advance ||
-                                header.type==wire::Snapshot || header.type==wire::Close || header.type==wire::RunBatch,"unknown operation");
+                                header.type==wire::TraceStep || header.type==wire::Snapshot || header.type==wire::Close || header.type==wire::RunBatch,"unknown operation");
                     });
                     control[0]=request.type;
                     std::size_t offset=0;
@@ -95,6 +95,14 @@ int run(int rank,int size,int argc,char** argv) {
                             require(wire::get(request.payload,offset)==state->generation,"unexpected batch generation");
                         require(offset==request.payload.size() && control[4]>0 && control[4]<=100000 &&
                             control[4]<=SIZE_MAX-state->generation,"invalid advance payload");
+                    } else if(request.type==wire::TraceStep) {
+                        require(state.has_value(),"load a board first");
+                        control[4]=wire::get(request.payload,offset);
+                        control[5]=wire::get(request.payload,offset);control[6]=wire::get(request.payload,offset);
+                        require(offset==request.payload.size() && control[4]<=SIZE_MAX && control[5]<=SIZE_MAX && control[6]<=SIZE_MAX,
+                            "invalid trace request");
+                        require(control[4]==state->generation,"unexpected trace generation");
+                        (void)trace_payload_size(width,height,size,{static_cast<std::size_t>(control[4]),static_cast<std::size_t>(control[5]),static_cast<std::size_t>(control[6])});
                     } else if(request.type==wire::Snapshot || request.type==wire::Close) {
                         require(request.payload.empty(),"unexpected payload");
                         require(request.type==wire::Close || state.has_value(),"load a board first");
@@ -111,6 +119,9 @@ int run(int rank,int size,int argc,char** argv) {
                         request={};
                         continue;
                     }
+                    // No parsed request means ERROR cannot be addressed safely.
+                    // Keep the rejection in stderr for the supervising client.
+                    std::cerr<<"MPI worker protocol rejection: "<<error.what()<<'\n';
                     control[0]=wire::Close; break;
                 }
             }
@@ -136,6 +147,53 @@ int run(int rank,int size,int argc,char** argv) {
             state->generation=control[3];
         } else if(control[0]==wire::Advance) {
             for(std::uint64_t i=0;i<control[4];++i) core::step_mpi(*state,part,MPI_COMM_WORLD);
+        }
+        if(control[0]==wire::TraceStep) {
+            const TraceRequest selection{static_cast<std::size_t>(control[4]),static_cast<std::size_t>(control[5]),static_cast<std::size_t>(control[6])};
+            RankStepTrace capture;
+            std::vector<int> traceCounts,traceOffsets;
+            int ready=1,allReady=0;
+            // Allocate the snapshots and gather target BEFORE evolution. Every
+            // rank reaches this agreement even if one allocation fails.
+            try {
+                capture=prepare_rank_trace(width,part,selection);
+                traceCounts.resize(size);traceOffsets.resize(size);
+                int offset=0;
+                for(int r=0;r<size;++r) {
+                    traceOffsets[r]=offset;
+                    traceCounts[r]=static_cast<int>(rank_trace_payload_size(width,partition_rows(height,size,r),selection));
+                    offset+=traceCounts[r];
+                }
+                if(rank==0) response.resize(trace_payload_size(width,height,size,selection));
+            } catch(const std::exception& e) {
+                std::cerr<<"MPI trace preparation rank "<<rank<<": "<<e.what()<<'\n';ready=0;
+            }
+            MPI_Allreduce(&ready,&allReady,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+            require(allReady,"MPI trace: capture preparation failed");
+            const auto globalAlive=core::step_mpi(*state,part,MPI_COMM_WORLD,&capture);
+#ifdef CONWAY_MPI_TRACE_FAIL_AFTER_STEP
+            // Compiled only into the dedicated failure-injection test worker.
+            if(rank==0) throw std::runtime_error("injected trace failure after generation "+std::to_string(state->generation));
+#endif
+            wire::Bytes record;
+            ready=1;
+            try {record=encode_rank_trace(capture,width,selection);}
+            catch(const std::exception& e) {
+                std::cerr<<"MPI trace encoding rank "<<rank<<": "<<e.what()<<'\n';ready=0;
+            }
+            MPI_Allreduce(&ready,&allReady,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+            require(allReady,"MPI trace: capture encoding failed");
+            const unsigned long long localBefore=capture.aliveBefore;unsigned long long globalBefore=0;
+            MPI_Reduce(&localBefore,&globalBefore,1,MPI_UNSIGNED_LONG_LONG,MPI_SUM,0,MPI_COMM_WORLD);
+            MPI_Gatherv(record.data(),static_cast<int>(record.size()),MPI_UINT8_T,
+                rank==0?response.data()+72:nullptr,traceCounts.data(),traceOffsets.data(),MPI_UINT8_T,0,MPI_COMM_WORLD);
+            if(rank==0) {
+                wire::Bytes header;
+                for(auto v:{std::uint64_t(width),std::uint64_t(height),control[4],control[4]+1,
+                    std::uint64_t(globalBefore),std::uint64_t(globalAlive),control[5],control[6],std::uint64_t(size)}) wire::put(header,v);
+                std::copy(header.begin(),header.end(),response.begin());
+                (void)decode_step_trace(response); // Audit the assembled real capture before publishing.
+            }
         }
         if(control[0]==wire::RunBatch) {
             MPI_Barrier(MPI_COMM_WORLD); // Preparation excluded.
@@ -169,7 +227,7 @@ int run(int rank,int size,int argc,char** argv) {
         }
         // Acknowledge completion on ALL ranks, including allocations after Scatter.
         MPI_Barrier(MPI_COMM_WORLD);
-        if(rank==0) wire::send(fd,{control[0]==wire::RunBatch?wire::BatchResult:wire::Reply,session,request.request,std::move(response)},operationDeadline);
+        if(rank==0) wire::send(fd,{control[0]==wire::TraceStep?wire::TraceResult:control[0]==wire::RunBatch?wire::BatchResult:wire::Reply,session,request.request,std::move(response)},operationDeadline);
     }
     MPI_Finalize();
     if(rank==0) {

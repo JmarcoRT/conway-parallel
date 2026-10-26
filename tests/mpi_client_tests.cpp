@@ -103,7 +103,7 @@ void protocol_checks() {
 
 // Raw peer for the REAL MPI worker: bypasses Client's preflight deliberately.
 struct RawWorker {
-    int launcher{-1},listener{-1},fd{-1};
+    int launcher{-1},listener{-1},fd{-1},log{-1};
     std::string dir,path;
     std::vector<int> pids;
     RawWorker(const char* executable,const char* worker) {
@@ -118,7 +118,11 @@ struct RawWorker {
         std::vector<char*> argv; for(auto& a:args) argv.push_back(a.data()); argv.push_back(nullptr);
         posix_spawnattr_t attr; posix_spawnattr_init(&attr);
         posix_spawnattr_setflags(&attr,POSIX_SPAWN_SETPGROUP); posix_spawnattr_setpgroup(&attr,0);
-        const auto error=posix_spawnp(&launcher,argv[0],nullptr,&attr,argv.data(),environ);
+        log=open((dir+"/log").c_str(),O_CREAT|O_TRUNC|O_RDWR|O_CLOEXEC,0600);check(log>=0,"raw log failed");
+        posix_spawn_file_actions_t actions;posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions,log,STDERR_FILENO);
+        const auto error=posix_spawnp(&launcher,argv[0],&actions,&attr,argv.data(),environ);
+        posix_spawn_file_actions_destroy(&actions);
         posix_spawnattr_destroy(&attr); check(error==0,"raw spawn failed");
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
         while(fd<0 && std::chrono::steady_clock::now()<deadline) {
@@ -143,8 +147,10 @@ struct RawWorker {
             kill(-launcher,SIGTERM); poll(nullptr,0,50); kill(-launcher,SIGKILL);
             waitpid(launcher,nullptr,0);
         }
-        unlink(path.c_str()); rmdir(dir.c_str());
+        if(log>=0) ::close(log);
+        unlink((dir+"/log").c_str());unlink(path.c_str());rmdir(dir.c_str());
     }
+    std::string diagnostic() {std::ifstream in(dir+"/log");return {std::istreambuf_iterator<char>(in),{}};}
     auto deadline() { return std::chrono::steady_clock::now()+std::chrono::seconds(2); }
     auto request(const wire::Frame& frame) { wire::send(fd,frame,deadline()); return wire::receive(fd,deadline()); }
 };
@@ -180,6 +186,55 @@ void real_protocol_checks(const char* launcher,const char* worker) {
               "invalid LOAD modified real worker state");
         check(real.request({wire::Close,42,4,{}}).type==wire::Closed,"raw coordinated close failed");
     }
+    {
+        RawWorker real(launcher,worker);
+        std::uint64_t id=0;
+        auto traceRequest=[&](std::uint64_t generation,std::uint64_t row,std::uint64_t column) {
+            wire::Bytes q;wire::put(q,generation);wire::put(q,row);wire::put(q,column);
+            return real.request({wire::TraceStep,42,++id,std::move(q)});
+        };
+        check(traceRequest(0,0,0).type==wire::Error,"TRACE_STEP accepted without LOAD");
+        wire::Bytes board;wire::put(board,3);wire::put(board,1);wire::put(board,7);board.insert(board.end(),{1,1,1});
+        check(real.request({wire::Load,42,++id,board}).type==wire::Reply,"raw trace LOAD failed");
+        check(traceRequest(8,0,1).type==wire::Error,"TRACE_STEP accepted wrong generation");
+        check(traceRequest(7,1,1).type==wire::Error,"TRACE_STEP accepted out of range row");
+        check(traceRequest(7,0,3).type==wire::Error,"TRACE_STEP accepted out of range column");
+        check(traceRequest(SIZE_MAX,0,0).type==wire::Error,"TRACE_STEP accepted overflowing generation");
+        auto snapshot=real.request({wire::Snapshot,42,++id,{}});std::size_t offset=0;
+        wire::get(snapshot.payload,offset);wire::get(snapshot.payload,offset);
+        check(wire::get(snapshot.payload,offset)==7,"invalid TRACE_STEP mutated generation");
+        const auto trace=traceRequest(7,0,1);check(trace.type==wire::TraceResult,"valid raw TRACE_STEP failed");
+        check(decode_step_trace(trace.payload).generationAfter==8,"raw TRACE_STEP generation mismatch");
+        check(traceRequest(7,0,1).type==wire::Error,"TRACE_STEP accepted repeated generation");
+        board.clear();wire::put(board,129);wire::put(board,129);wire::put(board,0);board.resize(24+129*129,0);
+        check(real.request({wire::Load,42,++id,board}).type==wire::Reply,"ordinary LOAD limited by trace policy");
+        check(traceRequest(0,0,0).type==wire::Error,"worker did not enforce trace cell policy");
+        snapshot=real.request({wire::Snapshot,42,++id,{}});offset=0;
+        check(wire::get(snapshot.payload,offset)==129 && wire::get(snapshot.payload,offset)==129 &&
+            wire::get(snapshot.payload,offset)==0 && wire::get(snapshot.payload,offset)==0 &&
+            std::all_of(snapshot.payload.begin()+offset,snapshot.payload.end(),[](auto v){return v==0;}),"worker trace rejection mutated board/population/generation");
+        wire::Bytes advance;wire::put(advance,1);
+        check(real.request({wire::Advance,42,++id,advance}).type==wire::Reply,"didactic limit leaked into ADVANCE");
+        wire::Bytes batch;wire::put(batch,2);wire::put(batch,1);
+        check(real.request({wire::RunBatch,42,++id,batch}).type==wire::BatchResult,"didactic limit leaked into RUN_BATCH");
+        check(real.request({wire::Close,42,++id,{}}).type==wire::Closed,"trace rejection prevented coordinated close");
+    }
+    for(int malformed=0;malformed<2;++malformed) {
+        std::vector<int> pids;int pid;std::string dir;
+        {
+            RawWorker real(launcher,worker);pids=real.pids;pid=real.launcher;dir=real.dir;
+            wire::Bytes header;
+            for(auto v:{std::uint64_t{0x434f4e5741594d50},malformed?std::uint64_t{2}:wire::version,
+                std::uint64_t{wire::TraceStep},std::uint64_t{42},std::uint64_t{1},std::uint64_t{16}}) wire::put(header,v);
+            ::send(real.fd,header.data(),header.size(),MSG_NOSIGNAL);
+            check(fails([&]{wire::receive(real.fd,real.deadline());}).find("disconnected")!=std::string::npos,
+                "worker waited for malformed TRACE_STEP body/version");
+            if(malformed) check(real.diagnostic().find("incompatible version (expected 3, received 2)")!=std::string::npos,
+                "worker discarded incompatible-version diagnosis");
+        }
+        gone(pids,pid,dir);
+    }
+    std::cout<<"PASS TRACE_STEP preflight rejects unloaded/stale/overflow/selection/size requests without mutation; invalid wire lengths/versions disconnect and clean\n";
     std::cout<<"PASS real MPI worker rejects invalid header/IDs/metadata/cells before mutation\n";
 }
 }

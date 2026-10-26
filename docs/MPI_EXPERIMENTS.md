@@ -64,7 +64,9 @@ no se usan como muestras estadísticas.
 
 ## Alcance temporal
 
-Protocolo de transporte v2: los pares v1/v2 se rechazan explícitamente.
+Protocolo de transporte v3: se rechazan clientes/trabajadores v1/v2.
+TRACE_STEP es una operación didáctica separada; véase [MPI_TRACE.md](MPI_TRACE.md).
+El lote experimental sigue usando RUN_BATCH, sin recopilación didáctica.
 `RUN_BATCH` contiene N y la generación inicial esperada. El trabajador valida antes
 de difundir y no modifica el estado si la petición tiene una generación obsoleta.
 Cada rank realiza:

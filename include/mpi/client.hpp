@@ -1,6 +1,7 @@
 #pragma once
 #include "input/input.hpp"
 #include "mpi/protocol.hpp"
+#include "mpi/step_trace.hpp"
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -35,6 +36,7 @@ public:
     void advance(std::size_t steps=1);
     BatchMetrics runBatch(std::size_t steps, std::size_t expectedGeneration=0);
     RemoteSnapshot snapshot();
+    MpiStepTrace traceStep(const TraceRequest& request);
     bool cleanupConfirmed() const noexcept { return cleanupConfirmed_; }
     void close();
     const std::vector<int>& workerPids() const noexcept { return workers_; }
@@ -47,6 +49,7 @@ private:
     void tick(bool allowLauncherExit=false);
     void drain() noexcept;
     void cleanup() noexcept;
+    std::size_t loadedWidth_{}, loadedHeight_{};
     int declaredSlots_{1};
     bool cleanupConfirmed_{false};
     ClientOptions options_;

@@ -2,6 +2,7 @@
 
 #include "core/game_state.hpp"
 #include "mpi/partition.hpp"
+#include "mpi/step_trace.hpp"
 #include <mpi.h>
 #include <cstddef>
 
@@ -16,8 +17,10 @@ double maximum_rank_milliseconds(double local, MPI_Comm comm);
 // global cell count must fit int for the prototype's Scatterv/Gatherv path.
 // Exchanges current halos, reuses the sequential traversal and advances once.
 // state.aliveCount remains LOCAL; the return value is the GLOBAL population.
+// Optional capture must be prepared on EVERY rank with the SAME request before entering this call.
+// No capture allocation or transport occurs when trace is null.
 // Uses a dedicated communicator (or otherwise exclusively owned message tags).
 std::size_t step_mpi(GameState& state, const mpi::RowPartition& part,
-                     MPI_Comm comm);
+                     MPI_Comm comm, mpi::RankStepTrace* trace = nullptr);
 
 } // namespace conway::core

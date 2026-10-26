@@ -219,7 +219,7 @@ wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint6
         auto reply=wire::receive(fd_,deadline,progress,[&](const auto& header,auto size){
             require(header.session==session_ && header.request==request_,"MPI client: response ID mismatch");
             require(header.type==expected || header.type==wire::Error,"MPI client: unexpected response type");
-            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : type==wire::RunBatch ? size>=32 && size<=8224 : size==0),
+            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : type==wire::TraceStep ? size>=72 && size<=maxTraceBytes : type==wire::RunBatch ? size>=32 && size<=8224 : size==0),
                     "MPI client: invalid response length");
         });
         progress();
@@ -240,6 +240,7 @@ void Client::load(const InputData& input,std::size_t generation) {
     wire::put(data,input.width); wire::put(data,input.height); wire::put(data,generation);
     data.insert(data.end(),input.cells.begin(),input.cells.end());
     exchange(wire::Load,std::move(data),wire::Reply,deadline);
+    loadedWidth_=input.width;loadedHeight_=input.height;
 }
 void Client::advance(std::size_t steps) {
     std::unique_lock lock(mutex_,std::try_to_lock); require(lock.owns_lock(),"MPI client: request already in flight");
@@ -267,6 +268,24 @@ BatchMetrics Client::runBatch(std::size_t steps,std::size_t expectedGeneration) 
         require(result.runtime.find('\0')==std::string::npos,"MPI client: invalid runtime identity");
         return result;
     } catch(...) {cleanup();throw;}
+}
+MpiStepTrace Client::traceStep(const TraceRequest& request) {
+    std::unique_lock lock(mutex_,std::try_to_lock);
+    require(lock.owns_lock(),"MPI client: request already in flight");
+    const auto expectedSize=trace_payload_size(loadedWidth_,loadedHeight_,options_.processes,request);
+    const auto deadline=Clock::now()+options_.operationTimeout;
+    wire::Bytes data;wire::put(data,request.expectedGeneration);wire::put(data,request.row);wire::put(data,request.column);
+    const auto reply=exchange(wire::TraceStep,std::move(data),wire::TraceResult,deadline);
+    try {
+        require(reply.payload.size()==expectedSize,"MPI client: trace size mismatch");
+        auto trace=decode_step_trace(reply.payload);
+        require(trace.width==loadedWidth_ && trace.height==loadedHeight_ && trace.ranks.size()==static_cast<std::size_t>(options_.processes) &&
+            trace.generationBefore==request.expectedGeneration && trace.selection.row==request.row && trace.selection.column==request.column,
+            "MPI client: trace identity mismatch");
+        require(Clock::now()<deadline,"MPI trace: timeout");return trace;
+    } catch(const std::exception& e) {
+        cleanup();throw ClientError(std::string(e.what())+(diagnostic_.empty()?"":"\n"+diagnostic_),cleanupConfirmed_);
+    }
 }
 RemoteSnapshot Client::snapshot() {
     std::unique_lock lock(mutex_,std::try_to_lock); require(lock.owns_lock(),"MPI client: request already in flight");

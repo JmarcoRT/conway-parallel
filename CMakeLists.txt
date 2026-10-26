@@ -111,16 +111,19 @@ target_link_libraries(conway PRIVATE
 
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 # Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
+# Portable protocol/capture contract shared by client and worker (no MPI runtime).
+add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/partition.cpp)
+target_include_directories(conway_mpi_protocol PUBLIC include)
 add_library(conway_mpi STATIC
     src/core/engines/mpi.cpp
     src/core/engines/sequential.cpp
     src/core/bs23.cpp
-    src/mpi/partition.cpp
     src/mpi/local_state.cpp)
 target_include_directories(conway_mpi PUBLIC include)
-target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX)
+target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX conway_mpi_protocol)
 
-add_library(conway_mpi_client STATIC src/mpi/protocol.cpp src/mpi/client.cpp)
+add_library(conway_mpi_client STATIC src/mpi/client.cpp)
+target_link_libraries(conway_mpi_client PUBLIC conway_mpi_protocol)
 target_include_directories(conway_mpi_client PUBLIC include)
 add_library(conway_simulation STATIC src/app/simulation.cpp)
 target_include_directories(conway_simulation PUBLIC include)
@@ -128,7 +131,7 @@ target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_
 target_compile_definitions(conway_simulation PRIVATE CONWAY_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
 target_link_libraries(conway PRIVATE conway_simulation)
 
-add_executable(conway_mpi_worker src/mpi/worker.cpp src/mpi/protocol.cpp)
+add_executable(conway_mpi_worker src/mpi/worker.cpp)
 target_link_libraries(conway_mpi_worker PRIVATE conway_mpi)
 
 add_executable(mpi_partition_prototype
@@ -175,6 +178,19 @@ if(BUILD_TESTING)
     add_test(NAME mpi_simulation COMMAND mpi_simulation_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
     set_tests_properties(mpi_simulation PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4
         ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_executable(mpi_trace_failure_worker src/mpi/worker.cpp)
+    target_link_libraries(mpi_trace_failure_worker PRIVATE conway_mpi)
+    target_compile_definitions(mpi_trace_failure_worker PRIVATE CONWAY_MPI_TRACE_FAIL_AFTER_STEP=1)
+    add_executable(mpi_trace_tests tests/mpi_trace_tests.cpp)
+    target_link_libraries(mpi_trace_tests PRIVATE conway_mpi_client conway_mpi)
+    add_dependencies(mpi_trace_tests conway_mpi_worker mpi_trace_failure_worker)
+    add_test(NAME mpi_trace_client COMMAND mpi_trace_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> $<TARGET_FILE:mpi_trace_failure_worker>)
+    set_tests_properties(mpi_trace_client PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 7)
+    foreach(processes IN ITEMS 1 2 4 7)
+        add_test(NAME mpi_trace_engine_${processes} COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+            ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_trace_tests> --engine ${MPIEXEC_POSTFLAGS})
+        set_tests_properties(mpi_trace_engine_${processes} PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE PROCESSORS ${processes})
+    endforeach()
     add_executable(mpi_client_tests tests/mpi_client_tests.cpp src/input/input.cpp)
     target_link_libraries(mpi_client_tests PRIVATE conway_mpi_client conway_mpi)
     add_dependencies(mpi_client_tests conway_mpi_worker)

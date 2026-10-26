@@ -1,9 +1,11 @@
 #include "mpi/protocol.hpp"
 #include "mpi/counts.hpp"
+#include "mpi/step_trace.hpp"
 #include <sys/socket.h>
 #include <poll.h>
 #include <cerrno>
 #include <stdexcept>
+#include <string>
 #include <algorithm>
 
 namespace conway::mpi::wire {
@@ -49,29 +51,36 @@ Frame receive(int fd, Deadline d, const std::function<void()>& tick, const Heade
     Bytes header(48);
     transfer(fd,header.data(),header.size(),false,d,tick);
     std::size_t offset=0;
-    if (get(header,offset)!=0x434f4e5741594d50 || get(header,offset)!=version)
-        throw std::runtime_error("MPI protocol: incompatible header");
+    if (get(header,offset)!=0x434f4e5741594d50)
+        throw std::runtime_error("MPI protocol: invalid magic");
+    const auto receivedVersion=get(header,offset);
+    if(receivedVersion!=version)
+        throw std::runtime_error("MPI protocol: incompatible version (expected "+std::to_string(version)+
+            ", received "+std::to_string(receivedVersion)+")");
     Frame f;
     f.type=get(header,offset); f.session=get(header,offset); f.request=get(header,offset);
     const auto length=get(header,offset);
     if (length>maxPayload) throw std::runtime_error("MPI protocol: payload too large");
-    if (f.type<Ready || f.type>BatchResult || !f.session ||
+    if (f.type<Ready || f.type>TraceResult || !f.session ||
         (f.type==Ready ? f.request!=0 : f.request==0))
         throw std::runtime_error("MPI protocol: invalid type or identity");
     const bool validLength =
         (f.type==Ready && length>=16 && length<=8*1025 && length%8==0) ||
         (f.type==Load && length>=25) || (f.type==Advance && length==8) || (f.type==RunBatch && length==16) ||
+        (f.type==TraceStep && length==24) ||
+        (f.type==TraceResult && length>=72 && length<=maxTraceBytes) ||
         (f.type==BatchResult && length>=32 && length<=32+8192) ||
         ((f.type==Snapshot || f.type==Close || f.type==Closed) && length==0) ||
         (f.type==Reply && (length==0 || length>=33)) || (f.type==Error && length<=4096);
     if(!validLength) throw std::runtime_error("MPI protocol: invalid message length");
     if(check) check(f,length);
     // Read only the fixed board metadata before accepting its bulk allocation.
-    // Nonempty REPLY is a snapshot in v1; other acknowledgements are empty.
-    const auto prefixLength=f.type==Load ? 24u : f.type==Reply && length ? 32u : 0u;
+    // Nonempty REPLY is a snapshot; other acknowledgements are empty.
+    const auto prefixLength=f.type==TraceResult ? 72u : f.type==Load ? 24u : f.type==Reply && length ? 32u : 0u;
     Bytes prefix(prefixLength);
     transfer(fd,prefix.data(),prefix.size(),false,d,tick);
-    if(prefixLength) {
+    if(f.type==TraceResult) validate_trace_payload_header(prefix,length);
+    else if(prefixLength) {
         std::size_t pos=0;
         const auto width=get(prefix,pos),height=get(prefix,pos),generation=get(prefix,pos);
         if(width>SIZE_MAX || height>SIZE_MAX || generation>SIZE_MAX)

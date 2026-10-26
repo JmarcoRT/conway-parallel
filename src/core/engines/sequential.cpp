@@ -10,7 +10,7 @@
 
 namespace conway::core {
 
-void step_sequential(GameState& s, StepTraceSink* sink) {
+void step_sequential(GameState& s, StepTraceSink* sink, CellProbe* probe) {
     const std::uint8_t* const pIn  = s.current.data();
     std::uint8_t* const       pOut = s.next.data();
 
@@ -42,8 +42,9 @@ void step_sequential(GameState& s, StepTraceSink* sink) {
             last_row_observed = r;
         }
         for (std::size_t c = 1; c <= width; ++c) {
-            const std::uint8_t cell =
-                next_cell_state(pIn, stride, r, c);
+            auto* capture=probe && probe->row==r && probe->column==c ? &probe->evaluation : nullptr;
+            const std::uint8_t cell = capture ? next_cell_state(pIn, stride, r, c, *capture) : next_cell_state(pIn, stride, r, c);
+            if(capture) probe->captured=true;
             pOut[r * stride + c] = cell;
             nextAlive += cell;
         }

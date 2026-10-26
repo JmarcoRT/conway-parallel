@@ -74,12 +74,13 @@ Volver al menú conserva el worker de aplicación, pero al usar un motor local n
 quedan procesos MPI. Salir de la aplicación solicita cierre antes de terminar
 el bucle de UI; la destrucción final une el worker y limpia sus recursos.
 
-## Contrato de transporte v2
+## Contrato de transporte v3
 
-La versión 2 añade RUN_BATCH y rechaza pares v1.
+La versión 3 conserva RUN_BATCH y añade TRACE_STEP/TRACE_RESULT. Rechaza pares
+v1/v2; se deben recompilar juntos cliente y trabajador. CSV v2 no cambia.
 
 Cabecera de 48 bytes: seis enteros unsigned de 64 bits, big endian:
-magic `0x434f4e5741594d50`, versión 2, tipo, sesión, petición, longitud.
+magic `0x434f4e5741594d50`, versión 3, tipo, sesión, petición, longitud.
 Los enteros del payload usan el mismo formato. Las células son bytes 0/1 row-major.
 No se serializan estructuras nativas. Lectura/escritura contemplan fragmentación,
 EINTR, EAGAIN y EOF; cada operación comparte un plazo absoluto entre envío y respuesta.
@@ -106,6 +107,8 @@ colectivas MPI siguen dependiendo del timeout/supervisión externa del cliente.
 | REPLY (6), CLOSED (7), ERROR (8) | misma sesión/petición; ERROR contiene texto |
 | RUN_BATCH (9) | N y generación inicial esperada; una petición por lote |
 | BATCH_RESULT (10) | máximo ms (bits IEEE-754 binary64), generación final, P, longitud y cadena del runtime |
+| TRACE_STEP (11) | generación esperada y célula global seleccionada; exactamente un paso instrumentado |
+| TRACE_RESULT (12) | captura completa por rank, halos, buffers y probe; límites propios de [MPI_TRACE.md](MPI_TRACE.md) |
 
 LOAD permite reemplazar la entrada y conservar una generación no nula. SNAPSHOT
 no avanza. No hay reproducción autónoma: pausa significa no enviar avances.
@@ -196,3 +199,10 @@ la aplicación real en PTY con P=1/2, sin sobresuscripción, y comprueba navegac
 controles, transferencia, recuperación y ausencia de trabajadores residuales.
 `text_mpi` (45 s) verifica también la recepción asíncrona, menú/reanudación,
 reinicio y cierre con stdin/stdout no interactivos.
+
+TRACE_STEP solicita una generación instrumentada real, con generación esperada
+y célula global seleccionada. TRACE_RESULT transporta una captura acotada; se
+validan primero sus 72 bytes de cabecera y su tamaño exacto antes de reservar
+el cuerpo. Véase [MPI_TRACE.md](MPI_TRACE.md). ADVANCE y RUN_BATCH no recopilan
+ni transportan estas capturas. El controlador y las vistas didácticas todavía
+no consumen esta operación.
