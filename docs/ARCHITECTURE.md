@@ -138,7 +138,7 @@ Existe como API; no hay botón FTXUI. Véase [EXPERIMENT_CSV.md](EXPERIMENT_CSV.
 
 MPI evoluciona con halos, se compara contra secuencial y se integra en la
 simulación mediante un trabajador externo. Una partición local puede tener cero
-filas; no se confunde con Game global no vacío. El controlador didáctico MPI está disponible; sus nuevas vistas siguen pendientes. La API experimental y sus formularios/vistas FTXUI admiten MPI con lotes temporizados.
+filas; no se confunde con Game global no vacío. El controlador didáctico MPI y sus vistas FTXUI están disponibles. La API experimental y sus formularios/vistas FTXUI admiten MPI con lotes temporizados.
 Véase [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md). Véanse [evolución](MPI_PROTOTYPE.md) y [sesiones](MPI_SESSION.md).
 Pthreads no tiene motor implementado.
 

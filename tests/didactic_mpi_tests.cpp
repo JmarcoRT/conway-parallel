@@ -1,4 +1,5 @@
 #include "app/didactic_session.hpp"
+#include "app/mpi_didactic_view.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
@@ -24,6 +25,20 @@ void compare(const DidacticController& c,const Game& expected) {
     for(std::size_t r=0;r<expected.height();++r) for(std::size_t col=0;col<expected.width();++col)
         check(actual->isAlive(r,col)==expected.isAlive(r,col),"MPI cells differ from oracle");
     check(f.mpi_trace && !c.stepTrace() && f.workers.empty(),"MPI capture replaced by local explanation");
+    const auto& trace=*f.mpi_trace;
+    const auto global=didactic_view::global(trace,true);
+    check(global.back()=="Población global: "+std::to_string(expected.aliveCount()),"view global population not from capture");
+    for(std::size_t rank=0;rank<trace.ranks.size();++rank) {
+        const auto before=didactic_view::local(trace,rank,false),after=didactic_view::local(trace,rank,true);
+        const auto explanation=didactic_view::explanation(trace,rank,DidacticStage::MPICell);
+        auto contains=[](const auto& rows,const auto& text) {return std::any_of(rows.begin(),rows.end(),[&](const auto& row){return row.find(text)!=std::string::npos;});};
+        if(trace.ranks[rank].partition.empty())check(contains(before,"Sin filas propias") && contains(explanation,"sin Sendrecv"),"view invented empty rank work");
+        else {
+            check(contains(before,"CURRENT usado") && contains(after,"CURRENT nuevo") && contains(after,"NEXT nuevo"),"view buffer roles wrong");
+            for(const auto& exchange:trace.ranks[rank].exchanges)if(!exchange.received.empty())
+                check(contains(explanation,"Contenido recibido: "+didactic_view::bits(exchange.received)),"view lost real halo content");
+        }
+    }
     check(f.stage_duration_ns==2000000000ULL && f.stages.size()==6 && f.total_playback_ns==12000000000ULL,"MPI clock not independent");
 }
 }

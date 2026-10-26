@@ -81,7 +81,8 @@ lógicos, no a núcleos físicos.
 
 ## Didáctica y experimentos
 
-El modo didáctico prepara una generación real en un worker con StepTrace.
+El modo didáctico prepara una generación real en un worker: StepTrace local o
+TRACE_STEP MPI.
 Muestra CURRENT/NEXT y trabajo por hilo con reloj didáctico independiente
 (inicialmente 2 segundos por etapa a 1×). Arranca automáticamente y continúa entre
 generaciones. `N` avanza una etapa en pausa; espacio pausa/reanuda incluso durante
@@ -206,8 +207,9 @@ pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
 Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
 Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
 
-El controlador didáctico MPI está implementado; su entrada visual sigue pendiente
-de las nuevas vistas. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+La entrada didáctica MPI está habilitada: V alterna Global/Local/Explicación,
+[ / ] seleccionan rank (incluidos los vacíos) y ↑↓/Home/End desplazan el contenido.
+En terminal amplia muestra paneles por rank cuando caben. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
 Benchmark configurable admite MPI;
 debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
 el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,

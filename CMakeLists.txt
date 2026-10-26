@@ -500,6 +500,9 @@ add_test(NAME ftxui_didactic_controller_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_controller.py" $<TARGET_FILE:conway>
     $<TARGET_FILE:ftxui_didactic_fixture> "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_didactic_controller_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME ftxui_didactic_mpi_views_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_mpi_views.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_didactic_mpi_views_pty PROPERTIES TIMEOUT 100 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
 add_test(NAME ftxui_mpi_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_mpi_pty PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")

@@ -1,8 +1,39 @@
 # Controlador didáctico: captura y reproducción
 
-El controlador admite Secuencial, OpenMP y MPI. Las vistas nuevas de MPI todavía
-no están construidas: su entrada desde FTXUI continúa bloqueada con un aviso.
-Las vistas locales existentes usan ya el reloj y los controles comunes.
+El controlador y las vistas FTXUI admiten Secuencial, OpenMP y MPI. Los tres
+motores comparten reloj y controles, conservando sus explicaciones específicas.
+
+## Vistas MPI
+
+Selecciona MPI y P en Motores, carga una entrada y entra en Visualización
+didáctica desde el menú principal. La célula capturada está en la última fila
+de R0 y la columna central: con P>1 permite explicar una frontera entre franjas.
+Las coordenadas de filas/columnas mostradas tienen base cero.
+
+La cabecera distingue generación visible y capturada, etapa, reproducción y
+velocidad. El aviso permanente indica «Captura MPI real; orden de presentación
+didáctico». Reparto actual es contexto, no un Scatterv nuevo en cada paso.
+
+V alterna Global/Local/Explicación; [ y ] seleccionan cualquier rank, incluidos
+los vacíos. En terminal amplia, Global y Local muestran el tablero global y
+paneles separados para tantos ranks como quepan, agrupados alrededor del rank
+seleccionado. Explicación conserva todo el ancho. En terminal pequeña cada vista
+ocupa el ancho disponible. Flechas arriba/abajo, PgUp/PgDn y Home/End recorren
+líneas físicas envueltas, con indicador de posición; el estado y la ayuda quedan
+fuera del contenido desplazable. Cambiar vista, rank o tamaño no toca el controlador.
+
+Global reúne exclusivamente filas propias capturadas. Local etiqueta filas
+propias, halos y bordes laterales; distingue CURRENT antes de comunicación,
+CURRENT con halos válidos y NEXT calculado. En Cambio de buffers muestra CURRENT
+nuevo y el buffer anterior reutilizado como NEXT. Los halos de la generación
+resultante se marcan NO vigentes. Estos buffers son snapshots capturados, no
+memoria compartida ni una ejecución en vivo. Explicación muestra mensajes y
+valores reales, MPI_PROC_NULL, procedencia de cada vecino y evaluación B3/S23.
+Rank 0 también calcula; ranks vacíos no intercambian ni evalúan células.
+
+Espacio pausa/reanuda, N avanza una etapa en pausa, +/- cambia velocidad, R
+reinicia y Esc cierra asincrónicamente. Los errores iniciales y posteriores se
+presentan con diagnóstico desplazable sin reintento automático.
 
 ## Dos responsabilidades separadas
 
@@ -124,7 +155,17 @@ pausa/reset/cierre y el worker de fallo posterior al cálculo. `step_trace` mant
 el contrato de instrumentación local y `didactic_layout` la geometría existente.
 
 `ftxui_didactic_controller_pty` comprueba notificación sin otra tecla, reloj lento,
-pausa, N, velocidad, reinicio y salida en 120×40 y 50×24. Inyecta una sesión MPI
-real en la aplicación para comprobar bloqueos antes de construir sus nuevas
-vistas. Las regresiones PTY de accesibilidad/redimensionado pausan explícitamente
-la reproducción antes de verificar las filas. Ninguna prueba exige aceleración.
+pausa, N, velocidad, reinicio y salida en Secuencial (120×40 y 50×24) y OpenMP
+(80×24). Inyecta además una sesión MPI real para comprobar los bloqueos.
+
+`ftxui_didactic_mpi_views_pty` entra por el menú con P=2 y un blinker que cruza
+la partición. Comprueba contenido de halos, evaluación de frontera, navegación
+sin recaptura, desplazamiento físico hasta la última línea, reproducción entre
+generaciones, pausa, paso, reinicio, fallo real de trabajador y cierre. Redimensiona
+120×40 → 50×24 → 40×18 → 160×45. Otro recorrido consulta un rank vacío y muestra
+el diagnóstico de una primera captura rechazada sin lanzar procesos.
+`didactic_mpi` verifica además que las filas de presentación conservan los halos,
+roles de buffers, población y estados vacíos de las capturas reales.
+
+Las regresiones PTY de accesibilidad/redimensionado pausan explícitamente la
+reproducción antes de verificar las filas. Ninguna prueba exige aceleración.

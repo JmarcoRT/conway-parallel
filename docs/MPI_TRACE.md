@@ -3,8 +3,8 @@
 El contrato, instrumentación y transporte de una generación MPI están implementados
 y consumidos por [DidacticController](DIDACTIC_CONTROLLER.md). El controlador
 reproduce etapas automáticamente con reloj lento, pausa/reanudación y paso manual.
-Las nuevas vistas MPI todavía no están construidas: la entrada visual sigue
-bloqueada y no sustituye MPI por un motor local.
+Las vistas MPI de FTXUI consumen estos datos reales sin sustituir MPI por un motor
+local; véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
 
 ## Datos y significado
 
@@ -22,7 +22,7 @@ Cada registro de rank contiene:
 
 - Identidad, rango propio, generaciones antes/después y población local.
 - `currentBefore`: copia del buffer real ANTES de limpiar halos. Sus halos pueden
-  ser antiguos; la UI futura debe mostrarlos pendientes de actualización.
+  ser antiguos; la UI los muestra NO vigentes hasta la siguiente actualización.
 - `currentWithHalos`: buffer de lectura real después de los dos Sendrecv.
 - `currentAfter`: buffer real de salida después del cálculo y del swap. Sus
   filas propias pertenecen a g+1; sus halos NO se declaran válidos para g+1.
@@ -161,4 +161,4 @@ exclusiva de prueba: falla después del paso MPI real. Se comprueba generación 
 diagnóstico, ausencia de reintento/reinicio implícito y limpieza confirmada. El
 worker habitual no contiene esa inyección activa ni una opción de ejecución
 para habilitarla. La etapa posterior incorpora el controlador descrito en DIDACTIC_CONTROLLER.md;
-las nuevas vistas continúan pendientes.
+las vistas MPI de FTXUI muestran buffers, mensajes y evaluación capturados.

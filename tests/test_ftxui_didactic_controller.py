@@ -10,9 +10,10 @@ from test_ftxui_header import Terminal
 from test_ftxui_mpi import workers, wait, text
 from test_ftxui_benchmark import move_to
 
-def local(binary,root,size):
+def local(binary,root,size,engine="s"):
     t=Terminal(binary,root,*size)
     try:
+        if engine!='s':t.send('3');t.send(engine)
         t.send('C');t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r')
         t.send('\x1b[B'*5+'\r')
         wait(t,lambda:'MODO DIDÁCTICO' in text(t) and 'Reproduciendo' in text(t))
@@ -69,4 +70,5 @@ def mpi_guard(fixture,launcher,worker,root):
 if __name__=='__main__':
     binary,fixture,launcher,worker,root=[str(Path(p).resolve()) for p in sys.argv[1:]]
     for size in [(120,40),(50,24)]:local(binary,root,size)
+    local(binary,root,(80,24),'o')
     mpi_guard(fixture,launcher,worker,root)
