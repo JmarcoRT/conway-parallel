@@ -1,5 +1,8 @@
 # Prototipo MPI aislado — procesos y reparto de filas (Semana 6)
 
+> Registro histórico. El motor con evolución e intercambio de halos está en
+> [MPI_ENGINE.md](MPI_ENGINE.md); este prototipo se conserva sin cambios.
+
 Primer prototipo del módulo `mpi`. **No evoluciona el tablero ni intercambia halos**: solo deja
 comprobada la base de distribución sobre la que se construirá el modo MPI completo.
 

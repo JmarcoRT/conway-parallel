@@ -36,6 +36,8 @@ El preset exige G++ 14 en `/usr/bin/g++-14`. Ejecutar desde la raíz del reposit
 | comparison_view, scaling_view | Presentación sintética, N/D, orden y geometría |
 | app_functional_smoke, engine_selection_smoke, ftxui_*_pty | Flujos reales, foco, tamaños y render diferencial |
 | mpi_partition_unit | Partición y estado local; no evolución MPI |
+| mpi_halo_unit, mpi_region_metadata, mpi_regions_view | Vecinos de halo y emulación == secuencial; metadatos/CSV y vista UI (sin MPI) |
+| mpi_engine_np1/np2/np4, mpi_engine_overlap_np*, mpi_engine_matrix | Motor MPI real contra secuencial; solo si CMake encuentra mpiexec |
 | openmp_timing_smoke | Ejecución exploratoria correcta; no certifica rendimiento |
 
 `ctest --test-dir build -N` enumera los nombres registrados. Las pruebas de

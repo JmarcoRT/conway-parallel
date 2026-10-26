@@ -36,7 +36,7 @@ rendimiento mediante experimentos reproducibles.
 |---|---|
 | Secuencial | Implementado |
 | OpenMP | Implementado |
-| MPI | Prototipo independiente |
+| MPI | Implementado como ejecutable `conway_mpi` (halos, 1/2/4 procesos verificados contra secuencial) |
 | Pthreads | Pendiente |
 
 ## Inicio rápido
@@ -70,6 +70,8 @@ cmake --build --preset experimental-release
 ```
 
 En el menú, `C` abre el catálogo de patrones. Usa flechas y Enter para navegar.
+Para MPI: `mpirun -np 4 ./build/conway_mpi patterns/glider.txt --verify`
+([detalles](docs/MPI_ENGINE.md)).
 Consulta los [controles](docs/UI.md), los [requisitos avanzados de compilación
 y experimentación](docs/BENCHMARK_PROTOCOL.md) y la [guía de pruebas](docs/TESTING.md).
 

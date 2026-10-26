@@ -181,3 +181,12 @@ los intervalos de filas y columnas visibles. Si ni siquiera cabe una celda
 con sus controles, esa región muestra un aviso de espacio insuficiente.
 Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
 los demás offsets se ajustan al nuevo rango sin reiniciar el estado.
+
+## Metadatos MPI disponibles para la interfaz
+
+La TUI no ejecuta MPI. Para mostrar cómo se reparte el tablero entre procesos,
+`ui/mpi_regions_view.hpp` (target `conway_mpi_view`, sin MPI ni FTXUI) ofrece
+dueño y destino de halo por fila (`mpiRowInfo`), tabla por rank, mapa de filas y
+una línea para `ExecutionInfo::workersInfo`. Los datos salen de
+`mpi::describe_decomposition` o de un CSV escrito por `conway_mpi --metadata`.
+Todavía no hay panel FTXUI que los muestre; ver [MPI_ENGINE.md](MPI_ENGINE.md).
