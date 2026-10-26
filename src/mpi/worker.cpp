@@ -11,6 +11,8 @@
 #include <signal.h>
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <charconv>
 #include <cerrno>
 #include <cstring>
@@ -74,7 +76,7 @@ int run(int rank,int size,int argc,char** argv) {
                     request=wire::receive(fd,operationDeadline,{},[&](const auto& header,auto){
                         require(header.session==session && header.request>lastRequest,"invalid request identity");
                         require(header.type==wire::Load || header.type==wire::Advance ||
-                                header.type==wire::Snapshot || header.type==wire::Close,"unknown operation");
+                                header.type==wire::Snapshot || header.type==wire::Close || header.type==wire::RunBatch,"unknown operation");
                     });
                     control[0]=request.type;
                     std::size_t offset=0;
@@ -86,9 +88,11 @@ int run(int rank,int size,int argc,char** argv) {
                         const auto count=checked_cell_count(control[1],control[2]);
                         require(count<=wire::maxPayload-32 && request.payload.size()-offset==count &&
                             std::all_of(request.payload.begin()+offset,request.payload.end(),[](auto c){return c<=1;}),"invalid board payload");
-                    } else if(request.type==wire::Advance) {
+                    } else if(request.type==wire::Advance || request.type==wire::RunBatch) {
                         require(state.has_value(),"load a board first");
                         control[4]=wire::get(request.payload,offset);
+                        if(request.type==wire::RunBatch)
+                            require(wire::get(request.payload,offset)==state->generation,"unexpected batch generation");
                         require(offset==request.payload.size() && control[4]>0 && control[4]<=100000 &&
                             control[4]<=SIZE_MAX-state->generation,"invalid advance payload");
                     } else if(request.type==wire::Snapshot || request.type==wire::Close) {
@@ -116,6 +120,7 @@ int run(int rank,int size,int argc,char** argv) {
             closeRequest=request.type==wire::Close ? request.request : 0;
             break;
         }
+        wire::Bytes response;
         if(control[0]==wire::Load) {
             width=control[1]; height=control[2];
             part=partition_rows(height,size,rank);
@@ -132,7 +137,23 @@ int run(int rank,int size,int argc,char** argv) {
         } else if(control[0]==wire::Advance) {
             for(std::uint64_t i=0;i<control[4];++i) core::step_mpi(*state,part,MPI_COMM_WORLD);
         }
-        wire::Bytes response;
+        if(control[0]==wire::RunBatch) {
+            MPI_Barrier(MPI_COMM_WORLD); // Preparation excluded.
+            const double start=MPI_Wtime();
+            for(std::uint64_t i=0;i<control[4];++i) core::step_mpi(*state,part,MPI_COMM_WORLD);
+            MPI_Barrier(MPI_COMM_WORLD); // Completion included.
+            const double localMs=(MPI_Wtime()-start)*1000.0;
+            const double maximumMs=core::maximum_rank_milliseconds(localMs,MPI_COMM_WORLD);
+            if(rank==0) {
+                char runtime[MPI_MAX_LIBRARY_VERSION_STRING]; int length=0;
+                MPI_Get_library_version(runtime,&length);
+                while(length>0 && runtime[length-1]=='\0') --length;
+                wire::put(response,std::bit_cast<std::uint64_t>(maximumMs));
+                wire::put(response,state->generation); wire::put(response,size);
+                wire::put(response,length);
+                response.insert(response.end(),runtime,runtime+length);
+            }
+        }
         if(control[0]==wire::Snapshot) {
             auto rows=pack_local_rows(*state);
             std::vector<std::uint8_t> board(rank==0?width*height:0);
@@ -148,7 +169,7 @@ int run(int rank,int size,int argc,char** argv) {
         }
         // Acknowledge completion on ALL ranks, including allocations after Scatter.
         MPI_Barrier(MPI_COMM_WORLD);
-        if(rank==0) wire::send(fd,{wire::Reply,session,request.request,std::move(response)},operationDeadline);
+        if(rank==0) wire::send(fd,{control[0]==wire::RunBatch?wire::BatchResult:wire::Reply,session,request.request,std::move(response)},operationDeadline);
     }
     MPI_Finalize();
     if(rank==0) {

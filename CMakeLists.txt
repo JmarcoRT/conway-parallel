@@ -24,13 +24,15 @@ FetchContent_MakeAvailable(ftxui)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
 
+
 # Standalone reproducible input module: standard C++ only, no engine or UI.
 add_library(conway_generated_input STATIC src/input/generated_input.cpp)
 target_include_directories(conway_generated_input PUBLIC include)
 
-# Experimental runner remains independent of FTXUI/MPI and its presentation.
+# Experimental runner is independent of FTXUI; MPI executes in an external worker.
 add_library(conway_experiments STATIC
     src/app/scaling_study.cpp
+    src/app/experimental_study.cpp
     src/app/experiment_runner.cpp
     src/app/benchmark.cpp
     src/core/game.cpp
@@ -39,7 +41,8 @@ add_library(conway_experiments STATIC
     src/core/bs23.cpp
 )
 target_include_directories(conway_experiments PUBLIC include)
-target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX conway_mpi_client)
+target_compile_definitions(conway_experiments PRIVATE CONWAY_EXPERIMENT_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
 
 # Snapshot generated compile commands and Git only in a controlled build step.
 set(experiment_snapshot_multi_config FALSE)
@@ -138,6 +141,31 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 include(CTest)
 
 if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    add_executable(experimental_review_tests tests/experimental_review_tests.cpp src/app/experiment_execution.cpp)
+    target_link_libraries(experimental_review_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experimental_review COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experimental_review_csv.py" $<TARGET_FILE:experimental_review_tests>)
+    set_tests_properties(experimental_review PROPERTIES TIMEOUT 15)
+
+    add_test(NAME experimental_visualization_guard_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experimental_visualization_guard.py"
+        $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experimental_visualization_guard_pty PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+
+    add_executable(experimental_mpi_tests tests/experimental_mpi_tests.cpp src/app/experiment_execution.cpp)
+    target_link_libraries(experimental_mpi_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_dependencies(experimental_mpi_tests conway_mpi_worker)
+    add_test(NAME experimental_mpi COMMAND experimental_mpi_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/mpi_exclusive_launcher.py")
+    set_tests_properties(experimental_mpi PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE")
+    add_executable(mpi_batch_metrics_tests tests/mpi_batch_metrics_tests.cpp)
+    target_link_libraries(mpi_batch_metrics_tests PRIVATE conway_mpi)
+    add_test(NAME mpi_batch_metrics COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+        ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_batch_metrics_tests> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(mpi_batch_metrics PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE PROCESSORS 4)
 
     add_executable(mpi_simulation_tests tests/mpi_simulation_tests.cpp
         src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)

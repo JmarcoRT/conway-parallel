@@ -10,7 +10,7 @@ local mediante procesos separados; Pthreads continúa pendiente. El [índice](RE
 | input | Parseo, validación representable y generación determinista | C++ estándar |
 | core | GameState, Game, B3/S23 y motores | InputData; runtimes solo en motores específicos |
 | app: sesiones | Simulación local/MPI y reproducción didáctica local | Game, trazas, cliente MPI en worker |
-| app: experimentos | Medición, muestras, estadísticas y escalabilidad | Game, validación, OpenMP |
+| app: experimentos | Medición, muestras, estadísticas y escalabilidad | Game, validación, OpenMP, cliente MPI externo |
 | app: exportación | Contexto, metadatos y CSV | Resultados experimentales |
 | app: FTXUI | Navegación, formularios, workers y vistas | Servicios de aplicación y FTXUI |
 | ui | Renderizadores textuales, layout y demos | Estado del juego |
@@ -18,7 +18,8 @@ local mediante procesos separados; Pthreads continúa pendiente. El [índice](RE
 
 `src/main.cpp` llama a `app::run()`. Esta función selecciona FTXUI cuando entrada
 y salida son TTY, y conserva el recorrido textual para pipes. La UI no contiene
-reglas B3/S23. Los experimentos no dependen de FTXUI ni MPI.
+reglas B3/S23. Los experimentos no dependen de FTXUI; MPI se ejecuta en un
+trabajador externo, mediante el cliente Unix.
 
 `SimulationSession` usa el cliente de [MPI_SESSION.md](MPI_SESSION.md) en un
 worker exclusivo. `mpi::Client` lanza `conway_mpi_worker` por sesión y usa un
@@ -135,8 +136,9 @@ Existe como API; no hay botón FTXUI. Véase [EXPERIMENT_CSV.md](EXPERIMENT_CSV.
 
 MPI evoluciona con halos, se compara contra secuencial y se integra en la
 simulación mediante un trabajador externo. Una partición local puede tener cero
-filas; no se confunde con Game global no vacío. No hay modo didáctico ni benchmark
-MPI. Véanse [evolución](MPI_PROTOTYPE.md) y [sesiones](MPI_SESSION.md).
+filas; no se confunde con Game global no vacío. El modo didáctico MPI sigue pendiente. La API experimental admite MPI con
+lotes temporizados; sus formularios y vistas todavía no lo seleccionan.
+Véase [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md). Véanse [evolución](MPI_PROTOTYPE.md) y [sesiones](MPI_SESSION.md).
 Pthreads no tiene motor implementado.
 
 No hay historial persistente, publicación automática ni campaña de rendimiento

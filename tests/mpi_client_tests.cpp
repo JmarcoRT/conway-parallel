@@ -50,7 +50,7 @@ void protocol_checks() {
     int sockets[2]; check(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets)==0,"socketpair failed");
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(1);
     wire::Bytes bytes;
-    for(auto v:{std::uint64_t{0x434f4e5741594d50},std::uint64_t{1},std::uint64_t{wire::Error},
+    for(auto v:{std::uint64_t{0x434f4e5741594d50},wire::version,std::uint64_t{wire::Error},
                 std::uint64_t{42},std::uint64_t{7},std::uint64_t{3}}) wire::put(bytes,v);
     bytes.insert(bytes.end(),{0,1,0});
     std::thread fragmented([&]{for(auto byte:bytes) ::send(sockets[1],&byte,1,MSG_NOSIGNAL);});
@@ -58,7 +58,7 @@ void protocol_checks() {
     fragmented.join();
     check(frame.session==42 && frame.request==7 && frame.payload==wire::Bytes({0,1,0}),"fragmented frame corrupted");
     wire::Bytes oversized;
-    for(auto v:{std::uint64_t{0x434f4e5741594d50},std::uint64_t{1},std::uint64_t{wire::Reply},
+    for(auto v:{std::uint64_t{0x434f4e5741594d50},wire::version,std::uint64_t{wire::Reply},
                 std::uint64_t{42},std::uint64_t{8},wire::maxPayload+1}) wire::put(oversized,v);
     ::send(sockets[1],oversized.data(),oversized.size(),MSG_NOSIGNAL);
     check(fails([&]{wire::receive(sockets[0],deadline);}).find("too large")!=std::string::npos,
@@ -154,7 +154,7 @@ void real_protocol_checks(const char* launcher,const char* worker) {
         {
             RawWorker real(launcher,worker); pids=real.pids; pid=real.launcher; dir=real.dir;
             wire::Bytes header;
-            for(auto v:{std::uint64_t{0x434f4e5741594d50},std::uint64_t{1},
+            for(auto v:{std::uint64_t{0x434f4e5741594d50},wire::version,
                         invalid==0?std::uint64_t{999}:std::uint64_t{wire::Load},
                         invalid==1?std::uint64_t{43}:std::uint64_t{42},std::uint64_t{1},std::uint64_t{1024*1024}})
                 wire::put(header,v);

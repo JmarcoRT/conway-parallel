@@ -149,6 +149,14 @@ struct SeriesState {
     }
 };
 std::vector<std::size_t> validateResult(const ExperimentResult& result) {
+    if(result.study) {
+        validateStudy(*result.study);
+        if(result.config.participants!=result.study->configurations || result.config.rotateRight!=result.study->rotateRight || result.config.generations!=result.study->generations ||
+           result.config.warmups!=result.study->warmups || result.config.repetitions!=result.study->repetitions ||
+           result.completedWarmupRuns!=result.study->completedWarmupRuns)
+            throw std::invalid_argument("Comparison configuration contradicts study");
+        return {};
+    }
     const auto& config=result.config;
     if(config.generations<=0 || config.warmups<0 || config.repetitions<=0 || config.requestedThreads<=0
        || (config.order!=MeasurementOrder::AlternatingSequentialFirst && config.order!=MeasurementOrder::AlternatingOpenMPFirst))
@@ -182,6 +190,20 @@ std::vector<std::size_t> validateResult(const ExperimentResult& result) {
     return references;
 }
 void validateResult(const ScalingResult& result) {
+    if(result.study) {
+        validateStudy(*result.study);
+        std::vector<ExecutionConfiguration> configurations{{Engine::Sequential,{},{}}};
+        for(auto processes:result.config.requestedProcesses) {
+            if(processes<1 || processes>1024) throw std::invalid_argument("Invalid MPI scaling configuration");
+            configurations.push_back({Engine::MPI,{},static_cast<int>(processes)});
+        }
+        if(result.config.parallelEngine!=Engine::MPI || configurations!=result.study->configurations ||
+           (result.config.order==ScalingOrder::RotateRight)!=result.study->rotateRight ||
+           result.config.generations!=result.study->generations || result.config.warmups!=result.study->warmups ||
+           result.config.repetitions!=result.study->repetitions || result.completedWarmupRuns!=result.study->completedWarmupRuns)
+            throw std::invalid_argument("Scaling configuration contradicts study");
+        return;
+    }
     const auto& config=result.config;
     if(config.generations<=0 || config.warmups<0 || config.repetitions<=0 || config.requestedThreads.empty()
        || (config.order!=ScalingOrder::RotateLeft && config.order!=ScalingOrder::RotateRight)
@@ -234,8 +256,61 @@ void validateResult(const ScalingResult& result) {
     if(result.summary.equivalent!=equivalent || (result.summary.validForComparison && !valid))
         throw std::invalid_argument("Scaling aggregate summary contradicts observations");
 }
+std::string studySpeedupStatus(const ExperimentalStudy& study,const StudySummary& summary) {
+    if(study.configurations[summary.configurationIndex].engine==Engine::Sequential) return "not_applicable";
+    if(!study.cleanupConfirmed) return "cleanup_unconfirmed";
+    if(!study.complete) return "incomplete_study";
+    if(!summary.equivalent) return "non_equivalent";
+    if(!summary.valid) return "invalid_observations_or_reference";
+    if(std::none_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::Sequential;}))
+        return "no_sequential_participant";
+    return summary.speedup?"available":"zero_median_or_unrepresentable";
+}
+void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& metadata,
+                    std::ostream& samples,std::ostream& summary,std::ostream& meta) {
+    validateStudy(study);
+    row(samples,{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads",
+        "requested_processes","effective_threads_min","effective_threads_max","observed_processes",
+        "round","position","execution_order","sequential_reference_sample","generations","elapsed_ms",
+        "timing_scope","session_index","load_ms","batch_request_ms","snapshot_ms","warmups_in_session","equivalent","valid","study_complete","cleanup_confirmed","session_cleanup_confirmed"});
+    row(summary,{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads","requested_processes","timing_scope","sample_count","min_ms","max_ms",
+        "mean_ms","median_ms","stddev_population_ms","resources_min","resources_max","speedup","efficiency","equivalent","valid","speedup_status","efficiency_status","study_complete","cleanup_confirmed","diagnostic"});
+    row(meta,{"study_id","key","value","source","detail"});
+    for(const auto& sample:study.samples) {
+        const auto& c=study.configurations[sample.configurationIndex];
+        std::string reference;
+        for(std::size_t i=0;i<study.samples.size();++i)
+            if(study.samples[i].round==sample.round && study.configurations[study.samples[i].configurationIndex].engine==Engine::Sequential)
+                {reference=integer(i);break;}
+        row(samples,{"2",metadata.studyId,metadata.experimentType,configurationName(c),
+            c.engine==Engine::MPI?"mpi":c.engine==Engine::OpenMP?"openmp":"sequential",
+            optionalInt(c.requestedThreads),optionalInt(c.requestedProcesses),
+            optionalInt(sample.minEffectiveThreads),optionalInt(sample.maxEffectiveThreads),optionalInt(sample.observedProcesses),
+            integer(sample.round),integer(sample.position),integer(sample.executionIndex),reference,integer(study.generations),
+            number(sample.elapsedMs),c.engine==Engine::MPI?"mpi_rank_max_batch":"local_batch",
+            sample.sessionIndex?integer(*sample.sessionIndex):"",optionalDouble(sample.loadMs),optionalDouble(sample.requestMs),
+            optionalDouble(sample.snapshotMs),integer(sample.completedWarmups),boolean(sample.equivalent),boolean(sample.valid),
+            boolean(study.complete),boolean(study.cleanupConfirmed),
+            sample.sessionIndex?boolean(study.sessions[*sample.sessionIndex].cleanupConfirmed):""});
+    }
+    for(const auto& s:study.summaries) {
+        const auto& v=s.statistics;
+        const auto& config=study.configurations[s.configurationIndex];
+        const auto speedupStatus=studySpeedupStatus(study,s);
+        const auto efficiencyStatus=s.efficiency?"available":speedupStatus!="available"?speedupStatus:"variable_effective_resources";
+        row(summary,{"2",metadata.studyId,metadata.experimentType,configurationName(config),
+            config.engine==Engine::MPI?"mpi":config.engine==Engine::OpenMP?"openmp":"sequential",
+            optionalInt(config.requestedThreads),optionalInt(config.requestedProcesses),
+            config.engine==Engine::MPI?"mpi_rank_max_batch":"local_batch",integer(s.sampleCount),v?number(v->minimumMs):"",v?number(v->maximumMs):"",v?number(v->meanMs):"",
+            v?number(v->medianMs):"",v?number(v->populationStddevMs):"",optionalInt(s.minimumResources),optionalInt(s.maximumResources),
+            optionalDouble(s.speedup),optionalDouble(s.efficiency),boolean(s.equivalent),boolean(s.valid),
+            speedupStatus,efficiencyStatus,boolean(study.complete),boolean(study.cleanupConfirmed),study.diagnostic});
+    }
+    metadataRows(meta,metadata); finish(samples,summary,meta);
+}
 void serialize(const ExperimentResult& result,const ExperimentMetadata& metadata,
                std::ostream& samples,std::ostream& summary,std::ostream& meta) {
+    if(result.study) {validateResult(result);serializeStudy(*result.study,metadata,samples,summary,meta);return;}
     const auto references=validateResult(result);
     headers(samples,summary,meta);
     SeriesState sequential,parallel;
@@ -252,6 +327,7 @@ void serialize(const ExperimentResult& result,const ExperimentMetadata& metadata
 }
 void serialize(const ScalingResult& result,const ExperimentMetadata& metadata,
                std::ostream& samples,std::ostream& summary,std::ostream& meta) {
+    if(result.study) {validateResult(result);serializeStudy(*result.study,metadata,samples,summary,meta);return;}
     validateResult(result);
     headers(samples,summary,meta);
     SeriesState sequential;

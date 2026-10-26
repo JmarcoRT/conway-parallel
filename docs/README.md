@@ -22,6 +22,7 @@
 - [Metadatos y exportación CSV por API](EXPERIMENT_CSV.md)
 - [Prototipo y evolución MPI independiente](MPI_PROTOTYPE.md)
 - [Cliente y supervisión MPI local](MPI_SESSION.md)
+- [Infraestructura experimental MPI y alcance temporal](MPI_EXPERIMENTS.md)
 
 ## Registros históricos
 

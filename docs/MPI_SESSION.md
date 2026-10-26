@@ -1,7 +1,8 @@
 # Sesión de simulación MPI (Linux/WSL local)
 
 `SimulationSession` integra `conway_mpi_worker` y `conway_mpi_client` con los
-controles de simulación. Modo didáctico y experimentos MPI siguen fuera de alcance.
+controles de simulación. El modo didáctico sigue pendiente. La infraestructura
+experimental, todavía sin formularios/vistas MPI, se describe en [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
 Reutiliza `core::step_mpi`, la partición por filas, halos y doble buffer existentes.
 
 ## Uso y propiedad
@@ -73,10 +74,12 @@ Volver al menú conserva el worker de aplicación, pero al usar un motor local n
 quedan procesos MPI. Salir de la aplicación solicita cierre antes de terminar
 el bucle de UI; la destrucción final une el worker y limpia sus recursos.
 
-## Contrato v1
+## Contrato de transporte v2
+
+La versión 2 añade RUN_BATCH y rechaza pares v1.
 
 Cabecera de 48 bytes: seis enteros unsigned de 64 bits, big endian:
-magic `0x434f4e5741594d50`, versión 1, tipo, sesión, petición, longitud.
+magic `0x434f4e5741594d50`, versión 2, tipo, sesión, petición, longitud.
 Los enteros del payload usan el mismo formato. Las células son bytes 0/1 row-major.
 No se serializan estructuras nativas. Lectura/escritura contemplan fragmentación,
 EINTR, EAGAIN y EOF; cada operación comparte un plazo absoluto entre envío y respuesta.
@@ -101,6 +104,8 @@ colectivas MPI siguen dependiendo del timeout/supervisión externa del cliente.
 | SNAPSHOT (4) | vacío; REPLY con ancho, alto, generación, población global y células |
 | CLOSE (5) | vacío; CLOSED después de MPI_Finalize |
 | REPLY (6), CLOSED (7), ERROR (8) | misma sesión/petición; ERROR contiene texto |
+| RUN_BATCH (9) | N y generación inicial esperada; una petición por lote |
+| BATCH_RESULT (10) | máximo ms (bits IEEE-754 binary64), generación final, P, longitud y cadena del runtime |
 
 LOAD permite reemplazar la entrada y conservar una generación no nula. SNAPSHOT
 no avanza. No hay reproducción autónoma: pausa significa no enviar avances.

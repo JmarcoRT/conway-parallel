@@ -11,6 +11,8 @@
 #include <poll.h>
 #include <signal.h>
 #include <sched.h>
+#include <bit>
+#include <cmath>
 #include <cerrno>
 #include <cstring>
 #include <algorithm>
@@ -75,6 +77,7 @@ Client::Client(ClientOptions options) : options_(std::move(options)) {
         args.insert(args.end(),options_.launcherArguments.begin(),options_.launcherArguments.end());
         cpu_set_t allowed; CPU_ZERO(&allowed);
         const int slots=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
+        declaredSlots_=slots;
         // Open MPI treats a bare --host localhost as one slot. Declare actual
         // permitted logical CPUs; P above this still fails without opt-in.
         args.insert(args.end(),{"--host","localhost:"+std::to_string(slots),"-np",std::to_string(options_.processes),options_.worker,
@@ -142,7 +145,7 @@ Client::Client(ClientOptions options) : options_(std::move(options)) {
         require(Clock::now()<deadline,"MPI startup: timeout");
     } catch (const std::exception& e) {
         cleanup();
-        throw std::runtime_error(std::string(e.what())+(diagnostic_.empty()?"":"\n"+diagnostic_));
+        throw ClientError(std::string(e.what())+(diagnostic_.empty()?"":"\n"+diagnostic_),cleanupConfirmed_);
     }
 }
 Client::~Client() { try { close(); } catch(...) {} cleanup(); }
@@ -167,6 +170,8 @@ void Client::tick(bool allowLauncherExit) {
     }
 }
 void Client::cleanup() noexcept {
+    if(pid_<0 && fd_<0 && listener_<0 && directory_.empty()) return;
+    bool launcherGone=true;
     if(fd_>=0) { ::close(fd_); fd_=-1; }
     if(listener_>=0) { ::close(listener_); listener_=-1; }
     if(pid_>0) {
@@ -186,15 +191,25 @@ void Client::cleanup() noexcept {
             drain(); poll(nullptr,0,10);
         }
         if(owned) kill(-pid_,SIGKILL);
-        while(waitpid(pid_,nullptr,0)<0 && errno==EINTR) {}
+        int reaped=0;
+        do {reaped=waitpid(pid_,nullptr,0);} while(reaped<0 && errno==EINTR);
+        launcherGone=reaped==pid_;
         pid_=-1;
     }
-    for(auto h:workerHandles_) if(h>=0) ::close(h);
+    bool gone=launcherGone;
+    for(auto h:workerHandles_) if(h>=0) {
+        pollfd process{h,POLLIN,0};
+        int ready=0;
+        do {ready=::poll(&process,1,1000);} while(ready<0 && errno==EINTR);
+        gone=gone && ready>0 && (process.revents&POLLIN);
+        ::close(h);
+    }
     workerHandles_.clear();
     if(log_>=0) { ::close(log_); log_=-1; }
     if(logWrite_>=0) { ::close(logWrite_); logWrite_=-1; }
     if(!socket_.empty()) { unlink(socket_.c_str()); socket_.clear(); }
-    if(!directory_.empty()) { rmdir(directory_.c_str()); directory_.clear(); }
+    if(!directory_.empty()) { const bool removed=rmdir(directory_.c_str())==0; gone=gone && removed; directory_.clear(); }
+    cleanupConfirmed_=gone;
 }
 wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint64_t expected, wire::Deadline deadline) {
     require(fd_>=0,"MPI client: session closed");
@@ -204,7 +219,7 @@ wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint6
         auto reply=wire::receive(fd_,deadline,progress,[&](const auto& header,auto size){
             require(header.session==session_ && header.request==request_,"MPI client: response ID mismatch");
             require(header.type==expected || header.type==wire::Error,"MPI client: unexpected response type");
-            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : size==0),
+            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : type==wire::RunBatch ? size>=32 && size<=8224 : size==0),
                     "MPI client: invalid response length");
         });
         progress();
@@ -212,7 +227,7 @@ wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint6
         require(reply.type==expected,"MPI client: unexpected response type");
         return reply;
     } catch(const std::exception& e) {
-        cleanup(); throw std::runtime_error(std::string(e.what())+(diagnostic_.empty()?"":"\n"+diagnostic_));
+        cleanup(); throw ClientError(std::string(e.what())+(diagnostic_.empty()?"":"\n"+diagnostic_),cleanupConfirmed_);
     }
 }
 void Client::load(const InputData& input,std::size_t generation) {
@@ -231,6 +246,27 @@ void Client::advance(std::size_t steps) {
     require(steps>0 && steps<=100000,"MPI client: invalid step count");
     const auto deadline=Clock::now()+options_.operationTimeout;
     wire::Bytes data; wire::put(data,steps); exchange(wire::Advance,std::move(data),wire::Reply,deadline);
+}
+BatchMetrics Client::runBatch(std::size_t steps,std::size_t expectedGeneration) {
+    std::unique_lock lock(mutex_,std::try_to_lock);
+    require(lock.owns_lock(),"MPI client: request already in flight");
+    require(steps>0 && steps<=100000 && expectedGeneration<=SIZE_MAX-steps,"MPI client: invalid batch");
+    wire::Bytes data; wire::put(data,steps); wire::put(data,expectedGeneration);
+    auto reply=exchange(wire::RunBatch,std::move(data),wire::BatchResult,Clock::now()+options_.operationTimeout);
+    try {
+        std::size_t offset=0;
+        BatchMetrics result;
+        result.maximumMs=std::bit_cast<double>(wire::get(reply.payload,offset));
+        result.generation=wire::get(reply.payload,offset);
+        const auto processes=wire::get(reply.payload,offset), length=wire::get(reply.payload,offset);
+        require(std::isfinite(result.maximumMs) && result.maximumMs>=0 &&
+                result.generation==expectedGeneration+steps && processes==static_cast<std::uint64_t>(options_.processes) &&
+                length>0 && length<=8192 && length==reply.payload.size()-offset,"MPI client: invalid batch metrics");
+        result.processes=static_cast<int>(processes);
+        result.runtime.assign(reply.payload.begin()+offset,reply.payload.end());
+        require(result.runtime.find('\0')==std::string::npos,"MPI client: invalid runtime identity");
+        return result;
+    } catch(...) {cleanup();throw;}
 }
 RemoteSnapshot Client::snapshot() {
     std::unique_lock lock(mutex_,std::try_to_lock); require(lock.owns_lock(),"MPI client: request already in flight");

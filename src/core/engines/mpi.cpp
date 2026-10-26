@@ -7,6 +7,12 @@
 #include <stdexcept>
 
 namespace conway::core {
+double maximum_rank_milliseconds(double local,MPI_Comm comm) {
+    double maximum=0;
+    MPI_Reduce(&local,&maximum,1,MPI_DOUBLE,MPI_MAX,0,comm);
+    return maximum;
+}
+
 
 std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm) {
     // Validate collectively before any point-to-point exchange. Allocation and

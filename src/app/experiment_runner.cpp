@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <set>
 
 namespace conway::app {
 namespace {
@@ -22,11 +23,25 @@ Engine engineAt(MeasurementOrder order, int round, int position) {
 ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
                          const input::GenerationMetadata* generated) {
     if (config.generations <= 0 || config.warmups < 0 || config.repetitions <= 0
-        || config.requestedThreads <= 0)
+        || (config.participants.empty() && config.requestedThreads <= 0))
         throw std::invalid_argument("Invalid experiment generations, warmups, repetitions or threads");
     if (config.order != MeasurementOrder::AlternatingSequentialFirst
         && config.order != MeasurementOrder::AlternatingOpenMPFirst)
         throw std::invalid_argument("Unknown experiment order policy");
+    if(!config.participants.empty()) {
+        std::set<Engine> engines;
+        for(const auto& participant:config.participants)
+            if(!engines.insert(participant.engine).second)
+                throw std::invalid_argument("Comparison permits one configuration per engine");
+        auto identity=validateInput(input);
+        detail::attachGeneratedMetadata(identity,input,generated);
+        ExperimentResult result{config,std::move(identity),0,{},{}};
+        result.study=runExperimentalStudy(input,config.participants,config.generations,
+            config.warmups,config.repetitions,
+            config.rotateRight,config.mpiOptions,config.maxMemoryBytes);
+        result.completedWarmupRuns=result.study->completedWarmupRuns;
+        return result;
+    }
     const auto warmupCount = checkedMultiply(static_cast<std::size_t>(config.warmups), 2);
     const auto sampleCount = checkedMultiply(static_cast<std::size_t>(config.repetitions), 2);
     (void)checkedAdd(1, checkedAdd(warmupCount, sampleCount));
@@ -42,8 +57,10 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
     const auto reference = detail::runOnce(input, Engine::Sequential, 1, config.generations);
     for (int round = 0; round < config.warmups; ++round) {
         for (int position = 0; position < 2; ++position) {
-            (void)detail::runOnce(input, engineAt(config.order, round, position),
+            const auto warmed=detail::runOnce(input, engineAt(config.order, round, position),
                                   config.requestedThreads, config.generations);
+            if(!detail::sameState(warmed.finalGame,reference.finalGame))
+                throw std::runtime_error("Warmup differs from sequential oracle");
             ++result.completedWarmupRuns;
         }
     }

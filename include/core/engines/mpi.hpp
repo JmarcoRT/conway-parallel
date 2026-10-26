@@ -6,6 +6,8 @@
 #include <cstddef>
 
 namespace conway::core {
+// Collective timing aggregation, result defined on rank 0; outside batch interval.
+double maximum_rank_milliseconds(double local, MPI_Comm comm);
 
 // Collective on comm, whose rank/size must match part. State contains exactly
 // part's rows. All ranks, including empty partitions, call in the same order.

@@ -40,7 +40,7 @@ void transfer(int fd, std::uint8_t* data, std::size_t length, bool writing,
 void send(int fd, const Frame& f, Deadline d, const std::function<void()>& tick) {
     if (f.payload.size()>maxPayload) throw std::runtime_error("MPI protocol: payload too large");
     Bytes header;
-    for (auto v : {std::uint64_t{0x434f4e5741594d50},std::uint64_t{1},f.type,f.session,f.request,std::uint64_t(f.payload.size())}) put(header,v);
+    for (auto v : {std::uint64_t{0x434f4e5741594d50},version,f.type,f.session,f.request,std::uint64_t(f.payload.size())}) put(header,v);
     transfer(fd,header.data(),header.size(),true,d,tick);
     // transfer never mutates a sending buffer.
     transfer(fd,const_cast<std::uint8_t*>(f.payload.data()),f.payload.size(),true,d,tick);
@@ -49,18 +49,19 @@ Frame receive(int fd, Deadline d, const std::function<void()>& tick, const Heade
     Bytes header(48);
     transfer(fd,header.data(),header.size(),false,d,tick);
     std::size_t offset=0;
-    if (get(header,offset)!=0x434f4e5741594d50 || get(header,offset)!=1)
+    if (get(header,offset)!=0x434f4e5741594d50 || get(header,offset)!=version)
         throw std::runtime_error("MPI protocol: incompatible header");
     Frame f;
     f.type=get(header,offset); f.session=get(header,offset); f.request=get(header,offset);
     const auto length=get(header,offset);
     if (length>maxPayload) throw std::runtime_error("MPI protocol: payload too large");
-    if (f.type<Ready || f.type>Error || !f.session ||
+    if (f.type<Ready || f.type>BatchResult || !f.session ||
         (f.type==Ready ? f.request!=0 : f.request==0))
         throw std::runtime_error("MPI protocol: invalid type or identity");
     const bool validLength =
         (f.type==Ready && length>=16 && length<=8*1025 && length%8==0) ||
-        (f.type==Load && length>=25) || (f.type==Advance && length==8) ||
+        (f.type==Load && length>=25) || (f.type==Advance && length==8) || (f.type==RunBatch && length==16) ||
+        (f.type==BatchResult && length>=32 && length<=32+8192) ||
         ((f.type==Snapshot || f.type==Close || f.type==Closed) && length==0) ||
         (f.type==Reply && (length==0 || length>=33)) || (f.type==Error && length<=4096);
     if(!validLength) throw std::runtime_error("MPI protocol: invalid message length");
