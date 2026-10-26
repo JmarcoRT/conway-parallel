@@ -100,6 +100,8 @@ def experiments(binary, cwd):
     try:
         t.send("C\r1\r")
         for scaling in (False, True):
+            if not scaling:
+                move_to(t,"OpenMP");t.send(" ")
             field(t, "Generaciones", "2")
             field(t, "Calentamientos", "0")
             field(t, "Repeticiones", "1")

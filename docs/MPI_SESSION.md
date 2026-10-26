@@ -2,7 +2,7 @@
 
 `SimulationSession` integra `conway_mpi_worker` y `conway_mpi_client` con los
 controles de simulación. El modo didáctico sigue pendiente. La infraestructura
-experimental, todavía sin formularios/vistas MPI, se describe en [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
+experimental y sus formularios/vistas FTXUI se describen en [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
 Reutiliza `core::step_mpi`, la partición por filas, halos y doble buffer existentes.
 
 ## Uso y propiedad

@@ -87,21 +87,27 @@ velocidad y avance. `N` siguiente, espacio reproducir, `R` reiniciar, `+`/`-`
 velocidad, Esc volver. No es una cronología real entre hilos; ver
 [STEP_TRACE.md](STEP_TRACE.md).
 
-Benchmark abre Comparación de motores, Escalabilidad OpenMP y Resultados de la
-sesión. Los formularios permiten patrón cargado o tablero generado, generaciones,
-calentamientos, repeticiones y solicitud/lista de hilos. Tab/Mayús+Tab cambia
-campo; Enter activa. La entrada generada no reemplaza el patrón de simulación.
+Benchmark abre Comparación de motores, Escalabilidad y Resultados de la sesión.
+Comparación permite elegir Secuencial, OpenMP y MPI (mínimo dos). Solo Secuencial
+está marcado inicialmente. Los hilos OpenMP y procesos MPI se configuran por
+separado; sin Secuencial, speedup y eficiencia respecto de él son N/D.
+Escalabilidad permite elegir OpenMP/MPI y editar una lista de hilos/procesos.
+Ambos formularios permiten patrón cargado o tablero generado, generaciones,
+calentamientos y repeticiones. Tab/Mayús+Tab cambia campo; Espacio marca motores;
+Enter activa. La entrada generada no reemplaza el patrón de simulación.
 
 La ejecución congela configuración, genera/copia entrada antes de medir y usa
 un worker persistente. Esc regresa sin cancelar el trabajo ni modificarlo al
 editar. Solo hay un experimento activo; se bloquean otros cálculos competidores.
 Al salir con trabajo activo se anuncia cierre pendiente hasta terminar, sin
-cancelación forzada. Los errores conservan el último resultado.
+cancelación forzada. Los errores conservan el último resultado o la evidencia
+parcial de la ejecución fallida. MPI usa procesos nuevos y calentamientos por
+sesión en cada turno, con cierre confirmado antes del siguiente participante.
 
 Comparación y Escalabilidad presentan Resumen/Muestras/Método: ←→ cambia vista,
 ↑↓ desplaza, Home/End extremos, Esc configuración o Benchmark según procedencia.
-La tabla de escalabilidad se ordena por solicitud; las muestras conservan orden
-experimental. El gráfico muestra speedups válidos, referencia 1.00× y eje X
+El gráfico de escalabilidad ordena las solicitudes; cada resultado identifica
+su recurso y las muestras conservan el orden experimental. El gráfico muestra speedups válidos, referencia 1.00× y eje X
 categórico explícito, con escala lineal o log1p(S). No dibuja línea ideal.
 
 En 120×40 tabla/gráfico pueden convivir si caben; en 80×24 se prioriza acceso por
@@ -198,6 +204,20 @@ pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
 Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
 Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
 
-El modo didáctico MPI no está habilitado y benchmark sigue comparando
-secuencial/OpenMP; debe abandonarse una sesión MPI antes de medir. Véase
-[MPI_SESSION.md](MPI_SESSION.md) para límites, supervisión y validación.
+El modo didáctico MPI no está habilitado. Benchmark configurable admite MPI;
+debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
+el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,
+solicitud y snapshot se presentan separados. Un estudio incompleto muestra su
+diagnóstico, limpieza y evidencia parcial. No se añade exportación desde la UI.
+Véanse [MPI_SESSION.md](MPI_SESSION.md) y [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
+
+Los resultados mantienen las pestañas y la ayuda visibles al desplazar con
+↑/↓ o Inicio/Fin. La barra lateral y «Bloque actual/total» indican la posición;
+los párrafos se ajustan al ancho disponible también después de redimensionar.
+En formularios anchos, Entrada y Medición tienen columnas de ancho fijo para
+cada tamaño de terminal, independientemente del motor seleccionado.
+La barra contextual del benchmark identifica la configuración de «Simulación»;
+los participantes del experimento se identifican dentro del formulario/resultado.
+Los números se presentan con tres decimales (notación científica para magnitudes
+pequeñas o grandes); N/D no lleva unidades ni sufijos. El formato no modifica
+los datos ni limita la eficiencia al 100 %.

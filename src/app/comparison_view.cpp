@@ -1,3 +1,4 @@
+#include "app/experimental_study_view.hpp"
 #include "app/comparison_view.hpp"
 #include <algorithm>
 #include <cmath>
@@ -121,6 +122,8 @@ ComparisonBars comparisonBars(const ExperimentSummary& s, int columns) {
 }
 std::vector<ftxui::Element> comparisonRows(const ExperimentResult& result,
     const std::string& patternName, ComparisonTab tab, int columns, Color accent, Color positive) {
+    if(result.study) return experimentalStudyRows(*result.study,(result.input.generated?std::string("Tablero generado"):patternName)+" · "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height),static_cast<int>(tab),columns,accent,positive);
+
     const auto& s = result.summary;
     std::vector<Element> rows;
     Elements tabs;

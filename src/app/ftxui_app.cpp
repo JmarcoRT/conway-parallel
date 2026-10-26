@@ -343,7 +343,9 @@ Element renderContextBar(const InteractiveState& state, std::size_t width) {
     const std::string engine = width < 44
         ? (state.engine == Engine::Sequential ? "Sec." : state.engine == Engine::OpenMP ? "OMP" : "MPI")
         : engineName(state.engine);
-    std::string suffix = dimensions + " · " + (compact ? "" : "Motor: ") + engine;
+    const bool experiment = state.page == Page::ComparisonConfig || state.page == Page::BenchmarkScaling ||
+        state.page == Page::ExperimentExecution || state.page == Page::BenchmarkResults || state.page == Page::BenchmarkMenu;
+    std::string suffix = dimensions + " · " + (experiment ? "Simulación: " : (compact ? "" : "Motor: ")) + engine;
     if (state.engine == Engine::OpenMP) {
         suffix += width < 44 ? " · H:" : compact ? " · Hilos: " : " · Hilos solicitados: ";
         suffix += std::to_string(state.requestedThreads);
@@ -870,7 +872,7 @@ public:
             "Salir",
         };
         benchmarkItems_ = {
-            "Comparación de motores", "Escalabilidad OpenMP",
+            "Comparación de motores", "Escalabilidad",
             "Resultados de la sesión",
         };
         engineItems_ = {"Secuencial", "OpenMP", "MPI", "Configurar procesos MPI", "Volver"};
@@ -972,7 +974,7 @@ public:
                 content = panel("COMPARACIÓN DE MOTORES", comparisonForm_->Render());
                 break;
             case Page::BenchmarkScaling:
-                content = panel("ESCALABILIDAD OPENMP", scalingForm_->Render());
+                content = panel("ESCALABILIDAD · OpenMP / MPI", scalingForm_->Render());
                 break;
             case Page::BenchmarkResults:
                 content = renderExperiment(true);
@@ -2079,7 +2081,7 @@ private:
             if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
                                     std::filesystem::path(state_.path).filename().string(), bytes))
                 return "Ya hay un experimento activo.";
-            resultRow_ = 0;
+            resultRow_ = 0; comparisonTab_=0; scalingTab_=0;
             state_.page = Page::ExperimentExecution;
             return {};
         } catch (const std::exception& error) { return error.what(); }
@@ -2088,13 +2090,34 @@ private:
     bool showingComparison() const {
         const auto snapshot = experiment_->snapshot();
         return snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
-            && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished);
+            && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
+                (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
     }
 
     bool showingScaling() const {
         const auto snapshot = experiment_->snapshot();
         return snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
-            && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished);
+            && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
+                (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
+    }
+
+    // Resolve paragraph heights at the viewport width before yframe computes
+    // the selected row's position. Otherwise wrapped paragraphs report stale
+    // heights and the frame can keep showing the first screen.
+    Element resultViewport(std::vector<Element> rows, Element tabs) {
+        const int width = std::max(1, static_cast<int>(controls::terminalSize().columns) - 3);
+        for (auto& row : rows) {
+            auto probe = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fit(row));
+            ftxui::Render(probe, row);
+            row = row | ftxui::size(ftxui::HEIGHT, ftxui::EQUAL, std::max(1, probe.dimy()));
+        }
+        resultRows_ = static_cast<int>(rows.size());
+        resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
+        if (!rows.empty()) rows[resultRow_] = rows[resultRow_] | ftxui::focus;
+        return ftxui::vbox({std::move(tabs), ftxui::separator(),
+            ftxui::vbox(std::move(rows)) | ftxui::vscroll_indicator | ftxui::yframe | ftxui::flex,
+            ftxui::text("Bloque " + std::to_string(resultRow_ + 1) + "/" + std::to_string(resultRows_) +
+                " · ↑↓ desplazar · Inicio/Fin") | ftxui::dim});
     }
 
     Element renderScaling(const ExecutionSnapshot& snapshot, bool session) {
@@ -2112,13 +2135,12 @@ private:
         auto presentation = scalingRows(std::get<ScalingResult>(stored.result), stored.description.patternName,
             static_cast<ScalingTab>(scalingTab_), static_cast<int>(controls::terminalSize().columns) - 2,
             identityCyan(), ftxui::Color::RGB(98,232,137));
-        rows.insert(rows.end(), std::make_move_iterator(presentation.begin()), std::make_move_iterator(presentation.end()));
+        auto tabs = presentation.front();
+        rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
         rows.push_back(ftxui::paragraph("Contexto conservado: " + stored.context.studyId) | ftxui::dim);
-        resultRows_ = static_cast<int>(rows.size());
-        resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
-        rows[static_cast<std::size_t>(resultRow_)] = rows[static_cast<std::size_t>(resultRow_)] | ftxui::focus;
-        return panel(session ? "RESULTADOS DE LA SESIÓN" : "ESCALABILIDAD OPENMP",
-            ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex);
+        return panel(session ? "RESULTADOS DE LA SESIÓN" :
+            std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP",
+            resultViewport(std::move(rows), std::move(tabs)));
     }
 
     Element renderComparison(const ExecutionSnapshot& snapshot, bool session) {
@@ -2137,20 +2159,20 @@ private:
         auto presentation = comparisonRows(std::get<ExperimentResult>(stored.result), stored.description.patternName,
             static_cast<ComparisonTab>(comparisonTab_), static_cast<int>(controls::terminalSize().columns) - 2,
             identityCyan(), ftxui::Color::RGB(98,232,137));
-        rows.insert(rows.end(), std::make_move_iterator(presentation.begin()), std::make_move_iterator(presentation.end()));
-        resultRows_ = static_cast<int>(rows.size());
-        resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
-        if (!rows.empty()) rows[static_cast<std::size_t>(resultRow_)] = rows[static_cast<std::size_t>(resultRow_)] | ftxui::focus;
+        auto tabs = presentation.front();
+        rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
         return panel(session ? "RESULTADOS DE LA SESIÓN" : "COMPARACIÓN DE MOTORES",
-            ftxui::vbox(std::move(rows)) | ftxui::yframe | ftxui::flex);
+            resultViewport(std::move(rows), std::move(tabs)));
     }
 
     Element renderExperiment(bool session) {
         const auto snapshot = experiment_->snapshot();
         if (snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
-            && (session || snapshot.phase == ExecutionPhase::Finished)) return renderComparison(snapshot, session);
+            && (session || snapshot.phase == ExecutionPhase::Finished ||
+                (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id))) return renderComparison(snapshot, session);
         if (snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
-            && (session || snapshot.phase == ExecutionPhase::Finished)) return renderScaling(snapshot, session);
+            && (session || snapshot.phase == ExecutionPhase::Finished ||
+                (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id))) return renderScaling(snapshot, session);
         const auto& d = snapshot.description;
         std::vector<Element> rows;
         const char* status = "Listo";
@@ -2166,7 +2188,7 @@ private:
                 ? ftxui::Color::RGB(98, 232, 137) : identityCyan()));
         if (d.id) {
             rows.push_back(ftxui::text("Ejecución #" + std::to_string(d.id) + " · " +
-                (d.scaling ? "Escalabilidad OpenMP" : "Comparación de motores")));
+                (d.scaling ? (d.config.scaling.parallelEngine==Engine::MPI?"Escalabilidad MPI":"Escalabilidad OpenMP") : "Comparación de motores")));
             rows.push_back(ftxui::paragraph("Entrada: " + (d.config.generated ? std::string("Tablero generado") : d.patternName) +
                 " · " + std::to_string(d.width) + " × " + std::to_string(d.height) + " (ancho × alto)"));
             const auto& c = d.config.comparison;
@@ -2174,10 +2196,15 @@ private:
             rows.push_back(ftxui::paragraph("Generaciones: " + std::to_string(d.scaling ? sc.generations : c.generations) +
                 " · Calentamientos: " + std::to_string(d.scaling ? sc.warmups : c.warmups) +
                 " · Repeticiones: " + std::to_string(d.scaling ? sc.repetitions : c.repetitions)));
-            std::string threads = "Hilos solicitados: ";
-            if (d.scaling) { for (auto t : sc.requestedThreads) threads += std::to_string(t) + " "; }
-            else threads += std::to_string(c.requestedThreads);
-            rows.push_back(ftxui::paragraph(threads));
+            std::string resources;
+            if(d.scaling) {
+                resources=sc.parallelEngine==Engine::MPI?"Procesos solicitados: ":"Hilos solicitados: ";
+                for(auto p:sc.parallelEngine==Engine::MPI?sc.requestedProcesses:sc.requestedThreads) resources+=std::to_string(p)+" ";
+            } else {
+                resources="Participantes: ";
+                for(const auto& participant:c.participants) resources+=configurationName(participant)+" ";
+            }
+            rows.push_back(ftxui::paragraph(resources));
         }
         if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
         if (snapshot.latest && (session || snapshot.phase == ExecutionPhase::Finished)) {
@@ -2211,8 +2238,8 @@ private:
 
     Element renderBenchmarkMenu() {
         static const std::array<const char*, 3> descriptions{
-            "Configura la comparación de los motores Secuencial y OpenMP.",
-            "Configura el estudio de escalabilidad OpenMP.",
+            "Selecciona participantes entre Secuencial, OpenMP y MPI.",
+            "Configura escalabilidad OpenMP (hilos) o MPI (procesos).",
             "Consulta la ejecución activa y el último resultado conservado.",
         };
         return panel("BENCHMARK", ftxui::vbox({

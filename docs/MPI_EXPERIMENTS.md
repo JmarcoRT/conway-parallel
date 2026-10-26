@@ -1,7 +1,6 @@
 # Infraestructura experimental MPI
 
-La API experimental admite comparación y escalabilidad MPI. Los formularios y
-vistas FTXUI todavía no seleccionan ni presentan estos estudios. El benchmark
+La API experimental y FTXUI admiten comparación y escalabilidad MPI. El benchmark
 textual fijo y `openmp_timing` no cambian.
 
 ## API y compatibilidad
@@ -148,3 +147,31 @@ rotaciones, calentamientos por sesión, series compartidas, CSV v2, fallos reale
 de rank, plazos y limpieza. Un lanzador de prueba rechaza workers anteriores vivos
 al iniciar otra sesión. `mpi_batch_metrics` comprueba el MAX colectivo con valores
 sintéticos conocidos por rank, sin exigir aceleración ni duración mínima.
+
+## Formularios y resultados FTXUI
+
+Benchmark → Comparación de motores permite marcar Secuencial, OpenMP y MPI.
+Solo Secuencial está seleccionado inicialmente; se requieren al menos dos.
+Hilos OpenMP y procesos MPI son campos separados y solo aparecen si su motor
+participa. Sin Secuencial se mantiene el oráculo, pero se informa que speedup y
+eficiencia respecto de él son N/D.
+
+Benchmark → Escalabilidad permite elegir OpenMP o MPI y editar una lista de
+hilos/procesos. Los límites MPI se validan antes de medir. Tab/Mayús+Tab recorre
+solo controles activos; Espacio cambia participantes y flechas el motor paralelo.
+Los errores llevan el foco al control correspondiente. Las regiones se desplazan
+para conservar el control enfocado en terminales pequeñas.
+
+Los resultados ofrecen Resumen, Muestras y Método mediante flechas izquierda y
+derecha; arriba/abajo y Home/End desplazan la información. Una ejecución nueva
+abre Resumen. Volver a Resultados de la sesión conserva el resultado y la pestaña.
+El tiempo principal MPI se identifica como máximo entre ranks; arranque, carga,
+solicitud del lote, snapshot y cierre aparecen separados en Muestras. Los fallos
+parciales muestran ESTUDIO INCOMPLETO, diagnóstico, limpieza y muestras recibidas.
+Los ejes de escalabilidad MPI se etiquetan como procesos, no hilos.
+
+Se mantiene el worker experimental y los eventos asíncronos; no hay cálculos en
+Render. La UI impide iniciar mediciones si hay una sesión MPI de visualización
+abierta y bloquea nuevas simulaciones mientras un experimento está activo.
+No se añade exportación desde FTXUI ni se modifica el benchmark textual fijo,
+openmp_timing o el modo didáctico.

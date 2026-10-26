@@ -89,6 +89,7 @@ add_executable(conway
     src/app/ftxui_app.cpp
     src/app/experiment_execution.cpp
     src/app/comparison_view.cpp
+    src/app/experimental_study_view.cpp
     src/app/scaling_view.cpp
     src/app/experiment_form.cpp
     src/app/experiment_form_view.cpp
@@ -198,11 +199,17 @@ if(BUILD_TESTING)
         set_tests_properties(mpi_prototype_evolution_${processes} PROPERTIES
             TIMEOUT 45 PROCESSORS ${processes} RUN_SERIAL TRUE)
     endforeach()
-    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp)
+    add_executable(experimental_study_view_tests tests/experimental_study_view_tests.cpp
+        src/app/experimental_study_view.cpp src/app/comparison_view.cpp src/app/scaling_view.cpp)
+    target_include_directories(experimental_study_view_tests PRIVATE include)
+    target_link_libraries(experimental_study_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME experimental_study_view COMMAND experimental_study_view_tests)
+
+    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp src/app/experimental_study_view.cpp)
     target_include_directories(scaling_view_tests PRIVATE include)
     target_link_libraries(scaling_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
     add_test(NAME scaling_view COMMAND scaling_view_tests)
-    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp)
+    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp src/app/experimental_study_view.cpp)
     target_include_directories(comparison_view_tests PRIVATE include)
     target_link_libraries(comparison_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
     add_test(NAME comparison_view COMMAND comparison_view_tests)
@@ -493,6 +500,12 @@ add_test(NAME ftxui_menu_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_menu.py"
             "$<TARGET_FILE:conway>")
 set_tests_properties(ftxui_menu_pty PROPERTIES TIMEOUT 60)
+add_test(NAME ftxui_result_scroll_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_result_scroll.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_result_scroll_pty PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+add_test(NAME ftxui_experimental_mpi_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_experimental_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_experimental_mpi_pty PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE)
 add_test(NAME ftxui_benchmark_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
             "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")
