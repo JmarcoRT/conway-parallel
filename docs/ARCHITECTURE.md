@@ -9,7 +9,7 @@ local mediante procesos separados; Pthreads continúa pendiente. El [índice](RE
 |---|---|---|
 | input | Parseo, validación representable y generación determinista | C++ estándar |
 | core | GameState, Game, B3/S23 y motores | InputData; runtimes solo en motores específicos |
-| app: sesiones | Simulación local/MPI y reproducción didáctica local | Game, trazas, cliente MPI en worker |
+| app: sesiones | Simulación local/MPI y reproducción didáctica local/MPI | Game, trazas, cliente MPI en worker |
 | app: experimentos | Medición, muestras, estadísticas y escalabilidad | Game, validación, OpenMP, cliente MPI externo |
 | app: exportación | Contexto, metadatos y CSV | Resultados experimentales |
 | app: FTXUI | Navegación, formularios, workers y vistas | Servicios de aplicación y FTXUI |
@@ -77,9 +77,11 @@ Los trabajadores sin filas no aparecen, aunque formen parte del equipo efectivo.
 Los intervalos históricos no tienen el mismo alcance en ambos motores; OpenMP
 incluye espera en la barrera del for. Contrato exacto: [STEP_TRACE.md](STEP_TRACE.md).
 
-`DidacticController` prepara PRE/POST y traza en un worker, publica bajo mutex y
-reproduce progreso relativo. La lista por thread_id no informa orden temporal.
-No se reconstruye una línea temporal real entre hilos.
+`DidacticController` prepara PRE/POST y traza local/MPI en un único worker.
+La UI acepta entregas por epoch y reproduce etapas con reloj independiente
+(2 segundos iniciales), sin reconstruir cronología de hilos/ranks. Reinicio y
+cierre son asíncronos; la reserva MPI bloquea otras sesiones y mediciones.
+Contrato: [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
 
 ## Medición y resultados
 
@@ -136,7 +138,7 @@ Existe como API; no hay botón FTXUI. Véase [EXPERIMENT_CSV.md](EXPERIMENT_CSV.
 
 MPI evoluciona con halos, se compara contra secuencial y se integra en la
 simulación mediante un trabajador externo. Una partición local puede tener cero
-filas; no se confunde con Game global no vacío. El modo didáctico MPI sigue pendiente. La API experimental y sus formularios/vistas FTXUI admiten MPI con lotes temporizados.
+filas; no se confunde con Game global no vacío. El controlador didáctico MPI está disponible; sus nuevas vistas siguen pendientes. La API experimental y sus formularios/vistas FTXUI admiten MPI con lotes temporizados.
 Véase [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md). Véanse [evolución](MPI_PROTOTYPE.md) y [sesiones](MPI_SESSION.md).
 Pthreads no tiene motor implementado.
 

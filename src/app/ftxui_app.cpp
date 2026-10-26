@@ -33,6 +33,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -830,7 +831,7 @@ std::string benchmarkReport(const BenchmarkResult& result) {
 class InteractiveApp final : public ftxui::ComponentBase {
 public:
     InteractiveApp(ftxui::ScreenInteractive& screen, DifferentialOutputBuffer& output,
-                   ExperimentExecution::Backend backend = {})
+                   ExperimentExecution::Backend backend = {}, std::unique_ptr<DidacticController> didactic = {})
         : screen_(screen),
           output_(output),
           mainMenu_(makeMenu(mainItems_, state_.mainSelection, [this] { selectMain(); })),
@@ -850,6 +851,10 @@ public:
           threadInput_(makeThreadInput()),
           mpiInput_(makeMPIInput()) {
         omp_set_num_threads(state_.requestedThreads);
+        if(didactic) {
+            state_.input=didactic->initialInput();state_.path="Captura didáctica";
+            state_.didactic=std::move(didactic);
+        }
         Add(mainMenu_);
         Add(benchmarkMenu_);
         Add(patternMenu_);
@@ -906,8 +911,8 @@ public:
         state_.simulation.reset();
         experiment_->shutdown();
         playbackTimer_.request_stop();
-        // Destruir el didactic antes que el worker thread termine,
-        // para que joinWorker() se ejecute y no quede colgando.
+        // La salida normal ya confirmó el cierre asíncrono. La destrucción
+        // une el worker ocioso y actúa como respaldo en una salida excepcional.
         state_.didactic.reset();
         if (benchmarkWorker_.joinable()) {
             benchmarkWorker_.join();
@@ -1027,6 +1032,13 @@ public:
 
     bool OnEvent(Event event) override {
         if (event == Event::Custom) {
+            bool didacticBecameReady=false;
+            if(state_.didactic) {
+                const bool preparing=state_.didactic->isPreparing();state_.didactic->poll();
+                didacticBecameReady=preparing && state_.didactic->isReady();
+                if(!state_.didactic->errorMessage().empty()) state_.message=state_.didactic->errorMessage();
+                if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
+            }
             if (state_.simulation) {
                 state_.simulation->poll();
                 if (!state_.simulation->error().empty()) state_.message = state_.simulation->error();
@@ -1037,12 +1049,9 @@ public:
                     state_.page = Page::Main;
                     state_.message = "Sesión abandonada. La siguiente visualización comienza desde el patrón inicial.";
                 }
-                if (exitAfterSimulation_ && state_.simulation->closed() && !experiment_->snapshot().active()) {
-                    screen_.Exit(); return true;
-                }
             }
-            if (exitWhenExperimentFinishes_ && !experiment_->snapshot().active() &&
-                (!state_.simulation || state_.simulation->closed())) {
+            if ((exitAfterSimulation_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
+                (!state_.simulation || state_.simulation->closed()) && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1058,13 +1067,10 @@ public:
                         ? core::last_openmp_team_size() : 1;
                     schedulePlaybackTick();
                 } else if (state_.page == Page::Didactic && state_.didactic &&
-                           state_.didactic->isPlaying()) {
-                    // El tick avanza el reloj de reproduccion
-                    // didactica con 150 ms de tiempo simulado.
-                    state_.didactic->tick(std::chrono::milliseconds(150));
-                    if (state_.didactic->isPlaying()) {
-                        schedulePlaybackTick();
-                    }
+                           state_.didactic->isPlaying() && state_.didactic->isReady() && !didacticBecameReady) {
+                    const auto now=std::chrono::steady_clock::now();
+                    state_.didactic->tick(now-didacticTickAt_);didacticTickAt_=now;
+                    if (state_.didactic->isPlaying() && state_.didactic->isReady()) schedulePlaybackTick();
                 }
             }
             return true;
@@ -1180,16 +1186,14 @@ public:
                 return true;
             }
             if (key == "n" || key == "N") {
-                if (state_.didactic && state_.didactic->isReady()) {
-                    state_.didactic->advanceGeneration();
-                }
+                if (state_.didactic) state_.didactic->stepStage();
                 return true;
             }
             if (key == " " || key == "p" || key == "P") {
-                if (state_.didactic && state_.didactic->isReady()) {
+                if (state_.didactic) {
                     state_.didactic->togglePlay();
-                    if (state_.didactic->isPlaying()) {
-                        schedulePlaybackTick();
+                    if (state_.didactic->isPlaying() && state_.didactic->isReady()) {
+                        armDidacticTimer();
                     } else {
                         playbackTimer_.request_stop();
                     }
@@ -1235,10 +1239,13 @@ private:
     static constexpr unsigned kPlaybackEvent = 1U;
     static constexpr unsigned kBenchmarkEvent = 2U;
 
+    void armDidacticTimer() {didacticTickAt_=std::chrono::steady_clock::now();schedulePlaybackTick();}
+
     void schedulePlaybackTick() {
         playbackTimer_.request_stop();
         playbackTimer_ = std::jthread([this](std::stop_token stopToken) {
-            std::this_thread::sleep_for(150ms);
+            std::mutex mutex;std::condition_variable_any wake;std::unique_lock lock(mutex);
+            wake.wait_for(lock,stopToken,150ms,[]{return false;});
             if (!stopToken.stop_requested()) {
                 pendingEvents_.fetch_or(kPlaybackEvent, std::memory_order_release);
                 screen_.PostEvent(Event::Custom);
@@ -1563,6 +1570,7 @@ private:
         try {
             InputData loaded = loadInput(path);
             if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
+            if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
             replaceSimulation_ = true;
             state_.input = std::move(loaded);
             state_.path = path;
@@ -1573,6 +1581,7 @@ private:
     }
 
     void startSimulation() {
+        if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de visualizar.";return;}
         if (experiment_->snapshot().active()) { state_.message = "Simulación disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Simulation;
@@ -1584,6 +1593,7 @@ private:
     }
 
     void createSimulation() {
+        if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de visualizar.";state_.page=Page::Main;return;}
         simulationViewport_ = {};
         if (state_.simulation) state_.simulation->poll();
         if (replaceSimulation_ && state_.simulation && !state_.simulation->closed()) {
@@ -1602,7 +1612,8 @@ private:
     }
 
     void startDidactic() {
-        if (state_.engine == Engine::MPI) { state_.message = "El modo didáctico MPI aún no está disponible. Selecciona Secuencial u OpenMP."; return; }
+        if(state_.simulation && !state_.simulation->closed() && (state_.simulation->engine()==Engine::MPI || state_.simulation->busy())) {state_.message="Abandona la sesión MPI con Q antes de entrar en didáctica.";return;}
+        if (state_.engine == Engine::MPI) { state_.message = "Controlador MPI disponible; la vista didáctica MPI está pendiente."; return; }
         if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
@@ -1616,17 +1627,16 @@ private:
     void createDidactic() {
         didacticViewport_ = {};
         if (!state_.input) return;
-        // El controlador prepara una generacion instrumentada en un
-        // worker (no bloquea la UI). Mientras prepara, la pantalla
-        // muestra "Preparando generacion...".
-        state_.didactic = std::make_unique<DidacticController>();
-        state_.didactic->setInitialInput(*state_.input);
-        state_.didactic->startPreparation(*state_.input, state_.engine,
-                                         state_.requestedThreads);
+        if(state_.engine==Engine::MPI) {state_.page=Page::Main;state_.message="Vista didáctica MPI pendiente.";return;}
+        if(state_.simulation && !state_.simulation->closed() && (state_.simulation->engine()==Engine::MPI || state_.simulation->busy())) {state_.page=Page::Main;state_.message="Abandona la sesión MPI con Q antes de entrar en didáctica.";return;}
+        if(!state_.didactic) state_.didactic=std::make_unique<DidacticController>([this]{screen_.PostEvent(Event::Custom);});
+        state_.didactic->startPreparation(*state_.input,state_.engine,state_.requestedThreads,defaultMPIOptions(state_.mpiProcesses));
         state_.page = Page::Didactic;
     }
 
     void startBenchmark() {
+        if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de medir.";return;}
+        if(state_.didactic && state_.didactic->busy()) {state_.message="Espera al cierre o captura didáctica antes de medir.";return;}
         if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) { state_.message = "Abandona la sesión MPI con Q antes de medir."; return; }
         if (experiment_->snapshot().active()) return;
         if (state_.benchmarkRunning) {
@@ -1792,7 +1802,7 @@ private:
             case Page::Didactic:
                 playbackTimer_.request_stop();
                 if (state_.didactic) {
-                    state_.didactic->pause();
+                    state_.didactic->close();
                 }
                 state_.page = Page::Main;
                 break;
@@ -2038,10 +2048,11 @@ private:
     void requestExit() {
         exitAfterSimulation_ = true;
         if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
+        if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
         if (experiment_->snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else if (!state_.simulation || state_.simulation->closed()) screen_.Exit();
+        } else if ((!state_.simulation || state_.simulation->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -2071,10 +2082,11 @@ private:
     }
 
     std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
+        if(state_.didactic && state_.didactic->ownsMPISession()) return "Espera al cierre de la sesión didáctica MPI antes de medir.";
         if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) return "Abandona la sesión MPI con Q antes de medir.";
         if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
-        if (state_.benchmarkRunning || (state_.didactic && state_.didactic->isPreparing()))
+        if (state_.benchmarkRunning || (state_.didactic && state_.didactic->busy()))
             return "Espera a que termine la preparación o medición activa.";
         try {
             const auto bytes = retainedUiPayload();
@@ -2366,10 +2378,6 @@ private:
                     ftxui::text("La UI permanece receptiva."),
                 }) | ftxui::flex);
         }
-        if (!frame.has_data) {
-            return panel("VISUALIZACIÓN DIDÁCTICA",
-                ftxui::text("Sin datos. Pulsa R para reiniciar."));
-        }
         if (!frame.error_message.empty() && frame.phase == DidacticController::Phase::Error) {
             return panel("VISUALIZACIÓN DIDÁCTICA",
                 ftxui::vbox({
@@ -2378,6 +2386,7 @@ private:
                 }));
         }
 
+        if (!frame.has_data) return panel("VISUALIZACIÓN DIDÁCTICA",ftxui::text("Sin datos. Pulsa R para reiniciar."));
         if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
             return renderCompactDidactic(snapshot);
 
@@ -2405,7 +2414,7 @@ private:
             "  ·  [" + (frame.playing ? std::string("Reproduciendo")
                                        : std::string("En pausa")) + "]";
         if (frame.fully_revealed) {
-            speedLine += "  ·  pulse N para consolidar la siguiente generación";
+            speedLine += "  ·  continuación automática; N etapa en pausa";
         } else if (!frame.playing) {
             speedLine += "  ·  pulse Espacio para reproducir";
         }
@@ -2555,8 +2564,8 @@ private:
                     ? "D lista · V vista · Flechas tablero · PgUp/PgDn datos · Enter · M · Esc"
                     : "↑↓ patrones · D detalle · Enter · M ruta · Esc";
                 case Page::Didactic: return didacticWorkers_
-                    ? "T tableros · ↑↓/PgUp/PgDn hilos · N · Esp · R · +/- · Esc"
-                    : "V vista · T hilos · Flechas tablero · N · Esp · R · +/- · Esc";
+                    ? "T tableros · ↑↓/PgUp/PgDn hilos · N etapa · Esp · R · +/- · Esc"
+                    : "V vista · T hilos · Flechas tablero · N etapa · Esp · R · +/- · Esc";
                 case Page::ComparisonConfig:
                 case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter · Esc";
                 case Page::ExperimentExecution:
@@ -2585,7 +2594,7 @@ private:
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark"
                 : "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
-            case Page::Didactic: return "T tableros/hilos · Flechas mover · N paso · Esp pausa · R · +/- · Esc";
+            case Page::Didactic: return "T tableros/hilos · Flechas mover · N etapa en pausa · Esp pausa · R · +/- · Esc";
         }
         return {};
     }
@@ -2619,6 +2628,7 @@ private:
     int workerRow_{0};
     bool simulationNext_{false}, catalogNext_{false}, catalogDetail_{false};
     bool didacticNext_{true}, didacticWorkers_{false};
+    std::chrono::steady_clock::time_point didacticTickAt_{};
     int detailRow_{0};
     ui::BoardViewport simulationViewport_, catalogViewport_, didacticViewport_;
     ftxui::Component comparisonForm_, scalingForm_;

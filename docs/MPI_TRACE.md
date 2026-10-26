@@ -1,11 +1,10 @@
 # Captura didáctica MPI: contrato y transporte
 
-Este cambio implementa únicamente contrato, instrumentación y transporte de una
-generación MPI. No habilita MPI en el controlador ni en las vistas didácticas.
-No implementa todavía el reloj lento ni sus controles. Las decisiones aceptadas
-para esa fase son reproducción automática entre generaciones, una sola captura
-pendiente, pausa respetada aunque termine una captura en curso y 2 segundos por
-etapa como ritmo inicial ajustable, compartido entre los tres motores.
+El contrato, instrumentación y transporte de una generación MPI están implementados
+y consumidos por [DidacticController](DIDACTIC_CONTROLLER.md). El controlador
+reproduce etapas automáticamente con reloj lento, pausa/reanudación y paso manual.
+Las nuevas vistas MPI todavía no están construidas: la entrada visual sigue
+bloqueada y no sustituye MPI por un motor local.
 
 ## Datos y significado
 
@@ -161,4 +160,5 @@ rechazo remoto y compatibilidad de versiones en handshake y peticiones.
 exclusiva de prueba: falla después del paso MPI real. Se comprueba generación 1,
 diagnóstico, ausencia de reintento/reinicio implícito y limpieza confirmada. El
 worker habitual no contiene esa inyección activa ni una opción de ejecución
-para habilitarla. No hay cambios en controlador ni vistas.
+para habilitarla. La etapa posterior incorpora el controlador descrito en DIDACTIC_CONTROLLER.md;
+las nuevas vistas continúan pendientes.

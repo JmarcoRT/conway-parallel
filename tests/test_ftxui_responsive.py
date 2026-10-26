@@ -76,6 +76,7 @@ def check(binary, cwd, size):
             assert time.monotonic() < deadline, text(t)
             # El controlador existente publica el resultado al siguiente evento UI.
             t.send("\x1b[D")
+        t.send(" ")  # Keep the automatic didactic clock paused during resize checks.
         visible(t, "MODO DIDÁCTICO", "NEXT · generación 1")
         t.send("v")
         visible(t, "CURRENT · generación 0")

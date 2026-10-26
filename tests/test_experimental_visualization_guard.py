@@ -13,7 +13,10 @@ try:
     terminal.send('3'); terminal.send('m'); terminal.send('2')
     wait(terminal, lambda: len(workers(terminal.process.pid)) == 1 and 'Pausado' in text(terminal))
     pids = set(workers(terminal.process.pid))
-    terminal.send('\x1b'); terminal.send('1'); terminal.send('\r')
+    terminal.send('\x1b'); terminal.send('\x1b[B' * 5 + '\r')
+    assert 'antes de entrar en didáctica' in text(terminal), text(terminal)
+    assert set(workers(terminal.process.pid)) == pids
+    terminal.send('1'); terminal.send('\r')
     move_to(terminal, 'OpenMP'); terminal.send(' ')
     move_to(terminal, 'Ejecutar experimento'); terminal.send('\r')
     assert 'Abandona la sesión MPI con Q antes de medir' in text(terminal), text(terminal)

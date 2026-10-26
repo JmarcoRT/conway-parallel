@@ -82,9 +82,11 @@ lógicos, no a núcleos físicos.
 ## Didáctica y experimentos
 
 El modo didáctico prepara una generación real en un worker con StepTrace.
-Muestra CURRENT/NEXT y trabajo por hilo con reproducción relativa, pausa,
-velocidad y avance. `N` siguiente, espacio reproducir, `R` reiniciar, `+`/`-`
-velocidad, Esc volver. No es una cronología real entre hilos; ver
+Muestra CURRENT/NEXT y trabajo por hilo con reloj didáctico independiente
+(inicialmente 2 segundos por etapa a 1×). Arranca automáticamente y continúa entre
+generaciones. `N` avanza una etapa en pausa; espacio pausa/reanuda incluso durante
+captura; `R` reinicia conservando pausa y velocidad; `+`/`-` ajustan velocidad.
+Esc solicita cierre asíncrono y vuelve al menú. No es una cronología real entre hilos; ver
 [STEP_TRACE.md](STEP_TRACE.md).
 
 Benchmark abre Comparación de motores, Escalabilidad y Resultados de la sesión.
@@ -204,7 +206,9 @@ pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
 Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
 Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
 
-El modo didáctico MPI no está habilitado. Benchmark configurable admite MPI;
+El controlador didáctico MPI está implementado; su entrada visual sigue pendiente
+de las nuevas vistas. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+Benchmark configurable admite MPI;
 debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
 el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,
 solicitud y snapshot se presentan separados. Un estudio incompleto muestra su

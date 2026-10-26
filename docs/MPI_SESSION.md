@@ -1,7 +1,7 @@
 # Sesión de simulación MPI (Linux/WSL local)
 
 `SimulationSession` integra `conway_mpi_worker` y `conway_mpi_client` con los
-controles de simulación. El modo didáctico sigue pendiente. La infraestructura
+controles de simulación. El controlador didáctico MPI está disponible; sus vistas siguen pendientes. La infraestructura
 experimental y sus formularios/vistas FTXUI se describen en [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
 Reutiliza `core::step_mpi`, la partición por filas, halos y doble buffer existentes.
 
@@ -204,5 +204,5 @@ TRACE_STEP solicita una generación instrumentada real, con generación esperada
 y célula global seleccionada. TRACE_RESULT transporta una captura acotada; se
 validan primero sus 72 bytes de cabecera y su tamaño exacto antes de reservar
 el cuerpo. Véase [MPI_TRACE.md](MPI_TRACE.md). ADVANCE y RUN_BATCH no recopilan
-ni transportan estas capturas. El controlador y las vistas didácticas todavía
-no consumen esta operación.
+ni transportan estas capturas. El controlador didáctico ya consume esta operación;
+las nuevas vistas siguen pendientes. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).

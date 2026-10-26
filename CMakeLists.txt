@@ -467,10 +467,17 @@ add_executable(didactic_session_tests
     src/input/input.cpp
 )
 target_include_directories(didactic_session_tests PRIVATE include)
-target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX conway_simulation)
 add_test(NAME didactic_session
     COMMAND didactic_session_tests "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+set_tests_properties(didactic_session PROPERTIES TIMEOUT 20 ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+add_executable(didactic_mpi_tests tests/didactic_mpi_tests.cpp src/app/didactic_session.cpp)
+target_link_libraries(didactic_mpi_tests PRIVATE conway_experiments conway_simulation)
+add_dependencies(didactic_mpi_tests conway_mpi_worker mpi_trace_failure_worker)
+add_test(NAME didactic_mpi COMMAND didactic_mpi_tests "${MPIEXEC_EXECUTABLE}"
+    $<TARGET_FILE:conway_mpi_worker> $<TARGET_FILE:mpi_trace_failure_worker>)
+set_tests_properties(didactic_mpi PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4)
 # Compila los helpers reales de FTXUI para comprobar coordenadas renderizadas.
 get_target_property(didactic_layout_sources conway SOURCES)
 list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
@@ -483,7 +490,16 @@ add_executable(ftxui_execution_fixture tests/ftxui_execution_fixture.cpp ${didac
 target_include_directories(ftxui_execution_fixture PRIVATE include)
 target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
     OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
+add_executable(ftxui_didactic_fixture tests/ftxui_didactic_fixture.cpp ${didactic_layout_sources})
+target_include_directories(ftxui_didactic_fixture PRIVATE include)
+target_link_libraries(ftxui_didactic_fixture PRIVATE conway_experiment_export conway_generated_input conway_simulation
+    OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
+add_dependencies(ftxui_didactic_fixture conway_mpi_worker)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME ftxui_didactic_controller_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_controller.py" $<TARGET_FILE:conway>
+    $<TARGET_FILE:ftxui_didactic_fixture> "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_didactic_controller_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
 add_test(NAME ftxui_mpi_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_mpi_pty PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
