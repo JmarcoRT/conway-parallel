@@ -117,6 +117,36 @@ add_executable(mpi_partition_prototype
 target_include_directories(mpi_partition_prototype PRIVATE include)
 target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
 
+# Geometria de la descomposicion MPI (particion, vecinos de halo y metadatos
+# de regiones/halos para la UI). C++ estandar: no enlaza MPI, de modo que la
+# UI y las pruebas pueden consumirla sin mpirun.
+add_library(conway_mpi_layout STATIC
+    src/mpi/partition.cpp
+    src/mpi/halo.cpp
+    src/mpi/region_metadata.cpp
+)
+target_include_directories(conway_mpi_layout PUBLIC include)
+
+# Presentacion textual de regiones/halos MPI para la UI (sin MPI ni FTXUI).
+add_library(conway_mpi_view STATIC src/ui/mpi_regions_view.cpp)
+target_link_libraries(conway_mpi_view PUBLIC conway_mpi_layout)
+
+# Motor MPI: evolucion distribuida con intercambio de halos entre ranks.
+# Ejecutar con: mpirun -np P ./conway_mpi patterns/glider.txt --verify
+# (ver docs/MPI_ENGINE.md). Reutiliza el core (B3/S23, recorrido secuencial
+# como oraculo) y la particion/estado local del modulo mpi.
+add_executable(conway_mpi
+    src/mpi/mpi_main.cpp
+    src/mpi/distribution.cpp
+    src/mpi/local_state.cpp
+    src/core/engines/mpi.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/input/input.cpp
+)
+target_include_directories(conway_mpi PRIVATE include)
+target_link_libraries(conway_mpi PRIVATE conway_mpi_view conway_generated_input MPI::MPI_CXX)
+
 
 include(CTest)
 
@@ -222,6 +252,70 @@ if(BUILD_TESTING)
     add_test(NAME mpi_partition_unit
         COMMAND partition_tests
     )
+
+    # Vecinos de halo y descomposicion con halos emulados en un proceso:
+    # reensamblado == secuencial generacion a generacion. No usa MPI.
+    add_executable(mpi_halo_tests
+        tests/mpi_halo_tests.cpp
+        src/mpi/halo.cpp
+        src/mpi/partition.cpp
+        src/mpi/local_state.cpp
+        src/core/engines/sequential.cpp
+        src/core/bs23.cpp
+        src/input/input.cpp
+    )
+    target_include_directories(mpi_halo_tests PRIVATE include)
+    add_test(NAME mpi_halo_unit
+        COMMAND mpi_halo_tests "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    # Metadatos de regiones/halos para la UI: geometria, CSV y rechazos.
+    add_executable(mpi_region_metadata_tests tests/mpi_region_metadata_tests.cpp)
+    target_link_libraries(mpi_region_metadata_tests PRIVATE conway_mpi_layout)
+    add_test(NAME mpi_region_metadata COMMAND mpi_region_metadata_tests)
+    add_executable(mpi_regions_view_tests tests/mpi_regions_view_tests.cpp)
+    target_link_libraries(mpi_regions_view_tests PRIVATE conway_mpi_view)
+    add_test(NAME mpi_regions_view COMMAND mpi_regions_view_tests)
+
+    # Motor MPI real con 1, 2 y 4 procesos: cada ejecucion compara el tablero
+    # final con el motor secuencial (--verify). mpi_engine_matrix ademas
+    # cubre 3 y 7 procesos (ranks vacios) y compara los tableros entre np.
+    # Open MPI necesita --oversubscribe si hay menos nucleos que procesos.
+    if(MPIEXEC_EXECUTABLE)
+        set(conway_mpiexec_default_preflags "")
+        if(MPI_CXX_LIBRARY_VERSION_STRING MATCHES "Open MPI")
+            set(conway_mpiexec_default_preflags "--oversubscribe")
+        endif()
+        set(CONWAY_MPIEXEC_PREFLAGS "${conway_mpiexec_default_preflags}" CACHE STRING
+            "Flags adicionales de mpiexec para las pruebas MPI (p. ej. --oversubscribe)")
+        separate_arguments(conway_mpiexec_preflags UNIX_COMMAND "${CONWAY_MPIEXEC_PREFLAGS}")
+        foreach(np IN ITEMS 1 2 4)
+            add_test(NAME mpi_engine_np${np}
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                        ${MPIEXEC_PREFLAGS} ${conway_mpiexec_preflags}
+                        $<TARGET_FILE:conway_mpi> ${MPIEXEC_POSTFLAGS}
+                        patterns/gosper_glider_gun.txt --generations 150 --verify
+            )
+            add_test(NAME mpi_engine_overlap_np${np}
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${np}
+                        ${MPIEXEC_PREFLAGS} ${conway_mpiexec_preflags}
+                        $<TARGET_FILE:conway_mpi> ${MPIEXEC_POSTFLAGS}
+                        patterns/gosper_glider_gun.txt --generations 150 --mode overlap --verify
+            )
+            set_tests_properties(mpi_engine_np${np} mpi_engine_overlap_np${np} PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                TIMEOUT 60
+            )
+        endforeach()
+        add_test(NAME mpi_engine_matrix
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_mpi_engine.sh"
+                    "$<TARGET_FILE_DIR:conway_mpi>"
+        )
+        set_tests_properties(mpi_engine_matrix PROPERTIES
+            ENVIRONMENT "MPIRUN=${MPIEXEC_EXECUTABLE};MPIRUN_FLAGS=${CONWAY_MPIEXEC_PREFLAGS}"
+            TIMEOUT 300
+        )
+    endif()
 
     # Casos de correccion del motor (toad, beacon, pulsar, auto-consistencia
     # del criterio de equivalencia): aritmetica pura, no usa OpenMP/MPI.
