@@ -282,9 +282,26 @@ if(BUILD_TESTING)
     # cubre 3 y 7 procesos (ranks vacios) y compara los tableros entre np.
     # Open MPI necesita --oversubscribe si hay menos nucleos que procesos.
     if(MPIEXEC_EXECUTABLE)
+        # Open MPI se reconoce por su cabecera: mpi.h define OPEN_MPI. Es lo
+        # mas fiable: algunos paquetes (p. ej. Open MPI 5 de Ubuntu) no traen
+        # los textos de ayuda y "mpiexec --version" no imprime la version.
         # FindMPI solo llena MPI_CXX_LIBRARY_VERSION_STRING si se pide
-        # MPI_DETERMINE_LIBRARY_VERSION, asi que Open MPI se reconoce por la
-        # salida de "mpiexec --version" ("mpirun (Open MPI) 5.0.x").
+        # MPI_DETERMINE_LIBRARY_VERSION; la salida de --version queda como
+        # respaldo.
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_INCLUDES ${MPI_CXX_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_CXX)
+        set(CMAKE_REQUIRED_QUIET ON)
+        check_cxx_source_compiles([[
+#include <mpi.h>
+#ifndef OPEN_MPI
+#error "no es Open MPI"
+#endif
+int main() { return 0; }
+]] CONWAY_MPI_IS_OPEN_MPI)
+        cmake_pop_check_state()
         execute_process(
             COMMAND "${MPIEXEC_EXECUTABLE}" --version
             OUTPUT_VARIABLE conway_mpiexec_version
@@ -293,7 +310,8 @@ if(BUILD_TESTING)
             TIMEOUT 20
         )
         set(conway_mpiexec_default_preflags "")
-        if(conway_mpiexec_version MATCHES "Open MPI|OpenRTE" OR
+        if(CONWAY_MPI_IS_OPEN_MPI OR
+           conway_mpiexec_version MATCHES "Open MPI|OpenRTE" OR
            MPI_CXX_LIBRARY_VERSION_STRING MATCHES "Open MPI")
             set(conway_mpiexec_default_preflags "--oversubscribe")
         endif()
