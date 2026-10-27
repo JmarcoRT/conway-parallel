@@ -146,9 +146,12 @@ desde la aplicación o se carga un CSV ya generado.
 | `mpi_engine_overlap_np1/np2/np4` | Sí | Ídem con `overlap` |
 | `mpi_engine_matrix` | Sí | `tests/run_mpi_engine.sh`: 6 casos × np 1/2/4/3/7 × 2 modos; tablero final igual entre todos los np y modos (`compare_boards.py`) |
 
-Las pruebas MPI se registran solo si CMake encuentra `mpiexec`. Con Open MPI se
-añade `--oversubscribe` por defecto (`CONWAY_MPIEXEC_PREFLAGS`), para poder usar
-4 procesos en máquinas con menos núcleos.
+Las pruebas MPI se registran solo si CMake encuentra `mpiexec`. Si
+`mpiexec --version` identifica Open MPI, se añade `--oversubscribe` por defecto
+(`CONWAY_MPIEXEC_PREFLAGS`): sin él, Open MPI rechaza lanzar más procesos que
+núcleos (error `prte-rmaps-base:alloc-error`), lo que afecta a los casos de 4 y
+7 procesos de `mpi_engine_matrix`. La variable queda en la caché de CMake: tras
+cambiarla, reconfigurar con `-DCONWAY_MPIEXEC_PREFLAGS=...` o con un build nuevo.
 
 ```bash
 cmake -S . -B build -DBUILD_TESTING=ON && cmake --build build -j2

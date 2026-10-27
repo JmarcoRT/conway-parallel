@@ -282,8 +282,19 @@ if(BUILD_TESTING)
     # cubre 3 y 7 procesos (ranks vacios) y compara los tableros entre np.
     # Open MPI necesita --oversubscribe si hay menos nucleos que procesos.
     if(MPIEXEC_EXECUTABLE)
+        # FindMPI solo llena MPI_CXX_LIBRARY_VERSION_STRING si se pide
+        # MPI_DETERMINE_LIBRARY_VERSION, asi que Open MPI se reconoce por la
+        # salida de "mpiexec --version" ("mpirun (Open MPI) 5.0.x").
+        execute_process(
+            COMMAND "${MPIEXEC_EXECUTABLE}" --version
+            OUTPUT_VARIABLE conway_mpiexec_version
+            ERROR_VARIABLE conway_mpiexec_version
+            RESULT_VARIABLE conway_mpiexec_version_result
+            TIMEOUT 20
+        )
         set(conway_mpiexec_default_preflags "")
-        if(MPI_CXX_LIBRARY_VERSION_STRING MATCHES "Open MPI")
+        if(conway_mpiexec_version MATCHES "Open MPI|OpenRTE" OR
+           MPI_CXX_LIBRARY_VERSION_STRING MATCHES "Open MPI")
             set(conway_mpiexec_default_preflags "--oversubscribe")
         endif()
         set(CONWAY_MPIEXEC_PREFLAGS "${conway_mpiexec_default_preflags}" CACHE STRING
