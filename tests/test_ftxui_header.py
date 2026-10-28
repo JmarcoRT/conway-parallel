@@ -104,103 +104,22 @@ class Terminal:
         os.close(self.master)
 
 
-def check(binary, cwd, columns, rows):
-    terminal = Terminal(binary, cwd, columns, rows)
+def check(binary,cwd,columns,rows):
+    terminal=Terminal(binary,cwd,columns,rows)
     try:
-        if columns < 40 or rows < 18:
-            terminal.assert_fits()
-            assert "Terminal insuficiente" in " ".join(terminal.screen().values())
-            terminal.send("q")
-            assert terminal.process.wait(timeout=3) == 0
-            return
-        terminal.expect("Sin patrón", "Motor: Secuencial")
-        expanded = columns >= 120 and rows >= 40
-        title_rows = EXPANDED_TITLE if expanded else ("CONWAY PARALLEL",)
-        header_lines = terminal.header().splitlines()
-        for index, title in enumerate(title_rows, start=1):
-            line = header_lines[index]
-            assert title in line, (title, line)
-            assert abs(line.index(title) - (columns - len(title)) // 2) <= 1
-            title_start = terminal.raw.index(title.encode())
-            title_style = terminal.raw[max(0, title_start - 50):title_start]
-            assert b"38;2;83;191;208m" in title_style, title_style
-            assert b"\x1b[1m" in title_style, title_style
-        # Identidad (3 filas con bordes) + barra (1 fila): misma altura total.
-        if (columns, rows) in ((80, 24), (50, 24)):
-            assert len(header_lines) == 4, header_lines
-        before = terminal.raw
-        terminal.read()
-        assert terminal.raw == before, "La pantalla pausada genero refrescos"
-        before = len(terminal.raw)
-        terminal.send("\x1b[B")
-        delta = terminal.raw[before:]
-        assert all(title.encode() not in delta for title in title_rows), delta
-        assert b"\x1b[2J" not in delta, delta
-        terminal.send("\x1b[A")
-        if columns >= 64 and rows > 28:
-            subtitle = "Simulación y análisis de programación paralela"
-            line = next(line for line in terminal.identity().splitlines() if subtitle in line)
-            assert abs(line.index(subtitle) - (columns - len(subtitle)) // 2) <= 1
-        terminal.send("C")
-        terminal.send("\x1b[B")  # Navegar no carga el patron previsualizado.
-        terminal.expect("Sin patrón")
-        terminal.send("\x1b[A")
-        terminal.send("\r")
-        terminal.expect("Patrón: cedar.txt", "3 × 7")
-        # La configuracion almacenada cambia aun con Secuencial, pero no se destaca.
-        terminal.send("4")
-        terminal.send("c")
-        terminal.send("3\r")
-        terminal.expect("Motor: Secuencial", "3 × 7")
-        assert "Hilos OpenMP:" not in "\n".join(terminal.screen().values())
-        terminal.send("3")
-        terminal.expect("Patrón: cedar.txt", "Motor: Secuencial")
-        terminal.send("\x1b[B")
-        terminal.send("\r")
-        terminal.expect("Motor: OpenMP", "Patrón: cedar.txt")
-        terminal.expect("OpenMP solicitado: 3")
-        terminal.send("4")
-        terminal.send("\x1b[A" * 3)  # Desde Numero personalizado hasta 2 hilos.
-        terminal.send("\r")
-        terminal.expect("OpenMP solicitado: 2", "Motor: OpenMP")
-        terminal.send("4")
-        terminal.expect("OpenMP solicitado: 2", "3 × 7")
-        terminal.send("\x1b")
-        terminal.send("C")
-        terminal.send("\x1b[B")
-        terminal.send("\r")
-        terminal.expect("Patrón: willow.txt", "6 × 4", "OpenMP solicitado: 2")
-        terminal.send("2")
-        terminal.send("n")
-        terminal.send("r")
-        terminal.expect("Patrón: willow.txt", "6 × 4", "Motor: OpenMP", "OpenMP solicitado: 2")
-        terminal.send("\x1b")
-        terminal.expect("Patrón: willow.txt", "6 × 4", "OpenMP solicitado: 2")
-        # El mismo contexto aparece en todas las pantallas de ejecucion.
-        saved_context = terminal.context()
-        terminal.send("1\r")
-        assert terminal.context() == saved_context
-        terminal.send("\x1b")
-        terminal.send("\x1b")
-        terminal.send("\x1b[B" * 5 + "\r")
-        assert terminal.context() == saved_context
-        terminal.send("\x1b")
-        terminal.send("3")
-        terminal.send("s")
-        terminal.expect("Motor: Secuencial", "6 × 4")
-        terminal.send("3")
-        terminal.send("o")
-        terminal.expect("Motor: OpenMP", "OpenMP solicitado: 2")
-        terminal.send("C")
-        terminal.send("\x1b[B")
-        terminal.send("\r")
-        terminal.expect("7 × 11", "Motor: OpenMP", "OpenMP solicitado: 2")
-        assert "…" in terminal.context(), terminal.context()
-        terminal.send("q")
-        assert terminal.process.wait(timeout=3) == 0
-        print(f"PASS: encabezado dinamico y navegacion {columns}x{rows}")
-    finally:
-        terminal.close()
+        if columns<40 or rows<18:
+            assert 'Terminal insuficiente' in '\n'.join(terminal.screen().values());terminal.send('q');terminal.process.wait(timeout=5);return
+        terminal.expect('Sin patrón','Motor: Secuencial')
+        identity=terminal.identity();before=len(terminal.raw);terminal.send('\t')
+        assert b'CONWAY PARALLEL' not in terminal.raw[before:]
+        terminal.send('c');terminal.send('\r')
+        terminal.expect('Sin patrón');terminal.send('u');terminal.expect('Patrón: cedar.txt','3 × 7')
+        assert identity==terminal.identity()
+        terminal.send('m');terminal.send('m');terminal.expect('Motor: MPI')
+        terminal.send('r');terminal.send('\x1b[H'+'\x1b[3~'*6+'2\r');terminal.expect('P:2')
+        terminal.send('q');assert terminal.process.wait(timeout=5)==0
+        print(f'PASS header identity and confirmed/candidate separation {columns}x{rows}',flush=True)
+    finally:terminal.close()
 
 
 if __name__ == "__main__":

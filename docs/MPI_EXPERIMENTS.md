@@ -173,7 +173,8 @@ parciales muestran ESTUDIO INCOMPLETO, diagnóstico, limpieza y muestras recibid
 Los ejes de escalabilidad MPI se etiquetan como procesos, no hilos.
 
 Se mantiene el worker experimental y los eventos asíncronos; no hay cálculos en
-Render. La UI impide iniciar mediciones si hay una sesión MPI de visualización
-abierta y bloquea nuevas simulaciones mientras un experimento está activo.
+Render. La UI impide iniciar mediciones si hay una sesión MPI didáctica
+abierta o un catálogo pendiente de cierre, y bloquea la exploración durante un
+experimento activo.
 No se añade exportación desde FTXUI ni se modifica el benchmark textual fijo,
 openmp_timing o el modo didáctico.

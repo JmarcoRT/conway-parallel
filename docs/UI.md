@@ -46,38 +46,28 @@ desactiva el color, pero conserva los bloques monocromáticos de las células.
 
 ## Navegación y controles
 
-En el menú principal:
+El menú principal agrupa, sin títulos seleccionables:
 
-- Flechas y Enter: navegar y seleccionar.
-- `C`: abrir el catálogo de patrones.
-- `1` / `2` / `3` / `4`: benchmark, visualización, motor o configuración de
-  hilos.
-- `0` o `Q`: salir.
+- Modos principales: Visualización didáctica (D), Benchmark (B).
+- Explorar patrones: Catálogo de patrones (C).
+- Configuración: Seleccionar motor (M), Configurar recursos (R).
+- Salir (Q/0), separado al final.
 
-En el catálogo se muestran dinámicamente los archivos `.txt` de `patterns/`.
-Los submenús de catálogo, motor e hilos comparten el mismo selector FTXUI:
-flechas arriba/abajo cambian la opción resaltada, Enter confirma y Esc regresa.
-`M` permite introducir una ruta manual desde el catálogo. La selección de
-motor y de patrón se conserva entre pantallas cuando corresponde.
+Flechas/Tab navegan; Enter activa. Recursos muestra hilos OpenMP o procesos MPI
+según el motor; Secuencial informa un hilo de cálculo sin ajustes. Los valores
+OpenMP/MPI se conservan al cambiar motor.
 
-En la simulación:
+La evolución normal se explora en el catálogo mediante una sesión Secuencial
+independiente del motor configurado. Enter abre la ficha; Espacio pausa/reproduce,
+R reinicia y pausa, y U / Usar patrón confirma exclusivamente la entrada inicial
+validada. M valida una ruta externa sin confirmar automáticamente. Flechas en la
+ficha desplazan el tablero; D/Tab alterna lista y ficha. X abandona; Esc vuelve a
+lista y después al destino. Explorar nunca modifica la entrada confirmada.
 
-- `N`: avanzar una generación.
-- Espacio o `P`: pausar/reanudar.
-- `R`: reiniciar desde el patrón original.
-- `Esc` o `X`: pausar y volver al menú conservando la sesión; Visualización la reanuda.
-- `Q`: abandonar y cerrar la sesión; una nueva visualización comienza en el patrón inicial.
-- `U`: recuperar MPI desde el último snapshot confirmado después de un fallo.
-
-Los paneles CURRENT/NEXT se organizan lado a lado en terminales amplias y
-con una vista alternable cuando falta espacio. Cada celda se delimita con bordes verticales y
-líneas horizontales con uniones consistentes. Las células vivas y muertas usan
-superficies diferenciables; en modo monocromático se conservan bloques
-distintos. Si el tablero supera el viewport, la interfaz indica las filas y
-columnas visibles. La presentación informa generación, células vivas, motor y
-estado. En OpenMP muestra los hilos solicitados y el tamaño de equipo observado
-en una evolución. La disponibilidad reportada corresponde a procesadores
-lógicos, no a núcleos físicos.
+El catálogo conserva bordes y estados de células, muestra generación y estado y
+adapta lista/ficha al tamaño disponible. El worker existente de SimulationSession
+realiza la reproducción fuera de Render. Al salir se detiene y drena antes de
+permitir mediciones. Véase [CATALOG_PREVIEW.md](CATALOG_PREVIEW.md).
 
 ## Didáctica y experimentos
 
@@ -193,38 +183,15 @@ con sus controles, esa región muestra un aviso de espacio insuficiente.
 Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
 los demás offsets se ajustan al nuevo rango sin reiniciar el estado.
 
-## Simulación MPI local
+## MPI desde los modos actuales
 
-En Seleccionar motor, M elige MPI y C abre Procesos MPI (P en el selector textual).
-No se crea ningún rank hasta entrar en Visualización. El valor inicial es P=1;
-se muestra una recomendación basada en afinidad/filas y se aceptan 1..1024.
-No se habilita sobresuscripción. El trabajador se busca junto al ejecutable
-`conway`; CMake configura la ruta compatible de `mpirun` y compila ambos targets.
+M en el selector de motor elige MPI; Recursos configura P (1..1024, inicialmente 1).
+No se crea ningún rank al seleccionar motor, recursos o explorar el catálogo.
+El catálogo siempre reproduce Secuencial. MPI sigue disponible en Didáctico y
+Benchmark configurable; sus motores, protocolo y metodología no cambian.
 
-Cambiar motor o P conserva el tablero, generación y referencia inicial de R.
-El cambio de P se aplica al reanudar y recrea el trabajo MPI. Durante una operación
-pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
-Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
-Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
-
-La entrada didáctica MPI está habilitada: V alterna Global/Local/Explicación,
-[ / ] seleccionan rank (incluidos los vacíos) y ↑↓/Home/End desplazan el contenido.
-En terminal amplia muestra tablero global y cuadrícula privada del rank
-seleccionado, con halos y NEXT revelados según la etapa. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
-Benchmark configurable admite MPI;
-debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
-el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,
-solicitud y snapshot se presentan separados. Un estudio incompleto muestra su
-diagnóstico, limpieza y evidencia parcial. No se añade exportación desde la UI.
+La entrada didáctica MPI ofrece Global/Local/Explicación, selección de rank y
+halos/NEXT revelados según la etapa. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+Una sesión didáctica MPI abierta o cerrándose impide medir. En benchmark, el
+principal MPI es MAX entre ranks y los tiempos auxiliares se muestran separados.
 Véanse [MPI_SESSION.md](MPI_SESSION.md) y [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
-
-Los resultados mantienen las pestañas y la ayuda visibles al desplazar con
-↑/↓ o Inicio/Fin. La barra lateral y «Bloque actual/total» indican la posición;
-los párrafos se ajustan al ancho disponible también después de redimensionar.
-En formularios anchos, Entrada y Medición tienen columnas de ancho fijo para
-cada tamaño de terminal, independientemente del motor seleccionado.
-La barra contextual del benchmark identifica la configuración de «Simulación»;
-los participantes del experimento se identifican dentro del formulario/resultado.
-Los números se presentan con tres decimales (notación científica para magnitudes
-pequeñas o grandes); N/D no lleva unidades ni sufijos. El formato no modifica
-los datos ni limita la eficiencia al 100 %.

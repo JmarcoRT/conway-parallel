@@ -24,7 +24,7 @@ rendimiento mediante experimentos reproducibles.
 ## Características
 
 - **Simulación de Conway:** carga de patrones y evolución del tablero.
-- **Visualización interactiva:** avance, pausa, reproducción y reinicio.
+- **Catálogo interactivo:** explorar y reproducir en Secuencial, confirmar explícitamente la entrada inicial.
 - **Modo didáctico:** representación del trabajo realizado por los hilos.
 - **Comparación experimental:** tiempos, estadísticas y equivalencia entre motores.
 - **Escalabilidad:** análisis de OpenMP con distintas cantidades de hilos.

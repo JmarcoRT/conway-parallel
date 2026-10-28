@@ -1,7 +1,8 @@
 # Arquitectura vigente
 
-Este documento describe el código implementado. MPI está integrado en simulación
-local mediante procesos separados; Pthreads continúa pendiente. El [índice](README.md) separa contratos y registros históricos.
+Este documento describe el código implementado. MPI está integrado mediante
+procesos separados en didáctica y experimentos; la API de simulación MPI sigue
+disponible y probada. El catálogo reproduce Secuencial. Pthreads continúa pendiente. El [índice](README.md) separa contratos y registros históricos.
 
 ## Capas y dependencias
 
@@ -21,7 +22,8 @@ y salida son TTY, y conserva el recorrido textual para pipes. La UI no contiene
 reglas B3/S23. Los experimentos no dependen de FTXUI; MPI se ejecuta en un
 trabajador externo, mediante el cliente Unix.
 
-`SimulationSession` usa el cliente de [MPI_SESSION.md](MPI_SESSION.md) en un
+El catálogo y su confirmación explícita se describen en [CATALOG_PREVIEW.md](CATALOG_PREVIEW.md).
+`SimulationSession` admite reproducción secuencial en su worker y usa el cliente de [MPI_SESSION.md](MPI_SESSION.md) en un
 worker exclusivo. `mpi::Client` lanza `conway_mpi_worker` por sesión y usa un
 socket Unix con rank 0. La UI publica snapshots confirmados mediante eventos;
 las copias de `Game` nunca poseen un comunicador ni llaman a MPI.

@@ -22,6 +22,7 @@
 #include <vector>
 #include <chrono>
 #include <clocale>
+#include <thread>
 
 namespace {
 
@@ -85,6 +86,32 @@ int main(int argc, char** argv) {
     using conway::Engine;
     using conway::Game;
     using conway::app::SimulationSession;
+
+    {
+        using conway::app::CatalogPreview;
+        CatalogPreview catalog;
+        conway::app::PatternEntry entry;entry.name="immutable";entry.path="not reread";
+        const auto initial=blinker();
+        auto wait=[&](auto predicate) {
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+            while(!predicate() && std::chrono::steady_clock::now()<deadline) {catalog.poll();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+            check(predicate(),"catalog_async_delivery_completed");
+        };
+        catalog.selectValidated(entry,initial);wait([&]{return !catalog.session()->busy();});
+        check(catalog.session()->engine()==Engine::Sequential && !catalog.session()->isRunning() && catalog.session()->game().generation()==0,"candidate_starts_sequential_at_zero_paused");
+        catalog.session()->step();wait([&]{return !catalog.session()->busy();});
+        check(catalog.session()->game().generation()==1 && catalog.initial()->cells==initial.cells,"playback_preserves_immutable_confirmable_input");
+        catalog.session()->step();catalog.session()->reset();wait([&]{return !catalog.session()->busy();});
+        check(catalog.session()->game().generation()==0 && !catalog.session()->isRunning(),"pending_reset_discards_old_generation");
+        catalog.session()->step();
+        InputData tiny{1,1,{1}};entry.name="replacement";
+        catalog.selectValidated(entry,tiny);wait([&]{return !catalog.session()->busy();});
+        check(catalog.session()->game().width()==1 && catalog.session()->game().generation()==0 && catalog.initial()->cells==tiny.cells,"old_delivery_cannot_replace_new_candidate");
+        catalog.session()->step();catalog.close();check(!catalog.drained(),"close_retains_pending_worker_until_acknowledged");
+        wait([&]{return catalog.drained();});
+        catalog.select(conway::app::PatternEntry{.error="invalid candidate"});
+        check(!catalog.initial() && !catalog.session() && catalog.error()=="invalid candidate","invalid_candidate_cannot_confirm_previous_input");
+    }
 
     const InputData input = blinker();
     SimulationSession session(input, Engine::OpenMP);

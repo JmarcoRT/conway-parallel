@@ -15,7 +15,7 @@ def text(t):
 def check(binary, root):
     t=Terminal(binary, root,120,40)
     try:
-        t.send('C');t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r')
+        t.send('C');t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r');t.send('u')
         t.send('1');t.send('\x1b[B\r')
         move_to(t,'OpenMP')
         def divider():

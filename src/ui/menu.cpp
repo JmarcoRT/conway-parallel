@@ -7,9 +7,9 @@ void renderMainMenu(
     const ActiveInputInfo& inputInfo
 ) {
     static const std::vector<MenuItem> mainOptions = {
-        {"1", "Benchmark"},
-        {"2", "Visualización"},
-        {"0", "Salir"}
+        {"D", "Visualización didáctica"}, {"B", "Benchmark"},
+        {"C", "Catálogo de patrones"}, {"M", "Seleccionar motor"},
+        {"R", "Configurar recursos"}, {"Q", "Salir"}
     };
 
     renderLayout(

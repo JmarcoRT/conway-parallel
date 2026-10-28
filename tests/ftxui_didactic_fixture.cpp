@@ -1,5 +1,5 @@
 // Dependency injection only: an already-owned real MPI didactic controller.
-// Its new rank views are deliberately absent; exercise application safety gates.
+// Exercise ownership gates while the controller is retained on the menu.
 #include "../src/app/ftxui_app.cpp"
 int main(int argc,char** argv) {
     if(argc!=3) return 2;
