@@ -27,6 +27,8 @@
 #include <vector>
 
 #include <omp.h>
+#include <poll.h>
+#include <unistd.h>
 
 namespace conway::app {
 
@@ -41,6 +43,9 @@ struct AppState {
     std::string path;
     conway::Engine engine{conway::Engine::Sequential};
     int requestedOpenMPThreads{defaultOpenMPThreadCount()};
+    int mpiProcesses{1};
+    std::unique_ptr<SimulationSession> simulation;
+    bool replaceSimulation{false};
 };
 
 struct PathRequest {
@@ -131,6 +136,8 @@ const std::vector<ui::MenuItem>& engineMenuItems() {
     static const std::vector<ui::MenuItem> items = {
         {"S", "Secuencial"},
         {"O", "OpenMP"},
+        {"M", "MPI"},
+        {"P", "Configurar procesos MPI"},
         {"X", "Volver"}
     };
 
@@ -156,7 +163,7 @@ ui::ActiveInputInfo makeInputInfo(const AppState& state) {
 }
 
 const char* engineName(conway::Engine e) {
-    return (e == conway::Engine::Sequential) ? "Secuencial" : "OpenMP";
+    return e == conway::Engine::Sequential ? "Secuencial" : e == conway::Engine::OpenMP ? "OpenMP" : "MPI";
 }
 
 void renderMenu(const AppState& state, std::size_t selected, const std::string& message) {
@@ -330,7 +337,8 @@ PathRequest askPath() {
 bool loadInto(AppState& state, const std::string& path, std::string& message) {
     try {
         InputData data = loadInput(path);
-
+        if (state.simulation && !state.simulation->closed()) state.simulation->close();
+        state.replaceSimulation = true;
         state.input = std::move(data);
         state.path = path;
         message = "Entrada cargada: " + path;
@@ -542,9 +550,21 @@ bool changeInput(AppState& state, std::string& message) {
 // confirmacion del motor elegido cuando hay cambio.
 bool selectEngineUI(AppState& state, std::string& message) {
     const bool interactive = controls::isInteractive();
-    constexpr std::size_t kOptionCount = 3;
+    constexpr std::size_t kOptionCount = 5;
     std::size_t selected = 0;
     auto lastSize = controls::terminalSize();
+    auto mpiChoice = [&](bool configure) {
+        if (configure) {
+            const auto value = controls::readLine("Procesos MPI P (1..1024; recomendados " + std::to_string(recommendedMPIProcesses(state.input ? state.input->height : 1024)) + "): ");
+            const auto count = value ? parseMPIProcesses(*value) : std::nullopt;
+            if (!count) { message = "Error: P debe estar entre 1 y 1024."; return; }
+            state.mpiProcesses = *count;
+            message = "Procesos MPI: " + std::to_string(*count) + " (sin sobresuscripción).";
+        } else {
+            state.engine = Engine::MPI;
+            message = "Motor seleccionado: MPI";
+        }
+    };
 
     while (true) {
         renderEngineMenu(state, selected);
@@ -578,6 +598,8 @@ bool selectEngineUI(AppState& state, std::string& message) {
                         state.engine = conway::Engine::OpenMP;
                         message = "Motor seleccionado: OpenMP";
                         return true;
+                    } else if (selected == 2 || selected == 3) {
+                        mpiChoice(selected == 3); return true;
                     } else {
                         return true;  // Volver
                     }
@@ -593,6 +615,8 @@ bool selectEngineUI(AppState& state, std::string& message) {
                     state.engine = conway::Engine::OpenMP;
                     message = "Motor seleccionado: OpenMP";
                     return true;
+                case 'm': case 'M': mpiChoice(false); return true;
+                case 'p': case 'P': mpiChoice(true); return true;
                 case 'x': case 'X': case 27:  // 27 = Esc
                     return true;
                 default:
@@ -615,6 +639,8 @@ bool selectEngineUI(AppState& state, std::string& message) {
             message = "Motor seleccionado: OpenMP";
             return true;
         }
+        if (*line == "m" || *line == "M") { mpiChoice(false); return true; }
+        if (*line == "p" || *line == "P") { mpiChoice(true); return true; }
         if (*line == "x" || *line == "X" || *line == "0") {
             return true;
         }
@@ -652,7 +678,7 @@ void renderSimulation(
         header.filename = state.path;
         header.boardWidth = game.width();
         header.boardHeight = game.height();
-        header.statusText = session.isRunning() ? "En ejecución" : "Pausado";
+        header.statusText = session.busy() ? "Operación pendiente" : session.isRunning() ? "En ejecución" : "Pausado";
 
         ui::ExecutionInfo execution;
         execution.generation = game.generation();
@@ -665,6 +691,7 @@ void renderSimulation(
                 (game.generation() == 0 ? " | efectivos pendientes"
                     : " | efectivos observados: " +
                         std::to_string(core::last_openmp_team_size()))
+            : state.engine == Engine::MPI ? "MPI | procesos: " + std::to_string(state.mpiProcesses) + " | U recuperar, Q abandonar, X menú"
             : "Motor: Secuencial";
 
         const std::size_t frameWidth = std::max<std::size_t>(1, terminal.columns);
@@ -704,9 +731,9 @@ void renderSimulation(
             visibleColumns, boardRows, controls::supportsAnsiColors(), cellWidth, cellHeight};
 
         ui::BoardPanelData current{"CURRENT", ui::renderBoardLines(game, boardOptions)};
-        Game nextGame = game;
-        nextGame.step();
-        ui::BoardPanelData next{"NEXT", ui::renderBoardLines(nextGame, boardOptions)};
+        ui::BoardPanelData next = session.preview()
+            ? ui::BoardPanelData{"NEXT", ui::renderBoardLines(*session.preview(), boardOptions)}
+            : ui::BoardPanelData{"MPI · snapshot confirmado", {session.busy() ? "Operación pendiente" : "Sin vista previa especulativa", session.error()}};
         const ui::SimulationLayoutConfig layout{
             frameWidth,
             std::max(current.lines.size(), next.lines.size()),
@@ -739,10 +766,10 @@ bool applySimulationCommand(char command, SimulationSession& session, bool& chan
                 return true;
             case 'x':
             case 'X':
-            case 'q':
-            case 'Q':
             case 27:
-                return false;
+                session.pause(); return false;
+            case 'u': case 'U': session.recover(); changed = true; return true;
+            case 'q': case 'Q': session.close(); changed = true; return true;
             default:
                 return true;
         }
@@ -752,12 +779,26 @@ bool runVisualization(AppState& state) {
         if (state.engine == Engine::OpenMP) {
             omp_set_num_threads(state.requestedOpenMPThreads);
         }
-        SimulationSession session(*state.input, state.engine);
+        if (state.simulation) state.simulation->poll();
+        if (state.replaceSimulation && state.simulation && !state.simulation->closed()) {
+            std::cout << "Cerrando la sesión anterior; vuelve a Visualización al terminar.\n";
+            return true;
+        }
+        if (!state.simulation || state.simulation->closed()) {
+            state.simulation = std::make_unique<SimulationSession>(*state.input, state.engine, defaultMPIOptions(state.mpiProcesses));
+            state.replaceSimulation = false;
+        } else if (state.simulation->engine() != state.engine || state.simulation->processes() != state.mpiProcesses)
+            state.simulation->configure(state.engine, state.mpiProcesses);
+        auto& session = *state.simulation;
         const bool interactive = controls::isInteractive();
         bool redraw = true;
         controls::TerminalSize lastSize = controls::terminalSize();
 
         while (true) {
+            const bool wasBusy = session.busy();
+            session.poll();
+            if (wasBusy != session.busy()) redraw = true;
+            if (session.closed()) return true;
             const controls::TerminalSize currentSize = controls::terminalSize();
             if (currentSize != lastSize) {
                 lastSize = currentSize;
@@ -796,10 +837,19 @@ bool runVisualization(AppState& state) {
                 continue;
             }
 
+            // Deliver asynchronous snapshots even while the line-based client
+            // is waiting for its next command. Never wait on mpi::Client here.
+            if (session.busy() || session.isRunning()) {
+                pollfd input{STDIN_FILENO,POLLIN,0};
+                if (::poll(&input,1,150) <= 0) {
+                    session.advanceIfRunning(); redraw = true; continue;
+                }
+            }
             const auto line = controls::readLine("");
             if (!line) {
                 return false;
             }
+            session.poll();
             const char command = line->empty() ? '\0' : (*line)[0];
             if (!applySimulationCommand(command, session, redraw)) {
                 return true;
@@ -815,6 +865,10 @@ bool waitForModuleReturn(bool interactive) {
 }
 
 bool runBenchmarkUI(AppState& state, std::string& message) {
+        if (state.simulation && !state.simulation->closed() &&
+            (state.simulation->engine() == Engine::MPI || state.simulation->busy())) {
+            message = "Abandona la sesión MPI con Q antes de medir."; return true;
+        }
         if (!ensureInput(state, message)) {
             return false;
         }
@@ -1004,6 +1058,7 @@ int runLoop() {
         message.clear();
 
         auto action = pollMenuAction(interactive, lastSize);
+        if (state.simulation) state.simulation->poll();
 
         if (!action) {
             break;
@@ -1037,9 +1092,9 @@ int runLoop() {
                 }
                 break;
             case MenuAction::SelectEngine:
-                if (!selectEngineUI(state, message)) {
-                    return 0;
-                }
+                if (!selectEngineUI(state, message)) return 0;
+                if (state.simulation && !state.simulation->closed() && state.engine != Engine::MPI)
+                    state.simulation->configure(state.engine, state.mpiProcesses);
                 break;
             case MenuAction::ConfigureThreads:
                 if (!configureThreadsUI(state, message)) {
@@ -1067,8 +1122,7 @@ int runLoop() {
 int run() {
     try {
         (void)std::setlocale(LC_CTYPE, "");
-        if (controls::isInteractive() && controls::isOutputInteractive() &&
-            controls::terminalSize().columns > 0) {
+        if (controls::isInteractive() && controls::isOutputInteractive()) {
             return runFtxuiApp();
         }
         return runLoop();

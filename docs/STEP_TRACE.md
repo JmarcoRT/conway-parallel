@@ -21,9 +21,11 @@ no por inicio o finalización. No hay campos de timestamps ni
 `begin_worker_durations_ms`. Una duración no permite reconstruir el orden de
 trabajo ni separar espera y cómputo activo; no se suman duraciones concurrentes.
 
-`DidacticController` usa el máximo intervalo de trabajador como duración de
-reproducción y revela las células mediante progreso relativo. Esa animación no
-es una cronología observada ni una medición de tiempo de CPU.
+`DidacticController` usa un reloj de presentación independiente: inicialmente
+2 segundos por etapa a 1×. Revela filas sobre cobertura observada, sin reconstruir
+orden de células/hilos a partir de sus duraciones. La reproducción automática,
+pausa y paso manual se describen en [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+No es cronología observada ni una medición de CPU.
 
 El benchmark histórico y los ejecutores configurables utilizan `runOnce()` en
 `src/app/benchmark_detail.hpp`: reloj externo del lote de `Game::step()` sin

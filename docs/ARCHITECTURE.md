@@ -1,24 +1,30 @@
 # Arquitectura vigente
 
-Este documento describe el código implementado. Los planes MPI/Pthreads no son
-motores terminados. El [índice](README.md) separa contratos y registros históricos.
+Este documento describe el código implementado. MPI está integrado en simulación
+local mediante procesos separados; Pthreads continúa pendiente. El [índice](README.md) separa contratos y registros históricos.
 
 ## Capas y dependencias
 
 | Capa | Responsabilidad | Dependencias propias |
 |---|---|---|
 | input | Parseo, validación representable y generación determinista | C++ estándar |
-| core | GameState, Game, B3/S23 y motores | InputData; OpenMP solo en su motor |
-| app: sesiones | Control de simulación y reproducción didáctica | Game, trazas |
-| app: experimentos | Medición, muestras, estadísticas y escalabilidad | Game, validación, OpenMP |
+| core | GameState, Game, B3/S23 y motores | InputData; runtimes solo en motores específicos |
+| app: sesiones | Simulación local/MPI y reproducción didáctica local/MPI | Game, trazas, cliente MPI en worker |
+| app: experimentos | Medición, muestras, estadísticas y escalabilidad | Game, validación, OpenMP, cliente MPI externo |
 | app: exportación | Contexto, metadatos y CSV | Resultados experimentales |
 | app: FTXUI | Navegación, formularios, workers y vistas | Servicios de aplicación y FTXUI |
 | ui | Renderizadores textuales, layout y demos | Estado del juego |
-| mpi | Partición y estado local del prototipo | GameState e InputData |
+| mpi | Partición, evolución, transporte y supervisión local | GameState, InputData, POSIX; MPI en el trabajador |
 
 `src/main.cpp` llama a `app::run()`. Esta función selecciona FTXUI cuando entrada
 y salida son TTY, y conserva el recorrido textual para pipes. La UI no contiene
-reglas B3/S23. Los experimentos no dependen de FTXUI ni MPI.
+reglas B3/S23. Los experimentos no dependen de FTXUI; MPI se ejecuta en un
+trabajador externo, mediante el cliente Unix.
+
+`SimulationSession` usa el cliente de [MPI_SESSION.md](MPI_SESSION.md) en un
+worker exclusivo. `mpi::Client` lanza `conway_mpi_worker` por sesión y usa un
+socket Unix con rank 0. La UI publica snapshots confirmados mediante eventos;
+las copias de `Game` nunca poseen un comunicador ni llaman a MPI.
 
 ## Entrada y memoria
 
@@ -43,6 +49,9 @@ ambos buffers conservan el halo cero. El swap se realiza una vez al terminar.
 
 `next_cell_state()` aplica B3/S23 a ocho vecinos. No se duplica en los motores.
 `Game::step()` despacha según `Engine::Sequential` o `Engine::OpenMP`.
+La evolución MPI independiente usa `core::step_mpi` sobre franjas locales y no
+forma parte de este despacho. Intercambia halos con vecinos no vacíos, reutiliza
+el recorrido secuencial y reduce la población global. Véase [MPI_PROTOTYPE.md](MPI_PROTOTYPE.md).
 
 Secuencial recorre filas y columnas; OpenMP reparte filas completas con
 `schedule(static)`. Todos leen current; cada hilo escribe filas disjuntas de next.
@@ -56,8 +65,11 @@ tipos compartidos. No se deduce una asignación observada a partir de hilos pedi
 
 ## Simulación e instrumentación
 
-`SimulationSession` mantiene entrada inicial, Game, motor y reproducción.
-El reinicio reconstruye el juego y pausa. La presentación NEXT usa una copia.
+`SimulationSession` mantiene entrada inicial, snapshot Game, motor y reproducción.
+El reinicio restaura la referencia inicial y pausa. Configurar motor/P conserva
+el estado confirmado y dicha referencia. MPI ejecuta cliente/cierre fuera de UI
+y entrega un snapshot por operación; no acumula avances. La presentación NEXT
+local usa una copia precomputada fuera del render; MPI solo muestra CURRENT.
 
 StepTrace es opcional: sin sink no se capturan relojes ni registros didácticos.
 El sink se invoca una vez en el hilo original, después del trabajo paralelo.
@@ -65,9 +77,11 @@ Los trabajadores sin filas no aparecen, aunque formen parte del equipo efectivo.
 Los intervalos históricos no tienen el mismo alcance en ambos motores; OpenMP
 incluye espera en la barrera del for. Contrato exacto: [STEP_TRACE.md](STEP_TRACE.md).
 
-`DidacticController` prepara PRE/POST y traza en un worker, publica bajo mutex y
-reproduce progreso relativo. La lista por thread_id no informa orden temporal.
-No se reconstruye una línea temporal real entre hilos.
+`DidacticController` prepara PRE/POST y traza local/MPI en un único worker.
+La UI acepta entregas por epoch y reproduce etapas con reloj independiente
+(2 segundos iniciales), sin reconstruir cronología de hilos/ranks. Reinicio y
+cierre son asíncronos; la reserva MPI bloquea otras sesiones y mediciones.
+Contrato: [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
 
 ## Medición y resultados
 
@@ -122,10 +136,11 @@ Existe como API; no hay botón FTXUI. Véase [EXPERIMENT_CSV.md](EXPERIMENT_CSV.
 
 ## MPI, Pthreads y límites actuales
 
-MPI solo distribuye filas, construye estados locales y reensambla para verificar.
-No ejecuta generaciones ni intercambia halos entre ranks. Una partición local
-puede tener cero filas; no se confunde ese contrato con Game global no vacío.
-[Detalles del prototipo](MPI_PROTOTYPE.md). Pthreads no tiene motor implementado.
+MPI evoluciona con halos, se compara contra secuencial y se integra en la
+simulación mediante un trabajador externo. Una partición local puede tener cero
+filas; no se confunde con Game global no vacío. El controlador didáctico MPI y sus vistas FTXUI están disponibles. La API experimental y sus formularios/vistas FTXUI admiten MPI con lotes temporizados.
+Véase [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md). Véanse [evolución](MPI_PROTOTYPE.md) y [sesiones](MPI_SESSION.md).
+Pthreads no tiene motor implementado.
 
 No hay historial persistente, publicación automática ni campaña de rendimiento
 certificada. Los presupuestos estiman payload, no RSS. Rutas POSIX y preset

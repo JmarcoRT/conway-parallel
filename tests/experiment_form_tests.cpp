@@ -9,6 +9,9 @@ int main() {
         if (!condition) { ++failures; std::cerr << "FAIL: " << label << '\n'; }
     };
     auto draft = standardExperimentForm(false, 37, false);
+    check(draft.sequential && !draft.openmp && !draft.mpi && !validateExperimentForm(draft,false,nullptr).config,
+          "only sequential selected; at least two required");
+    draft.openmp=true;
     const auto original = draft;
     auto validate = [&](bool scaling = false, const InputData* loaded = nullptr) {
         return validateExperimentForm(draft, scaling, loaded);
@@ -24,6 +27,7 @@ int main() {
     check(draft.values == original.values && draft.source == original.source, "validation preserves draft");
     auto rejected = [&](ExperimentField field, const std::string& text, bool scaling = false) {
         draft = standardExperimentForm(scaling, 2, false);
+        draft.openmp=true;
         draft.values[static_cast<std::size_t>(field)] = text;
         const auto result = validate(scaling);
         check(!result.config && !result.errors[static_cast<std::size_t>(field)].empty(), "invalid field has local error");
@@ -70,6 +74,7 @@ int main() {
     }
     InputData loaded{2, 1, {0, 1}};
     draft = standardExperimentForm(false, 4, true);
+    draft.openmp=true;
     draft.values[0] = draft.values[1] = draft.values[2] = draft.values[3] = "invalid inactive value";
     valid = validate(false, &loaded);
     check(valid.config && !valid.config->generated && loaded.cells == std::vector<std::uint8_t>{0,1},
@@ -88,6 +93,21 @@ int main() {
     draft = standardExperimentForm(true, 1, false);
     draft.values[0] = draft.values[1] = "8000"; // Generator fits (3 buffers), scaling does not (5 buffers).
     check(!validate(true).config && !validate(true).errors[0].empty(), "scaling total board payload enforced");
+    draft=standardExperimentForm(false,2,false);draft.mpi=true;
+    draft.values[7]="inactive invalid threads";
+    valid=validate();
+    check(valid.config && valid.config->comparison.participants.size()==2 &&
+        valid.config->comparison.participants[1].requestedProcesses==1,"MPI processes separate; inactive threads ignored");
+    draft.openmp=true;draft.values[7]="3";draft.values[9]="2";
+    valid=validate();check(valid.config && valid.config->comparison.participants.size()==3 &&
+        valid.config->comparison.participants[1].requestedThreads==3 && valid.config->comparison.participants[2].requestedProcesses==2,"three participant resources");
+    draft.sequential=false;check(validate().config.has_value(),"OpenMP and MPI without sequential accepted");
+    draft.values[9]="1025";check(!validate().config && !validate().errors[9].empty(),"invalid MPI P");
+    draft.values[9]="2";draft.values[4]="100001";check(!validate().config && !validate().errors[4].empty(),"MPI batch limit");
+    draft=standardExperimentForm(true,2,false);draft.parallelEngine=1;draft.values[7]="4,1,2";
+    valid=validate(true);check(valid.config && valid.config->scaling.parallelEngine==conway::Engine::MPI &&
+        valid.config->scaling.requestedProcesses==std::vector<std::int64_t>{4,1,2},"MPI scaling list preserves order");
+    draft.values[7]="1,1025";check(!validate(true).config,"MPI list bounds");
     std::cout << (failures ? "FAIL" : "PASS") << ": experimental form validation without board allocation\n";
     return failures ? 1 : 0;
 }

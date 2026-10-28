@@ -15,6 +15,15 @@ std::size_t retained(const StoredExperiment& stored) {
             value = checkedAdd(value, checkedMultiply(result.summary.points.capacity(), sizeof(ScalingPoint)));
             value = checkedAdd(value, checkedMultiply(result.config.requestedThreads.capacity(), sizeof(std::int64_t)));
         }
+        if(result.study) {
+            const auto& study=*result.study;
+            value=checkedAdd(value,checkedMultiply(study.samples.capacity(),sizeof(StudySample)));
+            value=checkedAdd(value,checkedMultiply(study.sessions.capacity(),sizeof(StudySession)));
+            value=checkedAdd(value,checkedMultiply(study.configurations.capacity(),sizeof(ExecutionConfiguration)));
+            value=checkedAdd(value,checkedMultiply(study.summaries.capacity(),sizeof(StudySummary)));
+            for(const auto& session:study.sessions)
+                value=checkedAdd(value,checkedAdd(session.runtime.capacity()+session.diagnostic.capacity(),checkedMultiply(session.workerPids.capacity(),sizeof(int))));
+        }
         return value;
     }, stored.result);
     for (const auto& field : stored.context.fields)
@@ -28,8 +37,14 @@ void preflight(const ExecutionDescription& d, std::size_t uiBytes, const StoredE
     bytes = checkedAdd(bytes, checkedMultiply(4, padded)); // Oracle and current Game.
     if (previous) bytes = checkedAdd(bytes, retained(*previous));
     const auto repetitions = static_cast<std::size_t>(d.scaling ? d.config.scaling.repetitions : d.config.comparison.repetitions);
-    const auto threads = d.scaling ? d.config.scaling.requestedThreads.size() : 1;
+    const bool generalized=d.scaling?d.config.scaling.parallelEngine==Engine::MPI:!d.config.comparison.participants.empty();
+    const auto threads = d.scaling ? (d.config.scaling.parallelEngine==Engine::MPI?
+        d.config.scaling.requestedProcesses.size():d.config.scaling.requestedThreads.size()) :
+        (generalized?d.config.comparison.participants.size()-1:1);
     const auto samples = checkedMultiply(checkedAdd(threads, 1), repetitions);
+    if(generalized) {
+        bytes=checkedAdd(bytes,checkedMultiply(samples,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
+    }
     // Result records plus summarization workspace and retained configuration copies.
     bytes = checkedAdd(bytes, checkedMultiply(samples, d.scaling ? sizeof(ScalingSample) : sizeof(ExperimentSample)));
     bytes = checkedAdd(bytes, checkedMultiply(checkedMultiply(2, repetitions), sizeof(ExperimentSample)));
@@ -68,6 +83,13 @@ bool ExperimentExecution::start(bool scaling, ExperimentFormConfig config, const
                                 std::string name, std::size_t uiBytes) {
     std::lock_guard lock(mutex_);
     if (state_.active() || stopping_) return false;
+    if(state_.latest && std::visit([](const auto& result) {
+            return result.study && !result.study->cleanupConfirmed;
+        },state_.latest->result)) {
+        state_.phase=ExecutionPhase::Error;
+        state_.error="Previous MPI cleanup is unconfirmed; no new measurement was started.";
+        return true;
+    }
     ExecutionDescription description{state_.description.id + 1, scaling, std::move(config), std::move(name)};
     if (description.config.generated) {
         description.width = description.config.generated->width;
@@ -115,6 +137,13 @@ void ExperimentExecution::loop() {
             result = std::make_shared<StoredExperiment>(backend_(request, [this, id](ExecutionPhase phase) {
                 if (publishPhase(id, phase)) notify_();
             }));
+            error=std::visit([](const auto& data) {
+                if(!data.study) return std::string{};
+                if(!data.study->diagnostic.empty()) return data.study->diagnostic;
+                if(!data.study->complete || !data.study->cleanupConfirmed)
+                    return std::string("Experimental study is incomplete or MPI cleanup is unconfirmed.");
+                return std::string{};
+            },result->result);
         } catch (const std::exception& failure) { error = failure.what(); }
         catch (...) { error = "Error desconocido durante el experimento."; }
         // Drop the board before publishing terminal state/accepting the next job.
@@ -122,7 +151,10 @@ void ExperimentExecution::loop() {
         {
             std::lock_guard lock(mutex_);
             if (state_.description.id == id) {
-                if (result) { state_.latest = std::move(result); state_.phase = ExecutionPhase::Finished; }
+                if (result) {
+                    state_.latest = std::move(result); state_.error=std::move(error);
+                    state_.phase = state_.error.empty()?ExecutionPhase::Finished:ExecutionPhase::Error;
+                }
                 else { state_.error = std::move(error); state_.phase = ExecutionPhase::Error; }
             }
         }

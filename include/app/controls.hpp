@@ -25,6 +25,7 @@ struct TimedKeyPress {
 };
 
 struct TerminalSize {
+    // Dimensiones de respaldo cuando no se obtiene un tamaño válido de la terminal.
     std::size_t columns{80};
     std::size_t rows{24};
 

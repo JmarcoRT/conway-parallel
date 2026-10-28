@@ -30,7 +30,7 @@ struct ExecutionSnapshot {
     ExecutionPhase phase{ExecutionPhase::Ready};
     ExecutionDescription description;
     std::string error;
-    std::shared_ptr<const StoredExperiment> latest; // Last successful delivery survives failures.
+    std::shared_ptr<const StoredExperiment> latest; // Last delivery, including partial experimental failure evidence.
     bool active() const { return phase == ExecutionPhase::Preparing || phase == ExecutionPhase::Running; }
 };
 class ExperimentExecution {

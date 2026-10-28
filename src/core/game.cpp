@@ -115,6 +115,8 @@ void Game::step() {
         case Engine::OpenMP:
             core::step_openmp(state_);
             return;
+        case Engine::MPI:
+            throw std::logic_error("MPI requiere una sesion distribuida, no Game::step()");
     }
     throw std::logic_error("Motor de ejecucion desconocido");
 }
@@ -127,6 +129,8 @@ void Game::step(core::StepTraceSink* sink) {
         case Engine::OpenMP:
             core::step_openmp(state_, sink);
             return;
+        case Engine::MPI:
+            throw std::logic_error("MPI requiere una sesion distribuida, no Game::step()");
     }
     throw std::logic_error("Motor de ejecucion desconocido");
 }

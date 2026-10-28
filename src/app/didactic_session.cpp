@@ -1,467 +1,278 @@
 #include "app/didactic_session.hpp"
-
-#include <algorithm>
+#include "app/simulation.hpp"
 #include <omp.h>
-
-#include <cstddef>
-#include <cstdint>
+#include <algorithm>
+#include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace conway::app {
-
 namespace {
-
-// Sink de captura que retiene la unica traza que recibe. Dise~nado
-// para el camino didactico: el worker crea este sink, lo entrega al
-// motor, y al salir del step toma la traza por movimiento.
-class CapturingSink : public conway::core::StepTraceSink {
+class CapturingSink final:public core::StepTraceSink {
 public:
-    void onStepComplete(conway::core::StepTrace&& trace) override {
-        captured_ = std::move(trace);
-    }
-    bool has() const { return captured_.has_value(); }
-    const conway::core::StepTrace& get() const { return *captured_; }
-    conway::core::StepTrace take() { return std::move(*captured_); }
-private:
-    std::optional<conway::core::StepTrace> captured_;
+    std::optional<core::StepTrace> trace;
+    void onStepComplete(core::StepTrace&& value) override {trace=std::move(value);}
 };
-
-// Convierte las celdas de un Game a InputData. La generacion se
-// pierde (InputData no la transporta); el llamante debe llevar
-// control de la misma si la necesita.
-InputData gameToInputData(const conway::Game& g) {
-    InputData in;
-    in.width = g.width();
-    in.height = g.height();
-    in.cells.assign(in.width * in.height, 0);
-    for (std::size_t r = 0; r < g.height(); ++r) {
-        for (std::size_t c = 0; c < g.width(); ++c) {
-            in.cells[r * g.width() + c] = g.isAlive(r, c) ? 1 : 0;
+class CaptureBackend final:public DidacticBackend {
+    std::unique_ptr<mpi::Client> client_;
+    std::optional<Game> local_;
+    bool uncertain_=false;
+public:
+    bool ownsMPI() const noexcept override {return bool(client_) || uncertain_;}
+    bool cleanupConfirmed() const noexcept override {return !client_ && !uncertain_;}
+    void close() override {
+        if(client_) {
+            try {client_->close();}
+            catch(...) {uncertain_=!client_->cleanupConfirmed();client_.reset();local_.reset();throw;}
+            uncertain_=!client_->cleanupConfirmed();client_.reset();
         }
+        local_.reset();
+        if(uncertain_) throw std::runtime_error("Limpieza de la sesión MPI didáctica no confirmada; no se permite otra sesión.");
     }
-    return in;
-}
-
-}  // namespace
-
-DidacticController::DidacticController() = default;
-
-DidacticController::~DidacticController() {
-    joinWorker();
-}
-
-void DidacticController::setInitialInput(const InputData& input) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    initial_input_ = input;
-    has_initial_ = true;
-}
-
-const std::string& DidacticController::errorMessage() const {
-    static const std::string empty;
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    return error_;
-}
-
-void DidacticController::joinWorker() {
-    if (worker_.joinable()) {
-        worker_.join();
-    }
-}
-
-void DidacticController::waitUntilReady() {
-    std::unique_lock<std::mutex> lock(data_mutex_);
-    data_cv_.wait(lock, [this] {
-        const Phase p = phase_.load(std::memory_order_acquire);
-        return p == Phase::Ready || p == Phase::Error || p == Phase::Idle;
-    });
-}
-
-void DidacticController::startPreparation(const InputData& pre_input,
-                                          conway::Engine engine,
-                                          int requested_threads) {
-    // Construye un Game explicitamente en generacion 0. Cualquier
-    // generacion previa del controlador (de un advance anterior) se
-    // reinicia al inicio del patron.
-    conway::Game pre(pre_input);
-    pre.setEngine(engine);
-    prepareFromGame(std::move(pre), engine, requested_threads,
-                    /*reset_to_initial=*/true);
-}
-
-void DidacticController::prepareSynchronously(const InputData& pre_input,
-                                               conway::Engine engine,
-                                               int requested_threads) {
-    conway::Game pre(pre_input);
-    pre.setEngine(engine);
-    prepareFromGameSync(std::move(pre), engine, requested_threads,
-                        /*reset_to_initial=*/true);
-}
-
-void DidacticController::prepareFromGame(conway::Game pre,
-                                          conway::Engine engine,
-                                          int requested_threads,
-                                          bool reset_to_initial) {
-    // Une cualquier worker previo. En la practica el llamante ya
-    // espera a Ready antes de pedir otro step, pero por seguridad
-    // ante un cambio rapido de modo lo manejamos aqui.
-    joinWorker();
-
-    {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        engine_ = engine;
-        requested_threads_ = requested_threads;
-        pre_step_.reset();
-        post_step_.reset();
-        trace_.reset();
-        error_.clear();
-        phase_.store(Phase::Preparing, std::memory_order_release);
-        if (reset_to_initial) {
-            // Tomamos las celdas del Game como nuevo initial input.
-            // Importante: la generacion del initial siempre es 0
-            // (es la primera generacion del patron).
-            initial_input_ = gameToInputData(pre);
-            has_initial_ = true;
-            current_generation_ = pre.generation();
-        }
-    }
-    clearPlayback();
-
-    // Para el worker, `post` es una copia de `pre` que se mutara con
-    // step(). Asi `pre` queda intacto como CURRENT.
-    conway::Game post = pre;
-    post.setEngine(engine);
-
-    worker_ = std::thread([this, pre_in = std::move(pre),
-                           post_in = std::move(post),
-                           engine, requested_threads]() mutable {
-        try {
-            if (engine == conway::Engine::OpenMP) {
-                omp_set_num_threads(requested_threads);
-            }
-            post_in.setEngine(engine);
-            CapturingSink sink;
-            post_in.step(&sink);
-            if (!sink.has()) {
-                std::lock_guard<std::mutex> lock(data_mutex_);
-                error_ = "El motor no emitio StepTrace";
-                phase_.store(Phase::Error, std::memory_order_release);
+    std::shared_ptr<const DidacticCapture> capture(const DidacticRequest& q) override {
+        if(uncertain_) throw std::runtime_error("Limpieza MPI anterior no confirmada.");
+        if(q.reset) {
+            close();
+            if(q.engine==Engine::MPI) {
+                (void)mpi::trace_payload_size(q.initial->width,q.initial->height,q.mpiOptions.processes,q.selection);
+                try {client_=std::make_unique<mpi::Client>(q.mpiOptions);}
+                catch(const mpi::ClientError& e) {uncertain_=!e.cleanupConfirmed;throw;}
+                client_->load(*q.initial);
             } else {
-                storeReadyData(std::move(pre_in), std::move(post_in),
-                               sink.take());
-            }
-        } catch (const std::exception& e) {
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            error_ = std::string("Excepcion durante el step: ") + e.what();
-            phase_.store(Phase::Error, std::memory_order_release);
-        } catch (...) {
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            error_ = "Excepcion desconocida durante el step";
-            phase_.store(Phase::Error, std::memory_order_release);
-        }
-        data_cv_.notify_all();
-    });
-}
-
-void DidacticController::prepareFromGameSync(conway::Game pre,
-                                              conway::Engine engine,
-                                              int requested_threads,
-                                              bool reset_to_initial) {
-    joinWorker();
-    {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        engine_ = engine;
-        requested_threads_ = requested_threads;
-        pre_step_.reset();
-        post_step_.reset();
-        trace_.reset();
-        error_.clear();
-        phase_.store(Phase::Preparing, std::memory_order_release);
-        if (reset_to_initial) {
-            initial_input_ = gameToInputData(pre);
-            has_initial_ = true;
-            current_generation_ = pre.generation();
-        }
-    }
-    clearPlayback();
-
-    try {
-        if (engine == conway::Engine::OpenMP) {
-            omp_set_num_threads(requested_threads);
-        }
-        conway::Game post = pre;
-        post.setEngine(engine);
-        CapturingSink sink;
-        post.step(&sink);
-        if (!sink.has()) {
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            error_ = "El motor no emitio StepTrace";
-            phase_.store(Phase::Error, std::memory_order_release);
-        } else {
-            storeReadyData(std::move(pre), std::move(post), sink.take());
-        }
-    } catch (const std::exception& e) {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        error_ = std::string("Excepcion durante el step: ") + e.what();
-        phase_.store(Phase::Error, std::memory_order_release);
-    } catch (...) {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        error_ = "Excepcion desconocida durante el step";
-        phase_.store(Phase::Error, std::memory_order_release);
-    }
-}
-
-void DidacticController::storeReadyData(conway::Game pre, conway::Game post,
-                                         conway::core::StepTrace trace) {
-    {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        pre_step_ = std::move(pre);
-        post_step_ = std::move(post);
-        trace_ = std::move(trace);
-        // La generacion que se muestra como "CURRENT" es la del Game
-        // pre, que el worker construyo con la generacion correcta
-        // (preservada por copia o fijada por el constructor con
-        // start_generation).
-        current_generation_ = pre_step_->generation();
-        // Inicializar toda la entrega antes de publicar Ready. El worker no
-        // vuelve a tocar la reproduccion despues; desde Ready pertenece a UI.
-        computeTotalPlaybackNs(*trace_);
-        phase_.store(Phase::Ready, std::memory_order_release);
-    }
-}
-
-void DidacticController::computeTotalPlaybackNs(const conway::core::StepTrace& trace) {
-    std::uint64_t m = 0;
-    for (const auto& w : trace.workers) {
-        if (w.loop_duration > m) m = w.loop_duration;
-    }
-    total_playback_ns_ = (m == 0) ? 1 : m;
-}
-
-void DidacticController::clearPlayback() {
-    total_playback_ns_ = 0;
-    current_playback_ns_ = 0;
-    playing_ = false;
-}
-
-void DidacticController::resetPlaybackToZero() {
-    current_playback_ns_ = 0;
-    playing_ = false;
-}
-
-void DidacticController::play() {
-    if (isReady()) playing_ = true;
-}
-
-void DidacticController::pause() {
-    playing_ = false;
-}
-
-void DidacticController::togglePlay() {
-    if (playing_) {
-        pause();
-    } else {
-        play();
-    }
-}
-
-void DidacticController::setSpeed(double multiplier) {
-    if (multiplier < 0.1) multiplier = 0.1;
-    if (multiplier > 8.0) multiplier = 8.0;
-    speed_ = multiplier;
-}
-
-void DidacticController::increaseSpeed() {
-    static const double presets[] = {0.25, 0.5, 1.0, 2.0, 4.0, 8.0};
-    for (double p : presets) {
-        if (p > speed_ + 1e-9) { speed_ = p; return; }
-    }
-    speed_ = 8.0;
-}
-
-void DidacticController::decreaseSpeed() {
-    static const double presets[] = {0.25, 0.5, 1.0, 2.0, 4.0, 8.0};
-    for (int i = static_cast<int>(sizeof(presets) / sizeof(presets[0])) - 1; i >= 0; --i) {
-        if (presets[i] < speed_ - 1e-9) { speed_ = presets[i]; return; }
-    }
-    speed_ = 0.25;
-}
-
-void DidacticController::tick(std::chrono::nanoseconds elapsed_wall) {
-    if (!playing_) return;
-    if (total_playback_ns_ == 0) return;
-    const double inc = static_cast<double>(elapsed_wall.count()) * speed_;
-    const std::uint64_t add = static_cast<std::uint64_t>(inc);
-    std::uint64_t next = current_playback_ns_ + add;
-    if (next >= total_playback_ns_) {
-        current_playback_ns_ = total_playback_ns_;
-        playing_ = false;
-    } else {
-        current_playback_ns_ = next;
-    }
-}
-
-const conway::Game* DidacticController::preStep() const {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    return pre_step_ ? &*pre_step_ : nullptr;
-}
-
-const conway::Game* DidacticController::postStep() const {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    return post_step_ ? &*post_step_ : nullptr;
-}
-
-const conway::core::StepTrace* DidacticController::stepTrace() const {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    return trace_ ? &*trace_ : nullptr;
-}
-
-void DidacticController::advanceGeneration() {
-    if (isPreparing()) return;
-    if (!isReady() && phase() != Phase::Error) return;
-    if (!hasInitialInput()) return;
-
-    // Tomamos una copia del post_step actual, que sera el nuevo pre
-    // (con la generacion preservada). El nuevo post es una segunda
-    // copia sobre la que aplicamos step().
-    // NOTA: NO sobrescribimos initial_input_; resetToInitial debe
-    // regresar siempre al patron original, no al estado actual.
-    std::optional<conway::Game> pre_copy;
-    {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        if (!post_step_) return;
-        pre_copy = *post_step_;  // Game::Game(const Game&) preserva
-                                  // generation.
-    }
-    if (!pre_copy) return;
-
-    prepareFromGame(std::move(*pre_copy), engine_, requested_threads_,
-                    /*reset_to_initial=*/false);
-}
-
-void DidacticController::resetToInitial() {
-    if (isPreparing()) return;
-    if (!hasInitialInput()) return;
-    // startPreparation crea un Game en generacion 0 a partir del
-    // InputData inicial.
-    startPreparation(initial_input_, engine_, requested_threads_);
-}
-
-DidacticFrame DidacticController::snapshot() const {
-    DidacticFrame frame;
-
-    std::optional<conway::Game> pre_copy, post_copy;
-    std::optional<conway::core::StepTrace> trace_copy;
-    Phase p;
-    {
-        std::lock_guard<std::mutex> lock(data_mutex_);
-        p = phase_.load(std::memory_order_acquire);
-        if (p == Phase::Ready) {
-            pre_copy = pre_step_;
-            post_copy = post_step_;
-            trace_copy = trace_;
-        }
-        frame.error_message = error_;
-        frame.current_generation = current_generation_;
-        frame.total_playback_ns = (p == Phase::Ready) ? total_playback_ns_ : 0;
-    }
-
-    frame.is_preparing = (p == Phase::Preparing);
-    frame.phase = p;
-    frame.engine_name = (engine_ == conway::Engine::Sequential)
-                          ? "Secuencial" : "OpenMP";
-    frame.requested_threads = requested_threads_;
-    frame.logical_processors = std::max(1, omp_get_num_procs());
-    frame.playing = playing_;
-    frame.speed = speed_;
-    frame.current_playback_ns = current_playback_ns_;
-
-    if (p != Phase::Ready) {
-        return frame;
-    }
-
-    const auto& pre = *pre_copy;
-    const auto& post = *post_copy;
-    const auto& trace = *trace_copy;
-
-    frame.has_data = true;
-    frame.width = pre.width();
-    frame.height = pre.height();
-    frame.effective_threads = trace.effective_threads;
-    frame.next_generation = post.generation();
-    frame.current_alive = pre.aliveCount();
-    frame.next_alive = post.aliveCount();
-
-    const std::size_t N = pre.width() * pre.height();
-    if (N > 0) {
-        frame.current_alive_map.assign(N, 0);
-        frame.next_alive_map.assign(N, 0);
-        for (std::size_t r = 0; r < pre.height(); ++r) {
-            for (std::size_t c = 0; c < pre.width(); ++c) {
-                const std::size_t idx = r * pre.width() + c;
-                frame.current_alive_map[idx] = pre.isAlive(r, c) ? 1 : 0;
-                frame.next_alive_map[idx] = post.isAlive(r, c) ? 1 : 0;
+                if(q.engine==Engine::OpenMP && q.threads<1) throw std::invalid_argument("Número de hilos inválido.");
+                local_.emplace(*q.initial);local_->setEngine(q.engine);
             }
         }
-    }
-
-    frame.workers.reserve(trace.workers.size());
-    for (std::size_t i = 0; i < trace.workers.size(); ++i) {
-        const auto& w = trace.workers[i];
-        DidacticWorkerView v;
-        v.thread_id = w.thread_id;
-        v.first_row = static_cast<int>(w.first_row);
-        v.end_row = static_cast<int>(w.end_row);
-        v.cells_processed = w.cells_processed;
-        v.loop_duration_ns = w.loop_duration;
-        v.color_index = static_cast<int>(i);
-        v.is_sequential = (trace.workers.size() == 1);
-        if (w.loop_duration == 0) {
-            v.progress = 1.0;
-        } else {
-            v.progress = std::min(1.0,
-                static_cast<double>(current_playback_ns_) /
-                static_cast<double>(w.loop_duration));
-        }
-        frame.workers.push_back(v);
-    }
-
-    if (N > 0) {
-        frame.revealed.assign(N, 0);
-        frame.worker_id.assign(N, -1);
-        const bool full = (current_playback_ns_ >= total_playback_ns_);
-        for (std::size_t i = 0; i < trace.workers.size(); ++i) {
-            const auto& w = trace.workers[i];
-            const int span = w.end_row - w.first_row;
-            if (span <= 0) continue;
-            const int rows_to_reveal = full
-                ? span
-                : std::max(0,
-                    std::min(span,
-                        static_cast<int>(
-                            std::min(1.0,
-                                static_cast<double>(current_playback_ns_) /
-                                static_cast<double>(w.loop_duration))
-                            * span + 0.999)));
-            for (int k = 0; k < rows_to_reveal; ++k) {
-                const std::size_t r =
-                    static_cast<std::size_t>(w.first_row) +
-                    static_cast<std::size_t>(k);
-                if (r < 1 || r > pre.height()) continue;
-                const std::size_t row_idx = r - 1;
-                for (std::size_t c = 0; c < pre.width(); ++c) {
-                    const std::size_t idx = row_idx * pre.width() + c;
-                    if (!frame.revealed[idx]) {
-                        frame.revealed[idx] = 1;
-                        frame.worker_id[idx] =
-                            static_cast<std::int8_t>(i);
-                    }
+        if(q.engine==Engine::MPI) {
+            if(!client_) throw std::runtime_error("Sesión MPI didáctica cerrada; reinicia explícitamente.");
+            auto trace=std::make_shared<const mpi::MpiStepTrace>(client_->traceStep(q.selection));
+            InputData before{trace->width,trace->height,std::vector<std::uint8_t>(trace->width*trace->height)},after=before;
+            for(const auto& rank:trace->ranks) {
+                const auto stride=trace->width+2;
+                for(std::size_t r=0;r<rank.partition.rowCount;++r) {
+                    const auto source=(r+1)*stride+1,target=(rank.partition.firstRow+r)*trace->width;
+                    std::copy_n(rank.currentBefore.begin()+source,trace->width,before.cells.begin()+target);
+                    std::copy_n(rank.currentAfter.begin()+source,trace->width,after.cells.begin()+target);
                 }
             }
+            return std::make_shared<const DidacticCapture>(DidacticCapture{
+                Game(before,trace->generationBefore),Game(after,trace->generationAfter),{},std::move(trace)});
         }
-        frame.fully_revealed = full;
+        if(!local_ || local_->generation()!=q.selection.expectedGeneration) throw std::runtime_error("Generación local didáctica inesperada.");
+        Game before=*local_;
+        if(q.engine==Engine::OpenMP) omp_set_num_threads(q.threads);
+        CapturingSink sink;local_->step(&sink);
+        if(!sink.trace) throw std::runtime_error("El motor no emitió StepTrace.");
+        sink.trace->requested_threads=q.threads;
+        return std::make_shared<const DidacticCapture>(DidacticCapture{std::move(before),*local_,std::move(sink.trace),{}});
     }
-
-    return frame;
+};
 }
-
-}  // namespace conway::app
+std::unique_ptr<DidacticBackend> makeDidacticBackend() {return std::make_unique<CaptureBackend>();}
+struct DidacticController::Worker {
+    struct Delivery {
+        std::uint64_t epoch=0;
+        bool close=false,mpi=false,cleaned=true;
+        std::shared_ptr<const DidacticCapture> capture;
+        std::string error;
+    };
+    std::mutex mutex;
+    std::condition_variable wake,delivered;
+    std::optional<Job> job;
+    std::optional<Delivery> delivery;
+    bool stopping=false;
+    std::unique_ptr<DidacticBackend> backend;
+    std::function<void()> notify;
+    std::thread thread;
+    Worker(std::function<void()> signal,std::unique_ptr<DidacticBackend> source)
+        :backend(std::move(source)),notify(std::move(signal)),thread([this]{run();}) {}
+    ~Worker() {
+        {std::lock_guard lock(mutex);stopping=true;}wake.notify_one();thread.join();
+    }
+    void run() {
+        for(;;) {
+            Job task;
+            {std::unique_lock lock(mutex);wake.wait(lock,[&]{return stopping || job.has_value();});
+             if(stopping) break;task=std::move(*job);job.reset();}
+            Delivery result;result.epoch=task.request.epoch;result.close=task.close;
+            try {
+                if(task.close) backend->close();
+                else {
+                    result.capture=backend->capture(task.request);
+                    if(!result.capture) throw std::runtime_error("El productor no entregó una captura didáctica.");
+                }
+            } catch(const std::exception& e) {
+                result.error=e.what();
+                try {backend->close();} catch(const std::exception& closeError) {result.error+="\nCierre: ";result.error+=closeError.what();}
+            } catch(...) {
+                result.error="Fallo desconocido durante la captura didáctica.";
+                try {backend->close();} catch(...) {result.error+=" Cierre no completado.";}
+            }
+            result.mpi=backend->ownsMPI();result.cleaned=backend->cleanupConfirmed();
+            {std::lock_guard lock(mutex);if(stopping) break;delivery=std::move(result);}
+            delivered.notify_all();if(notify) notify();
+        }
+        try {backend->close();} catch(...) {} // Final shutdown fallback; never an ordinary UI action.
+    }
+};
+DidacticController::DidacticController(std::function<void()> notify,std::unique_ptr<DidacticBackend> backend)
+    :worker_(std::make_unique<Worker>(std::move(notify),backend?std::move(backend):makeDidacticBackend())) {}
+DidacticController::~DidacticController() {worker_.reset();}
+void DidacticController::setInitialInput(const InputData& input) {initial_=std::make_shared<const InputData>(input);}
+const InputData& DidacticController::initialInput() const {static const InputData empty{};return initial_?*initial_:empty;}
+void DidacticController::startPreparation(const InputData& input,Engine engine,int threads,mpi::ClientOptions options,std::size_t row,std::size_t col) {
+    setInitialInput(input);
+    if(engine==Engine::MPI) {
+        const auto defaults=defaultMPIOptions(options.processes);
+        if(options.launcher.empty()) options.launcher=defaults.launcher;
+        if(options.worker.empty()) options.worker=defaults.worker;
+    }
+    configuration_={++epoch_,engine,threads,std::move(options),initial_,{0,row,col},true};
+    capture_.reset();stage_=0;stageElapsed_=0;error_.clear();playing_=true;phase_=Phase::Preparing;
+    enqueue({configuration_,false});
+}
+void DidacticController::prepareSynchronously(const InputData& input,Engine engine,int threads) {startPreparation(input,engine,threads);waitUntilReady();}
+void DidacticController::submit(Job job) {
+    if(job.request.engine==Engine::MPI && !job.close) {mpiActive_=true;cleanupConfirmed_=false;}
+    busy_=true;
+    {std::lock_guard lock(worker_->mutex);worker_->job=std::move(job);}worker_->wake.notify_one();
+}
+void DidacticController::enqueue(Job job) {
+    if(job.request.engine==Engine::MPI && !job.close) {mpiActive_=true;cleanupConfirmed_=false;}
+    if(busy_) pending_=std::move(job);else submit(std::move(job));
+}
+void DidacticController::poll() {
+    std::optional<Worker::Delivery> result;
+    {std::lock_guard lock(worker_->mutex);result=std::move(worker_->delivery);worker_->delivery.reset();}
+    if(!result) return;
+    busy_=false;cleanupConfirmed_=result->cleaned;mpiActive_=result->mpi;
+    auto diagnose=[&](const std::string& message) {
+        if(result->close && !error_.empty()) {
+            if(error_.find(message)==std::string::npos) error_+="\n"+message;
+        } else error_=message;
+    };
+    // Even an obsolete operation cannot hide uncertain MPI cleanup. A close
+    // that returns without throwing must also prove cleanup before replacement.
+    if(!result->cleaned && (result->close || !result->error.empty())) {
+        diagnose(result->error.empty()?"Cierre didáctico sin limpieza confirmada.":result->error);
+        playing_=false;phase_=Phase::Error;mpiActive_=true;pending_.reset();return;
+    }
+    if(!result->error.empty() && result->epoch==epoch_) {
+        diagnose(result->error);playing_=false;phase_=Phase::Error;
+    } else if(result->epoch==epoch_) {
+        if(result->close) {
+            if(result->mpi) {diagnose("Cierre didáctico conserva recursos MPI.");mpiActive_=true;phase_=Phase::Error;}
+            else phase_=Phase::Closed;
+        } else {
+            capture_=std::move(result->capture);stage_=0;stageElapsed_=0;phase_=Phase::Ready;
+        }
+    }
+    if(pending_) {auto job=std::move(*pending_);pending_.reset();submit(std::move(job));}
+}
+void DidacticController::waitUntilReady() {
+    for(;;) {
+        poll();
+        if(!busy_ && !pending_) return;
+        std::unique_lock lock(worker_->mutex);worker_->delivered.wait(lock,[&]{return worker_->delivery.has_value();});
+    }
+}
+void DidacticController::joinWorker() {waitUntilReady();}
+void DidacticController::play() {if(phase_==Phase::Ready || phase_==Phase::Preparing) playing_=true;}
+void DidacticController::pause() {playing_=false;}
+void DidacticController::togglePlay() {if(playing_) pause();else play();}
+void DidacticController::setSpeed(double value) {if(std::isfinite(value)) speed_=std::clamp(value,0.1,8.0);}
+void DidacticController::increaseSpeed() {for(auto v:{.25,.5,1.,2.,4.,8.}) if(v>speed_+1e-9) {speed_=v;return;}}
+void DidacticController::decreaseSpeed() {for(auto v:{8.,4.,2.,1.,.5,.25}) if(v<speed_-1e-9) {speed_=v;return;}}
+void DidacticController::setStageDuration(std::chrono::nanoseconds duration) {
+    if(duration.count()<=0 || duration.count()>std::chrono::hours(1).count()*3600000000000LL)
+        throw std::invalid_argument("Duración de etapa inválida.");
+    // Preserve stage and proportional progress; this is presentation time only.
+    stageElapsed_=static_cast<std::uint64_t>(static_cast<long double>(stageElapsed_)*duration.count()/stageDuration_);
+    stageDuration_=static_cast<std::uint64_t>(duration.count());
+}
+std::vector<DidacticStage> DidacticController::stages() const {
+    if(configuration_.engine==Engine::MPI) return {DidacticStage::MPIState,DidacticStage::MPIExchangeFirst,
+        DidacticStage::MPIExchangeSecond,DidacticStage::MPICell,DidacticStage::MPIBuffers,DidacticStage::GenerationResult};
+    return {DidacticStage::LocalWork,DidacticStage::GenerationResult};
+}
+void DidacticController::nextCapture() {
+    if(busy_ || !capture_ || phase_!=Phase::Ready) return;
+    auto request=configuration_;request.reset=false;request.selection.expectedGeneration=capture_->after.generation();
+    phase_=Phase::Preparing;enqueue({std::move(request),false});
+}
+void DidacticController::nextStage() {
+    if(phase_!=Phase::Ready || !capture_) return;
+    if(stage_+1<stages().size()) {++stage_;stageElapsed_=0;}
+    else {stageElapsed_=stageDuration_;nextCapture();}
+}
+void DidacticController::tick(std::chrono::nanoseconds elapsed) {
+    // No wall time while capturing is charged to a freshly delivered animation.
+    const bool wasPreparing=isPreparing();poll();
+    if(wasPreparing || !playing_ || phase_!=Phase::Ready || elapsed.count()<=0) return;
+    const long double increment=static_cast<long double>(elapsed.count())*speed_;
+    if(increment>=stageDuration_-stageElapsed_) nextStage();
+    else stageElapsed_+=static_cast<std::uint64_t>(increment);
+    // Discard overshoot: one update can never skip the intervening stages or
+    // accumulate capture requests after a delayed UI tick.
+}
+void DidacticController::stepStage() {poll();if(!playing_ && !busy_) nextStage();}
+void DidacticController::advanceGeneration() {poll();if(!playing_ && !busy_) nextCapture();}
+void DidacticController::resetToInitial() {
+    if(!initial_ || phase_==Phase::Closing || phase_==Phase::Closed) return;
+    configuration_.epoch=++epoch_;configuration_.initial=initial_;configuration_.selection.expectedGeneration=0;configuration_.reset=true;
+    capture_.reset();stage_=0;stageElapsed_=0;error_.clear();phase_=Phase::Preparing;
+    enqueue({configuration_,false});
+}
+void DidacticController::close() {
+    if(phase_==Phase::Closing || phase_==Phase::Closed) return;
+    configuration_.epoch=++epoch_;playing_=false;capture_.reset();stage_=0;stageElapsed_=0;phase_=Phase::Closing;
+    enqueue({configuration_,true});
+}
+const Game* DidacticController::preStep() const {return capture_?&capture_->before:nullptr;}
+const Game* DidacticController::postStep() const {return capture_?&capture_->after:nullptr;}
+const core::StepTrace* DidacticController::stepTrace() const {return capture_ && capture_->localTrace?&*capture_->localTrace:nullptr;}
+DidacticFrame DidacticController::snapshot() const {
+    DidacticFrame f;f.phase=phase_;f.is_preparing=isPreparing();f.playing=playing_;f.closing=phase_==Phase::Closing;f.closed=closed();
+    f.owns_mpi=mpiActive_;f.cleanup_confirmed=cleanupConfirmed_;f.error_message=error_;f.speed=speed_;
+    f.engine_name=configuration_.engine==Engine::MPI?"MPI":configuration_.engine==Engine::OpenMP?"OpenMP":"Secuencial";
+    f.requested_threads=configuration_.engine==Engine::MPI?0:configuration_.threads;f.logical_processors=std::max(1,omp_get_num_procs());
+    f.requested_processes=configuration_.engine==Engine::MPI?configuration_.mpiOptions.processes:0;
+    f.stages=stages();f.stage_index=stage_;f.stage_duration_ns=stageDuration_;f.stage_elapsed_ns=stageElapsed_;
+    f.total_playback_ns=stageDuration_*f.stages.size();f.current_playback_ns=stage_*stageDuration_+stageElapsed_;
+    if(!capture_) return f;
+    const auto& before=capture_->before;const auto& after=capture_->after;
+    f.has_data=true;f.current_generation=before.generation();f.next_generation=after.generation();
+    f.captured_generation=after.generation();f.width=before.width();f.height=before.height();f.current_alive=before.aliveCount();f.next_alive=after.aliveCount();
+    const auto current=f.stages[stage_];
+    f.fully_revealed=current==DidacticStage::GenerationResult || current==DidacticStage::MPIBuffers;
+    f.viewed_generation=current==DidacticStage::GenerationResult?after.generation():before.generation();
+    f.revealed.assign(f.width*f.height,0);f.worker_id.assign(f.revealed.size(),-1);
+    f.current_alive_map.reserve(f.revealed.size());f.next_alive_map.reserve(f.revealed.size());
+    for(std::size_t r=0;r<f.height;++r) for(std::size_t c=0;c<f.width;++c) {
+        f.current_alive_map.push_back(before.isAlive(r,c));f.next_alive_map.push_back(after.isAlive(r,c));
+    }
+    const double progress=f.fully_revealed?1.0:current==DidacticStage::LocalWork?static_cast<double>(stageElapsed_)/stageDuration_:0.0;
+    auto reveal=[&](std::size_t first,std::size_t count,int owner) {
+        const auto rows=static_cast<std::size_t>(progress*count);
+        for(std::size_t r=first;r<first+rows;++r) for(std::size_t c=0;c<f.width;++c) {
+            const auto index=r*f.width+c;f.revealed[index]=1;f.worker_id[index]=static_cast<std::int8_t>(owner);
+        }
+    };
+    if(capture_->localTrace) {
+        f.effective_threads=capture_->localTrace->effective_threads;
+        for(std::size_t i=0;i<capture_->localTrace->workers.size();++i) {
+            const auto& w=capture_->localTrace->workers[i];
+            f.workers.push_back({w.thread_id,static_cast<int>(w.first_row),static_cast<int>(w.end_row),w.cells_processed,w.loop_duration,progress,
+                static_cast<int>(i),configuration_.engine==Engine::Sequential});
+            reveal(w.first_row-1,w.end_row-w.first_row,static_cast<int>(i));
+        }
+    } else if(capture_->mpiTrace) {
+        f.mpi_trace=capture_->mpiTrace;f.observed_processes=static_cast<int>(f.mpi_trace->ranks.size());
+        for(const auto& rank:f.mpi_trace->ranks) reveal(rank.partition.firstRow,rank.partition.rowCount,rank.partition.rank);
+    }
+    return f;
+}
+}

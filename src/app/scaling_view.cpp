@@ -1,3 +1,4 @@
+#include "app/experimental_study_view.hpp"
 #include "app/scaling_view.hpp"
 #include <ftxui/screen/string.hpp>
 #include <algorithm>
@@ -12,7 +13,8 @@ using namespace ftxui;
 std::string number(long double value) {
     if (!std::isfinite(value) || value < 0) return "N/D";
     std::ostringstream out;
-    out << std::setprecision(6) << value;
+    out << (((value>0 && value<0.001) || value>=1e6) ? std::scientific : std::fixed)
+        << std::setprecision(3) << value;
     return out.str();
 }
 std::string available(std::optional<double> value, long double factor = 1) {
@@ -62,6 +64,7 @@ void table(Elements& rows, const std::vector<std::string>& headers,
 }
 void graph(Elements& rows,const ScalingResult& result,int columns,Color accent,bool compact=false) {
     const auto points=scalingPlotPoints(result);
+    const std::string resource=result.config.parallelEngine==Engine::MPI?"procesos":"hilos";
     if (points.empty()) { rows.push_back(text("Gráfico N/D: no hay speedups válidos.")); return; }
     long double maximum=1, minimum=1;
     for (const auto& p : points) { maximum=std::max(maximum,static_cast<long double>(p.speedup)); minimum=std::min(minimum,static_cast<long double>(p.speedup)); }
@@ -72,7 +75,7 @@ void graph(Elements& rows,const ScalingResult& result,int columns,Color accent,b
     int slot=3;
     for (const auto& p : points) slot=std::max(slot,static_cast<int>(std::to_string(p.requestedThreads).size())+2);
     const int capacity=std::max(1,(columns-16)/slot);
-    rows.push_back(paragraph(std::string("Eje Y: speedup · escala ")+(logarithmic ? "log1p(S)" : "lineal")+(compact ? "" : ". Referencia 1.00×: igual tiempo que el secuencial.")) | dim);
+    rows.push_back(paragraph(std::string("Eje Y: speedup · X: "+resource+" · escala ")+(logarithmic ? "log1p(S)" : "lineal")+(compact ? "" : ". Referencia 1.00×: igual tiempo que el secuencial.")) | dim);
     // Discrete categories, labelled with the actual request. Split horizontally
     // into groups rather than clipping labels; every group uses the same Y scale.
     for (std::size_t start=0;start<points.size();start+=capacity) {
@@ -94,18 +97,37 @@ void graph(Elements& rows,const ScalingResult& result,int columns,Color accent,b
             const auto pad=(slot-static_cast<int>(value.size()))/2;
             labels+=std::string(pad,' ')+value+std::string(slot-pad-value.size(),' ');
         }
-        rows.push_back(hbox({text("Hilos →") | size(WIDTH,EQUAL,15),text(labels)}));
+        rows.push_back(hbox({text(result.config.parallelEngine==Engine::MPI?"Procesos →":"Hilos →") | size(WIDTH,EQUAL,15),text(labels)}));
     }
-    rows.push_back(paragraph(compact ? "*: medido · --: 1.00× (celda cercana). X: hilos solicitados, categorías ordenadas." : "*: speedup válido observado; --: referencia 1.00× (celda más cercana). Eje X: hilos solicitados como categorías ordenadas; sin interpolación ni línea ideal. N/D se omite, nunca se dibuja como cero. La tabla conserva los valores precisos visibles.") | dim);
+    rows.push_back(paragraph(compact ? "*: medido · --: 1.00× (celda cercana). X: "+resource+" solicitados, categorías ordenadas." : "*: speedup válido observado; --: referencia 1.00× (celda más cercana). Eje X: "+resource+" solicitados como categorías ordenadas; sin interpolación ni línea ideal. N/D se omite, nunca se dibuja como cero.") | dim);
 }
 }
 std::vector<ScalingPlotPoint> scalingPlotPoints(const ScalingResult& result) {
     std::vector<ScalingPlotPoint> points;
+    if(result.study) {
+        for(const auto& summary:result.study->summaries) {
+            const auto& c=result.study->configurations[summary.configurationIndex];
+            if(c.engine==Engine::MPI && summary.valid && summary.speedup && std::isfinite(*summary.speedup) && *summary.speedup>0)
+                points.push_back({*c.requestedProcesses,*summary.speedup});
+        }
+        std::stable_sort(points.begin(),points.end(),[](const auto& a,const auto& b){return a.requestedThreads<b.requestedThreads;});
+        return points;
+    }
     for (const auto* p : sorted(result)) if (validSpeedup(p->summary)) points.push_back({p->requestedThreads,*p->summary.speedup});
     return points;
 }
 std::vector<Element> scalingRows(const ScalingResult& result,const std::string& patternName,
     ScalingTab tab,int columns,Color accent,Color positive) {
+    if(result.study) {
+        auto rows=experimentalStudyRows(*result.study,(result.input.generated?std::string("Tablero generado"):patternName)+" · "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height),static_cast<int>(tab),columns,accent,positive);
+        if(tab==ScalingTab::Summary) {
+            rows.push_back(paragraph("Referencia secuencial compartida por ronda."));
+            rows.push_back(text("GRÁFICO DE SPEEDUP")|bold|color(accent));
+            graph(rows,result,columns,accent);
+        }
+        return rows;
+    }
+
     Elements rows,tabs;
     const std::array<std::string,3> names{"Resumen","Muestras","Método"};
     for (std::size_t i=0;i<names.size();++i) {

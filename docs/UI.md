@@ -19,8 +19,8 @@ La interfaz interactiva usa FTXUI v5.0.0, fijado en CMake al commit
   estados reales de `conway::Game` mediante elementos FTXUI.
 
 La interfaz no duplica reglas de Conway ni modifica los motores. CURRENT muestra
-la generación actual y NEXT se calcula sobre una copia del juego, sin cambiar la
-simulación activa.
+la generación confirmada. NEXT local se calcula sobre una copia al actualizar
+la sesión, fuera del render; MPI muestra solo CURRENT confirmado.
 
 ## Refresco y ciclo de eventos
 
@@ -65,7 +65,9 @@ En la simulación:
 - `N`: avanzar una generación.
 - Espacio o `P`: pausar/reanudar.
 - `R`: reiniciar desde el patrón original.
-- `Esc`, `X` o `Q`: regresar al menú.
+- `Esc` o `X`: pausar y volver al menú conservando la sesión; Visualización la reanuda.
+- `Q`: abandonar y cerrar la sesión; una nueva visualización comienza en el patrón inicial.
+- `U`: recuperar MPI desde el último snapshot confirmado después de un fallo.
 
 Los paneles CURRENT/NEXT se organizan lado a lado en terminales amplias y
 con una vista alternable cuando falta espacio. Cada celda se delimita con bordes verticales y
@@ -79,27 +81,36 @@ lógicos, no a núcleos físicos.
 
 ## Didáctica y experimentos
 
-El modo didáctico prepara una generación real en un worker con StepTrace.
-Muestra CURRENT/NEXT y trabajo por hilo con reproducción relativa, pausa,
-velocidad y avance. `N` siguiente, espacio reproducir, `R` reiniciar, `+`/`-`
-velocidad, Esc volver. No es una cronología real entre hilos; ver
+El modo didáctico prepara una generación real en un worker: StepTrace local o
+TRACE_STEP MPI.
+Muestra CURRENT/NEXT y trabajo por hilo con reloj didáctico independiente
+(inicialmente 2 segundos por etapa a 1×). Arranca automáticamente y continúa entre
+generaciones. `N` avanza una etapa en pausa; espacio pausa/reanuda incluso durante
+captura; `R` reinicia conservando pausa y velocidad; `+`/`-` ajustan velocidad.
+Esc solicita cierre asíncrono y vuelve al menú. No es una cronología real entre hilos; ver
 [STEP_TRACE.md](STEP_TRACE.md).
 
-Benchmark abre Comparación de motores, Escalabilidad OpenMP y Resultados de la
-sesión. Los formularios permiten patrón cargado o tablero generado, generaciones,
-calentamientos, repeticiones y solicitud/lista de hilos. Tab/Mayús+Tab cambia
-campo; Enter activa. La entrada generada no reemplaza el patrón de simulación.
+Benchmark abre Comparación de motores, Escalabilidad y Resultados de la sesión.
+Comparación permite elegir Secuencial, OpenMP y MPI (mínimo dos). Solo Secuencial
+está marcado inicialmente. Los hilos OpenMP y procesos MPI se configuran por
+separado; sin Secuencial, speedup y eficiencia respecto de él son N/D.
+Escalabilidad permite elegir OpenMP/MPI y editar una lista de hilos/procesos.
+Ambos formularios permiten patrón cargado o tablero generado, generaciones,
+calentamientos y repeticiones. Tab/Mayús+Tab cambia campo; Espacio marca motores;
+Enter activa. La entrada generada no reemplaza el patrón de simulación.
 
 La ejecución congela configuración, genera/copia entrada antes de medir y usa
 un worker persistente. Esc regresa sin cancelar el trabajo ni modificarlo al
 editar. Solo hay un experimento activo; se bloquean otros cálculos competidores.
 Al salir con trabajo activo se anuncia cierre pendiente hasta terminar, sin
-cancelación forzada. Los errores conservan el último resultado.
+cancelación forzada. Los errores conservan el último resultado o la evidencia
+parcial de la ejecución fallida. MPI usa procesos nuevos y calentamientos por
+sesión en cada turno, con cierre confirmado antes del siguiente participante.
 
 Comparación y Escalabilidad presentan Resumen/Muestras/Método: ←→ cambia vista,
 ↑↓ desplaza, Home/End extremos, Esc configuración o Benchmark según procedencia.
-La tabla de escalabilidad se ordena por solicitud; las muestras conservan orden
-experimental. El gráfico muestra speedups válidos, referencia 1.00× y eje X
+El gráfico de escalabilidad ordena las solicitudes; cada resultado identifica
+su recurso y las muestras conservan el orden experimental. El gráfico muestra speedups válidos, referencia 1.00× y eje X
 categórico explícito, con escala lineal o log1p(S). No dibuja línea ideal.
 
 En 120×40 tabla/gráfico pueden convivir si caben; en 80×24 se prioriza acceso por
@@ -181,3 +192,39 @@ los intervalos de filas y columnas visibles. Si ni siquiera cabe una celda
 con sus controles, esa región muestra un aviso de espacio insuficiente.
 Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
 los demás offsets se ajustan al nuevo rango sin reiniciar el estado.
+
+## Simulación MPI local
+
+En Seleccionar motor, M elige MPI y C abre Procesos MPI (P en el selector textual).
+No se crea ningún rank hasta entrar en Visualización. El valor inicial es P=1;
+se muestra una recomendación basada en afinidad/filas y se aceptan 1..1024.
+No se habilita sobresuscripción. El trabajador se busca junto al ejecutable
+`conway`; CMake configura la ruta compatible de `mpirun` y compila ambos targets.
+
+Cambiar motor o P conserva el tablero, generación y referencia inicial de R.
+El cambio de P se aplica al reanudar y recrea el trabajo MPI. Durante una operación
+pendiente no se acumulan pasos. Pausar deja terminar el avance ya solicitado.
+Los fallos conservan el último snapshot y permiten U, cambiar a un motor local,
+Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
+
+La entrada didáctica MPI está habilitada: V alterna Global/Local/Explicación,
+[ / ] seleccionan rank (incluidos los vacíos) y ↑↓/Home/End desplazan el contenido.
+En terminal amplia muestra tablero global y cuadrícula privada del rank
+seleccionado, con halos y NEXT revelados según la etapa. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+Benchmark configurable admite MPI;
+debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
+el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,
+solicitud y snapshot se presentan separados. Un estudio incompleto muestra su
+diagnóstico, limpieza y evidencia parcial. No se añade exportación desde la UI.
+Véanse [MPI_SESSION.md](MPI_SESSION.md) y [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
+
+Los resultados mantienen las pestañas y la ayuda visibles al desplazar con
+↑/↓ o Inicio/Fin. La barra lateral y «Bloque actual/total» indican la posición;
+los párrafos se ajustan al ancho disponible también después de redimensionar.
+En formularios anchos, Entrada y Medición tienen columnas de ancho fijo para
+cada tamaño de terminal, independientemente del motor seleccionado.
+La barra contextual del benchmark identifica la configuración de «Simulación»;
+los participantes del experimento se identifican dentro del formulario/resultado.
+Los números se presentan con tres decimales (notación científica para magnitudes
+pequeñas o grandes); N/D no lleva unidades ni sufijos. El formato no modifica
+los datos ni limita la eficiencia al 100 %.

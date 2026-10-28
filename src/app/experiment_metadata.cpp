@@ -177,8 +177,63 @@ ExperimentContext captureExperimentContext(const MetadataOptions& options) {
     }
     return context;
 }
+namespace {
+void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,const ExperimentInputIdentity& input) {
+    validateStudy(study);
+    for(auto& field:metadata.fields) {
+        if(field.key=="csv.schema_version") field.value="2";
+        if(field.key=="protocol.version") field.value="conway-experimental-v2";
+    }
+    auto& f=metadata.fields;
+    auto put=[&](std::string key,std::string value) {add(f,std::move(key),std::move(value),MetadataSource::Result);};
+    put("execution.order_policy",study.rotateRight?"rotate_right":"rotate_left");
+    put("execution.generations",integer(study.generations));
+    put("execution.warmups",integer(study.warmups));
+    put("execution.repetitions",integer(study.repetitions));
+    put("execution.completed_warmup_runs",integer(study.completedWarmupRuns));
+    put("execution.measured_samples",integer(study.samples.size()));
+    put("memory.estimated_peak_payload_bytes",integer(study.estimatedPeakBytes));
+    put("memory.max_payload_bytes",integer(study.maxMemoryBytes));
+    put("execution.complete",study.complete?"true":"false");
+    put("execution.cleanup_confirmed",study.cleanupConfirmed?"true":"false");
+    put("execution.diagnostic",study.diagnostic);
+    put("execution.warmup_policy","local: per configuration before rounds; MPI: per new session before each sample; full equivalence for every warmup");
+    put("timing.local_scope","steady_clock batch including team observation; excludes construction, input, equivalence and presentation");
+    put("timing.mpi_scope","max rank MPI_Wtime batch; preparation barrier excluded; steps including halos/reductions and final barrier included; timing reduction/IPC excluded");
+    put("timing.mpi_auxiliary_scope","client wall durations: startup, load, batch request, snapshot, close; not additive decomposition");
+    put("mpi.lifecycle","one new session per MPI turn; reload generation zero before every warmup/sample; confirmed close before next participant; no retries");
+    put("mpi.launcher",study.mpiOptions.launcher); put("mpi.worker",study.mpiOptions.worker);
+    put("mpi.wire_version",integer(mpi::wire::version));
+    put("mpi.worker_operation_deadline_ms","30000");
+    put("mpi.startup_timeout_ms",integer(study.mpiOptions.startupTimeout.count()));
+    put("mpi.operation_timeout_ms",integer(study.mpiOptions.operationTimeout.count()));
+    put("mpi.close_timeout_ms",integer(study.mpiOptions.closeTimeout.count()));
+    for(std::size_t i=0;i<study.mpiOptions.launcherArguments.size();++i)
+        put("mpi.launcher_argument."+integer(i),study.mpiOptions.launcherArguments[i]);
+    for(std::size_t i=0;i<study.configurations.size();++i) {
+        const auto& c=study.configurations[i]; auto prefix="configuration."+integer(i)+".";
+        put(prefix+"id",configurationName(c));
+        if(c.engine==Engine::MPI) {
+            put(prefix+"processes",integer(*c.requestedProcesses));
+            put(prefix+"empty_ranks",integer(*c.requestedProcesses>input.height?*c.requestedProcesses-input.height:0));
+            put(prefix+"partition","contiguous balanced rows; remainder assigned to lowest ranks; rank 0 computes");
+        }
+    }
+    for(std::size_t i=0;i<study.sessions.size();++i) {
+        const auto& session=study.sessions[i]; const auto prefix="session."+integer(i)+".";
+        put(prefix+"configuration",integer(session.configurationIndex)); put(prefix+"round",integer(session.round));
+        put(prefix+"declared_localhost_slots",integer(session.declaredSlots));
+        put(prefix+"startup_ms",export_detail::number(session.startupMs));
+        put(prefix+"close_ms",export_detail::number(session.closeMs));
+        put(prefix+"warmups",integer(session.completedWarmups));
+        put(prefix+"runtime",session.runtime); put(prefix+"diagnostic",session.diagnostic);
+        put(prefix+"cleanup_confirmed",session.cleanupConfirmed?"true":"false");
+    }
+}
+}
 ExperimentMetadata describeExperiment(const ExperimentContext& context, const ExperimentResult& result) {
     auto metadata=base(context,"comparison",result.input);
+    if(result.study) {studyFields(metadata,*result.study,result.input); return metadata;}
     std::string order;
     switch(result.config.order) {
         case MeasurementOrder::AlternatingSequentialFirst: order="alternating_sequential_first"; break;
@@ -191,6 +246,7 @@ ExperimentMetadata describeExperiment(const ExperimentContext& context, const Ex
 }
 ExperimentMetadata describeExperiment(const ExperimentContext& context, const ScalingResult& result) {
     auto metadata=base(context,"scaling",result.input);
+    if(result.study) {studyFields(metadata,*result.study,result.input); return metadata;}
     std::string threads,order;
     for (auto value : result.config.requestedThreads) { if(!threads.empty()) threads+=';'; threads+=integer(value); }
     switch(result.config.order) {
