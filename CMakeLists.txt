@@ -143,6 +143,7 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
 
 include(CTest)
+include(cmake/CudaBackend.cmake)
 
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)

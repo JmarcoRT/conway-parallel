@@ -37,12 +37,19 @@ class Terminal:
         self.raw = b""
         self.read()
 
-    def read(self):
+    def read(self, idle_timeout=None):
+        # Default keeps the historical observation window (including no-redraw checks).
+        # Opt-in callers may stop after an output burst has been quiet, while
+        # still waiting the full window when there has been no output at all.
         deadline = time.monotonic() + 0.35
-        while time.monotonic() < deadline:
-            if select.select([self.master], [], [], 0.03)[0]:
+        quiet_deadline = deadline
+        while time.monotonic() < min(deadline, quiet_deadline):
+            remaining = min(deadline, quiet_deadline) - time.monotonic()
+            if select.select([self.master], [], [], max(0, min(0.03, remaining)))[0]:
                 try:
                     self.raw += os.read(self.master, 65536)
+                    if idle_timeout is not None:
+                        quiet_deadline = time.monotonic() + idle_timeout
                 except OSError:
                     break
 
