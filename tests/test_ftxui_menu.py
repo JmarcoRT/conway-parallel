@@ -1,6 +1,7 @@
 """Inspecciona RGB, ancho y foco de menus reales sobre una PTY."""
 from pathlib import Path
 import re
+import shlex
 import sys
 import tempfile
 sys.dont_write_bytecode = True
@@ -72,54 +73,98 @@ def expect_identity_heading(terminal, label):
     raise AssertionError((label, terminal.screen()))
 
 
-def check(binary, cwd, columns, rows):
-    terminal = Terminal(binary, cwd, columns, rows)
+def raw_rows(t):
+    return {int(m[1]):m[2] for m in ROW.finditer(t.raw.decode('utf-8',errors='replace'))}
+
+DESCRIPTIONS=['Comprender cómo calcula cada motor','Comparar rendimiento y escalabilidad',
+    'Explorar, reproducir y elegir un patrón','Secuencial, OpenMP o MPI','Recursos según el motor','']
+LABELS=['Visualización didáctica','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']
+
+def contrast(a,b):
+    def luminance(rgb):
+        c=[v/255 for v in rgb]
+        c=[v/12.92 if v<=0.04045 else ((v+0.055)/1.055)**2.4 for v in c]
+        return sum(v*w for v,w in zip(c,[.2126,.7152,.0722]))
+    x,y=sorted([luminance(a),luminance(b)])
+    return (y+.05)/(x+.05)
+
+def block(t,index,descriptions):
+    rows=raw_rows(t)
+    line=next(y for y,row in rows.items() if '> '+LABELS[index] in ANSI.sub('',row))
+    data=pixels(rows[line]);fill=[x for x,p in enumerate(data) if p[2]==CYAN]
+    assert fill and len(fill)>len(LABELS[index])+2,(fill,t.screen())
+    assert fill==list(range(fill[0],fill[-1]+1)),fill
+    assert all(data[x][1]==CHARCOAL for x in fill),rows[line]
+    assert contrast(CHARCOAL,CYAN)>=4.5
+    expected=2 if descriptions and DESCRIPTIONS[index] else 1
+    highlighted=[y for y,row in rows.items() if any(p[2]==CYAN for p in pixels(row))]
+    assert highlighted==list(range(line,line+expected)),(highlighted,t.screen())
+    if expected==2:
+        assert DESCRIPTIONS[index] in ANSI.sub('',rows[line+1])
+        secondary=pixels(rows[line+1]);other=[x for x,p in enumerate(secondary) if p[2]==CYAN]
+        assert other==fill,'description/background does not cover same full block width'
+        assert all(secondary[x][1]==(40,55,65) for x in fill),rows[line+1]
+        assert contrast((40,55,65),CYAN)>=4.5
+        assert '\x1b[2m' not in rows[line+1],'selected description must keep contrast'
+    # Other visible descriptions use a legible secondary gray, not dim cyan.
+    for i,description in enumerate(DESCRIPTIONS):
+        if not description or i==index or not descriptions:continue
+        row=next(row for row in rows.values() if description in ANSI.sub('',row))
+        tokens=pixels(row);plain=''.join(p[0] for p in tokens);start=plain.index(description)
+        assert all(p[1]==(168,180,188) for p in tokens[start:start+len(description)]),row
+    return line,fill
+
+def check(binary,cwd,columns,rows):
+    terminal=Terminal(binary,cwd,columns,rows)
     try:
-        expect_focus(terminal, "Benchmark")
-        expect_identity_heading(terminal, "MENÚ PRINCIPAL")
-        terminal.send("\x1b[B")
-        expect_focus(terminal, "Visualización")
-        terminal.send("3")
-        expect_focus(terminal, "Secuencial")
-        expect_identity_heading(terminal, "MOTOR DE EJECUCIÓN")
-        terminal.send("\x1b[B")
-        expect_focus(terminal, "OpenMP")
-        terminal.send("\r")
-        terminal.expect("Motor: OpenMP")
-        terminal.send("4")
-        expect_focus(terminal, "1 hilo")
-        expect_identity_heading(terminal, "CONFIGURACIÓN OPENMP")
-        terminal.send("\x1b[B")
-        expect_focus(terminal, "2 hilos")
-        terminal.send("\r")
-        terminal.expect("OpenMP solicitado: 2")
-        if columns < 64:
-            # El catalogo vertical tiene una limitacion previa de espacio;
-            # aqui se verifican los menus principal, motores e hilos.
-            terminal.send("q")
-            assert terminal.process.wait(timeout=3) == 0
-            print(f"PASS: resaltado RGB, ancho y foco de menus {columns}x{rows}")
-            return
-        terminal.send("C")
-        expect_focus(terminal, "cedar", False)
-        expect_identity_heading(terminal, "CATÁLOGO DE PATRONES")
-        terminal.send("\x1b[B")
-        expect_focus(terminal, "willow", False)
-        terminal.send("\x1b[B")  # Transfiere foco a ACCIONES.
-        expect_focus(terminal, "Ruta manual...", False)
-        terminal.send("\x1b[B")
-        expect_focus(terminal, "Volver", False)
-        terminal.send("\x1b[A")
-        terminal.send("\x1b[A")  # Vuelve a la lista, manteniendo seleccion.
-        expect_focus(terminal, "willow", False)
-        terminal.send("\r")
-        terminal.expect("Patrón: willow.txt", "6 × 4")
-        expect_focus(terminal, "Visualización")
-        terminal.send("q")
-        assert terminal.process.wait(timeout=3) == 0
-        print(f"PASS: resaltado RGB, ancho y foco {columns}x{rows}")
-    finally:
-        terminal.close()
+        descriptions=rows>=30 and columns>=64
+        for index in range(6):
+            line,fill=block(terminal,index,descriptions)
+            if columns>88:
+                assert abs((fill[0]+fill[-1])-(columns-1))<=1,(columns,fill)
+                assert len(fill)==82,fill
+            terminal.send('\t')
+        expect_identity_heading(terminal,'MODOS PRINCIPALES')
+        if rows>=24:
+            screen=terminal.screen();title=next(y for y,row in screen.items() if 'MENÚ PRINCIPAL' in row)
+            bottom=next(y for y,row in screen.items() if y>title and '╰' in row)
+            exit_row=next(y for y,row in screen.items() if 'Salir' in row)
+            assert bottom-exit_row<=2,(exit_row,bottom,screen)
+            assert bottom-(title-1)+1<=23,(title,bottom,screen)
+        terminal.send('c');terminal.send('\x1b[B');terminal.send('\r')
+        assert 'Sin cargar' in terminal.context()
+        terminal.send('u');terminal.expect('Patrón: willow.txt','6 × 4')
+        terminal.send('q');assert terminal.process.wait(timeout=5)==0
+        print(f'PASS main blocks/full width/contrast/compact panel/navigation {columns}x{rows}',flush=True)
+    finally:terminal.close()
+
+def resizing(binary,cwd,no_color=False):
+    from test_ftxui_responsive import resize
+    with tempfile.TemporaryDirectory(prefix='main-menu-style-') as directory:
+        if no_color:
+            wrapper=Path(directory)/'run';wrapper.write_text('#!/bin/sh\nexport NO_COLOR=1\nexec '+shlex.quote(binary)+'\n');wrapper.chmod(0o700)
+            binary=str(wrapper)
+        terminal=Terminal(binary,cwd,160,50)
+        try:
+            terminal.send('\t') # Benchmark remains selected across all sizes.
+            for width,height in [(160,50),(80,30),(50,24),(40,18),(120,40),(240,60)]:
+                resize(terminal,width,height);terminal.read();terminal.assert_fits()
+                rows=raw_rows(terminal)
+                assert any('> Benchmark' in ANSI.sub('',row) for row in rows.values())
+                assert 'Q salir' in '\n'.join(ANSI.sub('',row) for row in rows.values())
+                if no_color:
+                    selected=next(y for y,row in rows.items() if '> Benchmark' in ANSI.sub('',row))
+                    assert '\x1b[1m' in rows[selected] and '\x1b[7m' in rows[selected],rows[selected]
+                    if height>=30:
+                        assert 'Comparar rendimiento y escalabilidad' in ANSI.sub('',rows[selected+1])
+                        assert '\x1b[7m' in rows[selected+1] and '\x1b[2m' not in rows[selected+1],rows[selected+1]
+                        unselected=next(row for row in rows.values() if DESCRIPTIONS[0] in ANSI.sub('',row))
+                        assert '\x1b[2m' in unselected,unselected
+                    assert not any(p[2]==CYAN for row in rows.values() for p in pixels(row))
+                else:block(terminal,1,height>=30)
+            terminal.send('q');assert terminal.process.wait(timeout=5)==0
+            print(f'PASS main resize and selected block preservation, NO_COLOR={no_color}',flush=True)
+        finally:terminal.close()
 
 
 if __name__ == "__main__":
@@ -129,5 +174,8 @@ if __name__ == "__main__":
         patterns.mkdir()
         (patterns / "cedar.txt").write_text("3 7\n" + "0000000\n" * 3)
         (patterns / "willow.txt").write_text("6 4\n" + "0000\n" * 6)
-        for size in [(160, 50), (120, 40), (80, 24), (50, 24)]:
+        for size in [(160, 50), (120, 40), (80, 30), (80, 24), (50, 24), (40, 18)]:
             check(binary, cwd, *size)
+
+        resizing(binary,cwd)
+        resizing(binary,cwd,True)

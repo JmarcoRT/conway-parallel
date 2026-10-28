@@ -38,26 +38,15 @@ inicializado con `MPI_THREAD_SINGLE`. El cliente no hace llamadas MPI.
 
 ## Controles y ciclo de vida
 
-La opción MPI y la configuración de P están en Seleccionar motor (M y C en
-FTXUI; M y P en el selector textual). Seleccionarlos no lanza procesos: se
-aplican al entrar/reanudar Visualización. P comienza en 1 y admite 1..1024.
-La recomendación usa CPU de afinidad menos una para la aplicación, limitada por
-filas y 1024; no mide cuotas cgroup, núcleos físicos ni garantiza slots/binding.
-P mayor que filas es válido, aunque haya ranks sin trabajo. P mayor que los
-slots disponibles se rechaza: la aplicación nunca reintenta con sobresuscripción.
+La selección de MPI está en Motor y P en Configurar recursos (1..1024).
+La UI actual utiliza MPI desde Didáctico y Benchmark configurable. El catálogo
+reproduce exclusivamente Secuencial y no lanza procesos; véase
+[CATALOG_PREVIEW.md](CATALOG_PREVIEW.md). La antigua página Visualización se retiró.
 
-- N avanza; Espacio/P reproduce o pausa; R restaura la entrada inicial y pausa.
-- Esc/X vuelve al menú y pausa, conservando la sesión (incluidos ranks MPI).
-  Volver a Visualización reanuda el mismo tablero sin avanzar automáticamente.
-- Q abandona y cierra; una nueva visualización empieza desde el patrón cargado.
-- Cambiar motor/P preserva células, dimensiones, generación y referencia de R.
-  P nuevo se aplica al reanudar. Seleccionar un motor local cierra el trabajo MPI;
-  mientras termina ese cambio los controles de avance no ejecutan otro motor.
-- U recupera desde el último snapshot confirmado; un fallo detiene reproducción
-  y conserva ese snapshot. Un avance sin respuesta confirmada puede perderse al
-  recuperar, nunca se reintenta ambiguamente. También puede elegirse un motor local.
-- Cargar otro patrón correctamente abandona la sesión anterior y establece una
-  referencia inicial nueva; cancelar o fallar la carga conserva la sesión anterior.
+La API SimulationSession conserva avance, pausa, reinicio, cambio motor/P con
+transferencia de estado, recuperación y cierre asíncronos. Esas garantías se
+comprueban en mpi_simulation. La recomendación se basa en CPU de afinidad y filas;
+no se reintenta automáticamente con sobresuscripción.
 
 Un worker de C++ posee exclusivamente `mpi::Client`. La UI solo envía una operación,
 recibe una entrega mediante evento/poll y publica un `Game` como snapshot local.
@@ -191,14 +180,12 @@ Las pruebas por goteo y escritura parcial deben agotar un plazo absoluto aunque
 haya progreso. El doble que anuncia un PID ajeno comprueba que ese proceso sigue
 vivo; los fallos reales comprueban ausencia de PIDs/grupos/socket/directorio residuales.
 
-La integración añade `mpi_simulation` (45 s) y `ftxui_mpi_pty` (60 s). La primera
-comprueba equivalencia, una sola operación, pausa pendiente, cambios motor/P,
-referencia de reinicio, fallos reales/recuperación y limpieza; habilita
-sobresuscripción explícitamente solo como política de pruebas. La segunda usa
-la aplicación real en PTY con P=1/2, sin sobresuscripción, y comprueba navegación,
-controles, transferencia, recuperación y ausencia de trabajadores residuales.
-`text_mpi` (45 s) verifica también la recepción asíncrona, menú/reanudación,
-reinicio y cierre con stdin/stdout no interactivos.
+`mpi_simulation` conserva la cobertura de equivalencia, una operación en curso,
+pausa pendiente, cambios motor/P, reinicio, fallos/recuperación y limpieza reales.
+Los recorridos antiguos ftxui_mpi_pty/text_mpi se sustituyen por catálogo secuencial;
+la supervisión MPI permanece en mpi_client y mpi_simulation, y la UI MPI real se
+valida mediante didactic_mpi y ftxui_didactic_mpi_views_pty. No se retira el motor
+ni su API por eliminar el acceso de visualización normal.
 
 TRACE_STEP solicita una generación instrumentada real, con generación esperada
 y célula global seleccionada. TRACE_RESULT transporta una captura acotada; se

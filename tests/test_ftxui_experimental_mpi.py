@@ -28,7 +28,7 @@ def small(t):
 
 
 def open_comparison(t):
-    t.send('C'); t.send('m'); t.send(str(Path(root) / 'patterns/blinker.txt') + '\r')
+    t.send('C'); t.send('m'); t.send(str(Path(root) / 'patterns/blinker.txt') + '\r');t.send('u')
     t.send('1'); t.send('\r')
 
 

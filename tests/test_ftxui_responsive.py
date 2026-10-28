@@ -36,46 +36,22 @@ def check(binary, cwd, size):
     t = Terminal(binary, cwd, *size)
     try:
         wide = size[0] >= 120 and size[1] >= 40
-        t.send("C")
-        visible(t, "wide")
-        t.send("\x1b[B")
-        resize(t, 80, 24)
-        focused(t, "zzz-small")
-        resize(t, *size)
-        t.send("\x1b[A")
-        if not wide:
-            assert "ACTUAL ·" not in text(t)
-            t.send("d")
-            visible(t, "ACTUAL · generación 0")
-            t.send("v")
-            visible(t, "SIGUIENTE · generación 1")
-            t.send("d")
-        t.send("\r2")
-        visible(t, "CURRENT · generación 0")
-        if not wide:
-            assert "NEXT · generación 1" not in text(t)
-            t.send("v")
-            visible(t, "NEXT · generación 1")
-        t.send("n")
-        resize(t, 160, 45)
-        visible(t, "CURRENT · generación 1", "NEXT · generación 2")
-        resize(t, 80, 24)
-        t.send("\x1b[B\x1b[C")
-        visible(t, "filas 2")
-        before = t.raw
-        t.read()
-        assert before == t.raw, "Refresco periódico de simulación pausada"
-        resize(t, 32, 12)
-        visible(t, "Terminal insuficiente")
-        resize(t, 80, 24)
-        visible(t, "generación 1" if wide else "generación 2")
-        t.send(ESC)
-        t.send("\x1b[B" * 5 + "\r")
-        deadline = time.monotonic() + 30
-        while "Preparando generación" in text(t):
-            assert time.monotonic() < deadline, text(t)
-            # El controlador existente publica el resultado al siguiente evento UI.
-            t.send("\x1b[D")
+        t.send('c');visible(t,'wide')
+        t.send('\x1b[B');resize(t,80,24);focused(t,'zzz-small')
+        resize(t,*size);t.send('\x1b[A');t.send('\r')
+        visible(t,'CURRENT · generación 0')
+        t.send('n')
+        from test_ftxui_mpi import wait
+        wait(t,lambda:'CURRENT · generación 1' in text(t))
+        resize(t,160,45);visible(t,'CURRENT · generación 1')
+        resize(t,80,24);t.send('\x1b[B\x1b[C');visible(t,'filas 2')
+        before=t.raw;t.read();assert before==t.raw,'paused catalogue redrew'
+        resize(t,32,12);visible(t,'Terminal insuficiente')
+        resize(t,80,24);visible(t,'CURRENT · generación 1')
+        t.send('u');t.send('d')
+        deadline=time.monotonic()+30
+        while 'Preparando generación' in text(t):
+            assert time.monotonic()<deadline;t.read()
         t.send(" ")  # Keep the automatic didactic clock paused during resize checks.
         visible(t, "MODO DIDÁCTICO", "NEXT · generación 1")
         t.send("v")
@@ -90,7 +66,7 @@ def check(binary, cwd, size):
         visible(t, "CURRENT · generación 0")
         t.send(ESC)
         resize(t, 40, 18)
-        visible(t, "MENÚ PRINCIPAL")
+        visible(t, "MODOS PRINCIPALES")
         print(f"PASS: catálogo, simulación, didáctica y resize {size}")
     finally:
         t.close()
@@ -99,7 +75,7 @@ def check(binary, cwd, size):
 def experiments(binary, cwd):
     t = Terminal(binary, cwd, 80, 24)
     try:
-        t.send("C\r1\r")
+        t.send("C\ru1\r")
         for scaling in (False, True):
             if not scaling:
                 move_to(t,"OpenMP");t.send(" ")

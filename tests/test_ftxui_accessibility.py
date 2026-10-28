@@ -63,58 +63,21 @@ def check(binary, cwd, size, name):
     paired = size[0] >= 120 and size[1] >= 40
     t = Terminal(binary, cwd, *size)
     try:
-        t.send("4c12\r3oC")
-        if name == "pulsar":
-            t.send(DOWN)
-        focused(t, name)
-        t.send("d")
-        visible(t, "DETALLE ACTIVO", "Patrón: " + name)
-        endpoints(t, paired)
-        visible(t, "Patrón: " + name)
-        before = screen(t)
-        if paired:
-            t.send("v")
-            assert screen(t) == before, "V alteró la vista doble del catálogo"
-        else:
-            t.send("v")
-            visible(t, "SIGUIENTE · generación 1")
-            t.send("v")
-        old = viewport(t, paired)
-        target = (80, 24) if paired else (160, 45)
-        resize(t, *target)
-        preserved(old, viewport(t, not paired))
-        visible(t, "DETALLE ACTIVO", "Patrón: " + name)
-        if paired:
-            visible(t, "ACTUAL · generación 0")  # V amplio no cambió selección oculta.
-        resize(t, *size)
-        endpoints(t, paired)
-        t.send("d")
-        focused(t, name)
-        # La navegación de lista sigue funcionando después de mover el detalle.
-        t.send(UP if name == "pulsar" else DOWN)
-        focused(t, "gosper_glider_gun" if name == "pulsar" else "pulsar")
-        t.send(DOWN if name == "pulsar" else UP)
-        focused(t, name)
-        t.send("\r")
-        t.expect("Patrón: " + name + ".txt")
-        t.send("2")
-        if paired:
-            before = screen(t)
-            t.send("v")
-            assert screen(t) == before, "V alteró la simulación doble"
-            resize(t, 80, 24)
-            visible(t, "CURRENT · generación 0")
-        t.send("v")
-        visible(t, "NEXT · generación 1")
-        resize(t, 160, 45)
-        before = screen(t)
-        t.send("v")
-        assert screen(t) == before, "V cambió una selección oculta"
-        resize(t, 80, 24)
-        visible(t, "NEXT · generación 1")
-        resize(t, *size)
-        t.send("\x1b")
-        t.send(DOWN * 5 + "\r")
+        t.send("3o4c12\rC")
+        if name=="pulsar":t.send(DOWN)
+        focused(t,name);t.send('\r')
+        visible(t,"FICHA", "Explorando: "+name)
+        endpoints(t,False)
+        old=viewport(t,False)
+        target=(80,24) if paired else (160,45)
+        resize(t,*target);preserved(old,viewport(t,False))
+        resize(t,*size);endpoints(t,False)
+        t.send('d');focused(t,name)
+        t.send(UP if name=='pulsar' else DOWN)
+        focused(t,'gosper_glider_gun' if name=='pulsar' else 'pulsar')
+        t.send(DOWN if name=='pulsar' else UP);focused(t,name)
+        t.send('u');t.expect('Patrón: '+name+'.txt')
+        t.send('d')
         ready(t)
         t.send(" ")  # Playback now starts automatically; freeze for viewport assertions.
         visible(t, "efectivos 12")
