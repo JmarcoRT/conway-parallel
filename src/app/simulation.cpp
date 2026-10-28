@@ -48,8 +48,8 @@ std::optional<int> parseMPIProcesses(std::string_view text) noexcept {
     return count;
 }
 struct SimulationSession::Worker {
-    struct Job { Action action; Engine engine; InputData input; std::size_t generation; mpi::ClientOptions options; };
-    struct Delivery { std::optional<Game> game; std::string error; bool closed{}; std::vector<int> pids; };
+    struct Job { Action action; Engine engine; InputData input; std::size_t generation; mpi::ClientOptions options; bool backgroundLocal{}; std::uint64_t epoch{}; };
+    struct Delivery { std::optional<Game> game; std::string error; bool closed{}; std::vector<int> pids; std::uint64_t epoch{}; };
     std::mutex mutex;
     std::condition_variable wake;
     std::optional<Job> job;
@@ -63,11 +63,12 @@ struct SimulationSession::Worker {
     }
     void run() {
         std::unique_ptr<mpi::Client> client;
+        std::optional<Game> local;
         for(;;) {
             Job task;
             {std::unique_lock lock(mutex); wake.wait(lock,[&]{return stopping || job.has_value();});
              if(stopping) break; task=std::move(*job); job.reset();}
-            Delivery result;
+            Delivery result;result.epoch=task.epoch;
             try {
                 if(task.action==Action::Close || task.engine!=Engine::MPI || task.action==Action::Configure) {
                     if(client) {
@@ -76,10 +77,17 @@ struct SimulationSession::Worker {
                     }
                     client.reset();
                 }
-                if(task.action==Action::Close) result.closed=true;
+                if(task.action==Action::Close) {local.reset();result.closed=true;}
                 else if(task.engine!=Engine::MPI) {
-                    result.game.emplace(task.input,task.generation);
-                    result.game->setEngine(task.engine);
+                    if(task.backgroundLocal) {
+                        if(task.action!=Action::Step) {local.emplace(task.input,task.generation);local->setEngine(task.engine);}
+                        if(!local)throw std::logic_error("Vista previa cerrada");
+                        if(task.action==Action::Step)local->step();
+                        result.game=*local;
+                    } else {
+                        result.game.emplace(task.input,task.generation);
+                        result.game->setEngine(task.engine);
+                    }
                 } else {
                     if(!client) {
                         if(task.action==Action::Step) throw std::runtime_error("Recupera primero la sesión MPI.");
@@ -94,7 +102,7 @@ struct SimulationSession::Worker {
                     result.pids=client->workerPids();
                 }
             } catch(const std::exception& e) {
-                result.error=mpiError(e); client.reset();
+                result.error=task.backgroundLocal?std::string("Error de vista previa: ")+e.what():mpiError(e); client.reset();
                 result.closed=task.action==Action::Close;
             }
             {std::lock_guard lock(mutex); delivery=std::move(result);}
@@ -103,9 +111,10 @@ struct SimulationSession::Worker {
         client.reset();
     }
 };
-SimulationSession::SimulationSession(const InputData& input,Engine engine,mpi::ClientOptions options,std::function<void()> notify)
-    :initialInput_(input),engine_(engine),game_(input),options_(std::move(options)),notify_(std::move(notify)) {
-    if(engine_==Engine::MPI) submit(Action::Configure);
+SimulationSession::SimulationSession(const InputData& input,Engine engine,mpi::ClientOptions options,std::function<void()> notify,bool backgroundLocal)
+    :initialInput_(input),engine_(engine),game_(input),options_(std::move(options)),notify_(std::move(notify)),backgroundLocal_(backgroundLocal) {
+    if(backgroundLocal_ && engine_!=Engine::Sequential)throw std::invalid_argument("La vista previa asíncrona requiere Secuencial");
+    if(engine_==Engine::MPI || backgroundLocal_) submit(Action::Configure);
     else {game_.setEngine(engine_);updatePreview();}
 }
 SimulationSession::~SimulationSession()=default;
@@ -113,6 +122,7 @@ const Game& SimulationSession::game() const noexcept {return game_;}
 bool SimulationSession::isRunning() const noexcept {return running_;}
 void SimulationSession::updatePreview() {
     preview_.reset();
+    if(backgroundLocal_)return;
     if(engine_!=Engine::MPI && !closed_) {preview_=game_;preview_->step();}
 }
 void SimulationSession::submit(Action action) {
@@ -123,7 +133,7 @@ void SimulationSession::submit(Action action) {
     if(!worker_) worker_=std::make_unique<Worker>(notify_);
     Worker::Job job{action,engine_,action==Action::Reset?initialInput_:
                     action==Action::Step || action==Action::Close?InputData{}:cells(game_),
-                    action==Action::Reset?0:game_.generation(),options_};
+                    action==Action::Reset?0:game_.generation(),options_,backgroundLocal_,epoch_};
     {std::lock_guard lock(worker_->mutex); worker_->job=std::move(job);}
     busy_=true; preview_.reset(); worker_->wake.notify_one();
 }
@@ -133,6 +143,10 @@ void SimulationSession::poll() {
     {std::lock_guard lock(worker_->mutex);result=std::move(worker_->delivery);worker_->delivery.reset();}
     if(!result) return;
     busy_=false;
+    if(backgroundLocal_ && result->epoch!=epoch_) {
+        if(pending_) {auto action=*pending_;pending_.reset();submit(action);}
+        return;
+    }
     if(result->game) game_=std::move(*result->game);
     if(!result->pids.empty()) pids_=std::move(result->pids);
     error_=std::move(result->error); closed_=result->closed;
@@ -142,24 +156,26 @@ void SimulationSession::poll() {
 }
 void SimulationSession::step() {
     if(busy_ || closed_ || !error_.empty()) return;
-    if(engine_==Engine::MPI) submit(Action::Step);
+    if(engine_==Engine::MPI || backgroundLocal_) submit(Action::Step);
     else {game_.step();updatePreview();}
 }
 void SimulationSession::toggleRunning() noexcept {if(!closed_ && error_.empty()) running_=!running_;}
 void SimulationSession::advanceIfRunning() {if(running_) step();}
 void SimulationSession::reset() {
     running_=false;
-    if(engine_==Engine::MPI || busy_) submit(Action::Reset);
+    if(backgroundLocal_)++epoch_;
+    if(engine_==Engine::MPI || backgroundLocal_ || busy_) submit(Action::Reset);
     else {game_=Game(initialInput_);game_.setEngine(engine_);error_.clear();updatePreview();}
 }
 void SimulationSession::configure(Engine engine,int processes) {
+    if(backgroundLocal_ && engine!=Engine::Sequential)throw std::invalid_argument("La vista previa solo usa Secuencial");
     if(processes<1 || processes>1024) throw std::invalid_argument("P debe estar entre 1 y 1024.");
     running_=false;
-    const bool needsWorker=engine_==Engine::MPI || engine==Engine::MPI || busy_;
+    const bool needsWorker=backgroundLocal_ || engine_==Engine::MPI || engine==Engine::MPI || busy_;
     engine_=engine; options_.processes=processes;
     if(needsWorker) submit(Action::Configure);
     else {game_.setEngine(engine_);error_.clear();updatePreview();}
 }
 void SimulationSession::recover() {running_=false;submit(Action::Configure);}
-void SimulationSession::close() {if(closed_) return;running_=false;submit(Action::Close);}
+void SimulationSession::close() {if(closed_) return;running_=false;if(backgroundLocal_)++epoch_;submit(Action::Close);}
 } // namespace conway::app

@@ -34,3 +34,5 @@
 Estos registros describen su revisión original. No representan capacidades,
 fallos, comandos ni mediciones actuales. Se conservan también docs/evidence/ y
 evidencias/; no se mezclan sus tiempos exploratorios con experimentos nuevos.
+
+- [Catálogo y vista previa](CATALOG_PREVIEW.md): menú agrupado, reproducción y confirmación explícita.

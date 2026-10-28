@@ -155,7 +155,7 @@ if(BUILD_TESTING)
 
     add_test(NAME experimental_visualization_guard_pty COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experimental_visualization_guard.py"
-        $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+        $<TARGET_FILE:ftxui_didactic_fixture> "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(experimental_visualization_guard_pty PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
 
     add_executable(experimental_mpi_tests tests/experimental_mpi_tests.cpp src/app/experiment_execution.cpp)
@@ -503,12 +503,12 @@ set_tests_properties(ftxui_didactic_controller_pty PROPERTIES TIMEOUT 90 RUN_SER
 add_test(NAME ftxui_didactic_mpi_views_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_mpi_views.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_didactic_mpi_views_pty PROPERTIES TIMEOUT 100 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
-add_test(NAME ftxui_mpi_pty COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
-set_tests_properties(ftxui_mpi_pty PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
-add_test(NAME text_mpi COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_text_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
-set_tests_properties(text_mpi PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+add_test(NAME catalog_preview_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_catalog_preview.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(catalog_preview_pty PROPERTIES TIMEOUT 160 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME text_catalog_preview COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_text_catalog.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(text_catalog_preview PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
 
 add_test(NAME experiment_csv_roundtrip
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"

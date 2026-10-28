@@ -12,10 +12,10 @@ from test_ftxui_mpi import text,wait,workers
 from test_ftxui_responsive import resize
 
 def enter(t,path,p):
-    t.send('3');t.send('m');t.send('3');t.send('c')
+    t.send('m');t.send('m');t.send('r')
     t.send('\x1b[H'+'\x1b[3~'*10+str(p)+'\r')
-    t.send('C');t.send('m');t.send(str(path)+'\r')
-    t.send('\x1b[B'*5+'\r')
+    t.send('C');t.send('m');t.send(str(path)+'\r');t.send('u')
+    t.send('d')
     wait(t,lambda:'DIDÁCTICA MPI' in text(t) and 'capturada 1' in text(t))
     t.send(' ')
     assert 'En pausa' in text(t),text(t)
@@ -199,7 +199,7 @@ def empty_and_initial_error(binary,root):
             assert 'Sin filas propias' in text(t),text(t)
             t.send('\x1b');wait(t,lambda:not workers(t.process.pid));t.send('C');t.send('m')
             path.write_text('129 129\n'+('0'*129+'\n')*129)
-            t.send(str(path)+'\r');t.send('\x1b[H'+'\x1b[B'*5+'\r')
+            t.send(str(path)+'\r');t.send('u');t.send('d')
             wait(t,lambda:'ERROR:' in text(t))
             assert not workers(t.process.pid),text(t)
             t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0

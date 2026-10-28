@@ -129,7 +129,6 @@ enum class Page {
     PathInput,
     ThreadInput,
     MPIInput,
-    Simulation,
     ExperimentExecution,
     ComparisonConfig,
     BenchmarkMenu,
@@ -159,7 +158,6 @@ struct InteractiveState {
     bool patternActionsFocused{false};
     std::string pathDraft;
     std::string threadDraft;
-    std::unique_ptr<SimulationSession> simulation;
     std::unique_ptr<DidacticController> didactic;
     std::optional<BenchmarkResult> benchmark;
     bool benchmarkRunning{false};
@@ -817,6 +815,7 @@ public:
                    ExperimentExecution::Backend backend = {}, std::unique_ptr<DidacticController> didactic = {})
         : screen_(screen),
           output_(output),
+          catalogPreview_([this]{screen_.PostEvent(Event::Custom);}),
           mainMenu_(makeMenu(mainItems_, state_.mainSelection, [this] { selectMain(); })),
           benchmarkMenu_(makeMenu(benchmarkItems_, state_.benchmarkSelection,
                                   [this] { selectBenchmarkOption(); })),
@@ -847,23 +846,16 @@ public:
         Add(pathInput_);
         Add(threadInput_);
         Add(mpiInput_);
-        Add(simulationView_);
+        Add(passiveView_);
         Add(benchmarkView_);
         Add(didacticView_);
-        mainItems_ = {
-            "Benchmark",
-            "Visualización",
-            "Seleccionar motor",
-            "Configurar hilos OpenMP",
-            "Catálogo de patrones",
-            "Visualización didáctica",
-            "Salir",
-        };
+        mainItems_ = {"Visualización didáctica", "Benchmark", "Catálogo de patrones",
+                      "Seleccionar motor", "Configurar recursos", "Salir"};
         benchmarkItems_ = {
             "Comparación de motores", "Escalabilidad",
             "Resultados de la sesión",
         };
-        engineItems_ = {"Secuencial", "OpenMP", "MPI", "Configurar procesos MPI", "Volver"};
+        engineItems_ = {"Secuencial", "OpenMP", "MPI", "Volver"};
         threadItems_ = {
             "1 hilo", "2 hilos", "4 hilos", "8 hilos",
             "Número personalizado", "Volver",
@@ -887,11 +879,10 @@ public:
         scalingForm_ = makeExperimentFormView(true, input, name, threads, style, submit);
         Add(comparisonForm_);
         Add(scalingForm_);
-        refreshPatterns();
     }
 
     ~InteractiveApp() override {
-        state_.simulation.reset();
+        catalogPreview_.close();
         experiment_->shutdown();
         playbackTimer_.request_stop();
         // La salida normal ya confirmó el cierre asíncrono. La destrucción
@@ -948,9 +939,6 @@ public:
                 content = renderInput("HILOS OPENMP", threadInput_,
                                       "Número entero entre 1 y " +
                                           std::to_string(kMaxOpenMPThreads));
-                break;
-            case Page::Simulation:
-                content = renderSimulation(size.columns, layoutHeight, compact);
                 break;
             case Page::BenchmarkMenu:
                 content = renderBenchmarkMenu();
@@ -1014,7 +1002,9 @@ public:
     }
 
     bool OnEvent(Event event) override {
+        if(state_.page==Page::Main && (event==Event::Tab || event==Event::TabReverse))return mainMenu_->OnEvent(event==Event::Tab?Event::ArrowDown:Event::ArrowUp);
         if (event == Event::Custom) {
+            catalogPreview_.poll();
             bool didacticBecameReady=false;
             if(state_.didactic) {
                 const bool preparing=state_.didactic->isPreparing();state_.didactic->poll();
@@ -1022,19 +1012,8 @@ public:
                 if(!state_.didactic->errorMessage().empty()) state_.message=state_.didactic->errorMessage();
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
-            if (state_.simulation) {
-                state_.simulation->poll();
-                if (!state_.simulation->error().empty()) state_.message = state_.simulation->error();
-                else if (!state_.simulation->busy() &&
-                    (state_.message.starts_with("Recuperando sesión") || state_.message.starts_with("Reiniciando sesión")))
-                    state_.message = "Sesión lista · snapshot confirmado.";
-                if (state_.simulation->closed() && state_.page == Page::Simulation) {
-                    state_.page = Page::Main;
-                    state_.message = "Sesión abandonada. La siguiente visualización comienza desde el patrón inicial.";
-                }
-            }
-            if ((exitAfterSimulation_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
-                (!state_.simulation || state_.simulation->closed()) && (!state_.didactic || state_.didactic->closed())) {
+            if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
+                catalogPreview_.drained() && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1043,12 +1022,8 @@ public:
                 receiveBenchmarkResult();
             }
             if ((pending & kPlaybackEvent) != 0) {
-                if (state_.page == Page::Simulation &&
-                    state_.simulation && state_.simulation->isRunning()) {
-                    state_.simulation->advanceIfRunning();
-                    state_.effectiveThreads = state_.engine == Engine::OpenMP
-                        ? core::last_openmp_team_size() : 1;
-                    schedulePlaybackTick();
+                if(state_.page==Page::Patterns && catalogPreview_.session() && catalogPreview_.session()->isRunning()) {
+                    catalogPreview_.session()->advanceIfRunning();schedulePlaybackTick();
                 } else if (state_.page == Page::Didactic && state_.didactic &&
                            state_.didactic->isPlaying() && state_.didactic->isReady() && !didacticBecameReady) {
                     const auto now=std::chrono::steady_clock::now();
@@ -1093,13 +1068,24 @@ public:
                 return true;
             }
         }
+        if(state_.page==Page::Patterns) {
+            if(event==Event::Tab || event==Event::TabReverse) {catalogDetail_=!catalogDetail_;return true;}
+            if(event.is_character()) {
+                const auto k=event.character();
+                if(k=="u"||k=="U") {usePattern();return true;}
+                if(k==" "||k=="p"||k=="P") {
+                    if(auto* session=catalogPreview_.session()) {
+                        session->toggleRunning();if(session->isRunning())schedulePlaybackTick();else playbackTimer_.request_stop();
+                    }
+                    return true;
+                }
+                if(k=="r"||k=="R") {playbackTimer_.request_stop();if(auto* session=catalogPreview_.session())session->reset();return true;}
+                if((k=="n"||k=="N") && catalogDetail_) {if(auto* session=catalogPreview_.session())if(!session->isRunning())session->step();return true;}
+            }
+        }
         const auto terminal = controls::terminalSize();
         const bool reduced = !ui::roomyTerminal(terminal.columns, terminal.rows);
         if (event.is_character() && (event.character() == "v" || event.character() == "V")) {
-            if (state_.page == Page::Simulation) {
-                if (simulationSingle_) simulationNext_ = !simulationNext_;
-                return true;
-            }
             if (state_.page == Page::Patterns && reduced) {
                 if (catalogDetail_) catalogNext_ = !catalogNext_;
                 return true;
@@ -1118,10 +1104,9 @@ public:
             didacticWorkers_ = !didacticWorkers_; return true;
         }
         if (state_.page == Page::Patterns && catalogDetail_ && event == Event::Return) {
-            selectPattern(); return true;
+            usePattern(); return true;
         }
-        if (state_.page == Page::Simulation ||
-            (state_.page == Page::Patterns && catalogDetail_) || state_.page == Page::Didactic) {
+        if ((state_.page == Page::Patterns && catalogDetail_) || state_.page == Page::Didactic) {
             if (event == Event::PageDown || event == Event::PageUp) {
                 auto& scroll = state_.page == Page::Didactic ? workerRow_ : detailRow_;
                 scroll = std::max(0, scroll + (event == Event::PageDown ? 1 : -1)); return true;
@@ -1130,7 +1115,7 @@ public:
             const int dx = event == Event::ArrowRight ? 1 : event == Event::ArrowLeft ? -1 : 0;
             if (dy || dx) {
                 if (state_.page == Page::Didactic && didacticWorkers_) workerRow_ = std::max(0, workerRow_ + dy);
-                else (state_.page == Page::Simulation ? simulationViewport_ : state_.page == Page::Patterns ? catalogViewport_ : didacticViewport_).move(dy,dx);
+                else (state_.page == Page::Patterns ? catalogViewport_ : didacticViewport_).move(dy,dx);
                 return true;
             }
         }
@@ -1145,40 +1130,6 @@ public:
         if (event.is_character()) {
             const std::string key = event.character();
             if (handleShortcut(key)) {
-                return true;
-            }
-        }
-        if (state_.page == Page::Simulation && event.is_character()) {
-            const std::string key = event.character();
-            if (key == "q" || key == "Q") {
-                playbackTimer_.request_stop();
-                state_.simulation->close();
-                if (state_.simulation->closed()) state_.page = Page::Main;
-                return true;
-            }
-            if (key == "u" || key == "U") {
-                state_.message = "Recuperando sesión..."; state_.simulation->recover(); return true;
-            }
-            if (key == "x" || key == "X") { goBack(); return true; }
-            if (key == "n" || key == "N") {
-                state_.simulation->step();
-                state_.effectiveThreads = state_.engine == Engine::OpenMP
-                    ? core::last_openmp_team_size() : 1;
-                return true;
-            }
-            if (key == " " || key == "p" || key == "P") {
-                state_.simulation->toggleRunning();
-                if (state_.simulation->isRunning()) {
-                    schedulePlaybackTick();
-                } else {
-                    playbackTimer_.request_stop();
-                }
-                return true;
-            }
-            if (key == "r" || key == "R") {
-                state_.message = "Reiniciando sesión...";
-                state_.simulation->reset();
-                state_.effectiveThreads = 0;
                 return true;
             }
         }
@@ -1313,11 +1264,10 @@ private:
                 return state_.patternActionsFocused
                     ? patternActionsMenu_ : patternMenu_;
             case Page::Engines: return engineMenu_;
-            case Page::Threads: return threadMenu_;
+            case Page::Threads: return state_.engine==Engine::Sequential?passiveView_:threadMenu_;
             case Page::MPIInput: return mpiInput_;
             case Page::PathInput: return pathInput_;
             case Page::ThreadInput: return threadInput_;
-            case Page::Simulation: return simulationView_;
             case Page::Benchmark: return benchmarkView_;
             case Page::Didactic: return didacticView_;
         }
@@ -1368,7 +1318,7 @@ private:
                 }
             }
         }
-        patternActionItems_ = {"Ruta manual...", "Volver"};
+        patternActionItems_ = {"Usar patrón", "Ruta manual...", "Volver"};
         state_.patternActionSelection = 0;
         state_.patternActionsFocused = false;
         updateCatalogPreview();
@@ -1413,36 +1363,30 @@ private:
     void updateCatalogPreview() {
         catalogViewport_ = {};
         detailRow_ = 0;
-        catalogPreview_ = {};
-        if (!catalog_.error.empty()) {
-            catalogPreview_.error = catalog_.error;
-            return;
-        }
-        if (catalog_.entries.empty() || state_.patternSelection < 0 ||
-            static_cast<std::size_t>(state_.patternSelection) >=
-                catalog_.entries.size()) {
-            catalogPreview_.error = "No hay un patrón seleccionado.";
-            return;
-        }
-        catalogPreview_ = buildPatternPreview(
-            catalog_.entries[static_cast<std::size_t>(state_.patternSelection)]);
+        playbackTimer_.request_stop();
+        if(!catalog_.error.empty() || catalog_.entries.empty()) {catalogPreview_.select(PatternEntry{.error=catalog_.error.empty()?"No hay patrones disponibles.":catalog_.error});return;}
+        catalogPreview_.select(catalog_.entries.at(static_cast<std::size_t>(state_.patternSelection)));
     }
 
+    void openCatalog(Page destination=Page::Main) {
+        if(experiment_->snapshot().active()) {state_.message="Catálogo disponible al finalizar el experimento.";return;}
+        state_.returnAfterCatalog=destination;refreshPatterns();state_.page=Page::Patterns;
+    }
+    void leaveCatalog() {
+        playbackTimer_.request_stop();catalogPreview_.close();
+    }
+    void openResources() {
+        if(state_.engine==Engine::MPI) {state_.mpiDraft=std::to_string(state_.mpiProcesses);state_.page=Page::MPIInput;}
+        else state_.page=Page::Threads;
+    }
     void selectMain() {
-        switch (state_.mainSelection) {
-            case 0: state_.page = Page::BenchmarkMenu; break;
-            case 1: startSimulation(); break;
-            case 2: state_.page = Page::Engines; break;
-            case 3: state_.page = Page::Threads; break;
-            case 4:
-                if (experiment_->snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; break; }
-                state_.returnAfterCatalog = Page::Main;
-                refreshPatterns();
-                state_.page = Page::Patterns;
-                break;
-            case 5: startDidactic(); break;
-            case 6: requestExit(); break;
-            default: break;
+        switch(state_.mainSelection) {
+            case 0:startDidactic();break;
+            case 1:state_.page=Page::BenchmarkMenu;break;
+            case 2:openCatalog();break;
+            case 3:state_.page=Page::Engines;break;
+            case 4:openResources();break;
+            case 5:requestExit();break;
         }
     }
 
@@ -1455,56 +1399,31 @@ private:
         }
     }
 
-    void selectPattern() {
-        if (catalog_.entries.empty() || state_.patternSelection < 0 ||
-            static_cast<std::size_t>(state_.patternSelection) >=
-                catalog_.entries.size()) {
-            return;
-        }
-        const PatternEntry& entry =
-            catalog_.entries[static_cast<std::size_t>(state_.patternSelection)];
-        if (!entry.valid()) {
-            state_.message = "Error: " + entry.error;
-            return;
-        }
-        loadPath(entry.path);
-        if (state_.input) {
-            state_.page = state_.returnAfterCatalog;
-            if (state_.page == Page::Simulation) {
-                createSimulation();
-            } else if (state_.page == Page::BenchmarkMenu) {
-                startBenchmark();
-            } else if (state_.page == Page::Didactic) {
-                createDidactic();
-            }
-        }
-    }
+    void selectPattern() {catalogDetail_=true;state_.patternActionsFocused=false;}
 
+    void usePattern() {
+        if(!catalogPreview_.initial() || !catalogPreview_.entry()) {state_.message="Selecciona una entrada válida antes de usarla.";return;}
+        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
+        // Confirm the immutable validated initial input, never the current frame.
+        state_.input=*catalogPreview_.initial();state_.path=catalogPreview_.entry()->path;
+        if(state_.didactic && !state_.didactic->closed())state_.didactic->close();
+        state_.message="Patrón confirmado: "+catalogPreview_.entry()->name+" · entrada inicial";
+        leaveCatalog();state_.page=state_.returnAfterCatalog;
+        if(state_.page==Page::Didactic)createDidactic();
+    }
     void selectPatternAction() {
-        if (state_.patternActionSelection == 0) {
-            state_.pathDraft.clear();
-            pathReturnPage_ = Page::Patterns;
-            destinationAfterPath_ = state_.returnAfterCatalog;
-            state_.page = Page::PathInput;
-            return;
+        if(state_.patternActionSelection==0) {usePattern();return;}
+        if(state_.patternActionSelection==1) {
+            if(auto* session=catalogPreview_.session())session->pause();playbackTimer_.request_stop();
+            state_.pathDraft.clear();pathReturnPage_=Page::Patterns;state_.page=Page::PathInput;return;
         }
-        state_.page = state_.returnAfterCatalog;
+        leaveCatalog();state_.page=state_.returnAfterCatalog;
     }
 
     void selectEngine() {
-        if (state_.engineSelection == 4) { state_.page = Page::Main; return; }
-        if (state_.engineSelection == 3) {
-            state_.mpiDraft = std::to_string(state_.mpiProcesses);
-            state_.page = Page::MPIInput; return;
-        }
+        if (state_.engineSelection == 3) { state_.page = Page::Main; return; }
         state_.engine = state_.engineSelection == 0 ? Engine::Sequential
             : state_.engineSelection == 1 ? Engine::OpenMP : Engine::MPI;
-        if (state_.simulation && !state_.simulation->closed()) {
-            state_.simulation->pause();
-            // Selecting MPI does not launch it until Visualización is entered.
-            if (state_.engine != Engine::MPI)
-                state_.simulation->configure(state_.engine, state_.mpiProcesses);
-        }
         state_.message = "Motor seleccionado: " + engineName(state_.engine);
         state_.page = Page::Main;
     }
@@ -1513,11 +1432,12 @@ private:
         const auto count = parseMPIProcesses(state_.mpiDraft);
         if (!count) { state_.message = "Error: P debe ser un entero entre 1 y 1024."; return; }
         state_.mpiProcesses = *count;
-        state_.message = "Procesos MPI: " + std::to_string(*count) + " · se aplicarán al entrar en Visualización.";
+        state_.message = "Procesos MPI: " + std::to_string(*count) + " · se aplicarán al iniciar Didáctico.";
         state_.page = Page::Main;
     }
 
     void selectThreadOption() {
+        if(state_.engine==Engine::Sequential)return;
         if (state_.threadSelection == 5) {
             state_.page = Page::Main;
             return;
@@ -1536,23 +1456,15 @@ private:
     }
 
     void loadPathDraft() {
-        if (state_.pathDraft.empty()) {
-            state_.message = "Error: introduce una ruta de archivo.";
-            return;
-        }
-        loadPath(state_.pathDraft);
-        if (state_.input) {
-            state_.page = destinationAfterPath_;
-            if (state_.page == Page::Simulation) {
-                createSimulation();
-            } else if (state_.page == Page::BenchmarkMenu) {
-                startBenchmark();
-            } else if (state_.page == Page::Didactic) {
-                createDidactic();
-            } else {
-                refreshPatterns();
-            }
-        }
+        try {
+            auto input=loadInput(state_.pathDraft);
+            PatternEntry entry;entry.path=state_.pathDraft;entry.name=std::filesystem::path(entry.path).filename().string();
+            entry.width=input.width;entry.height=input.height;entry.aliveCells=std::count(input.cells.begin(),input.cells.end(),1);
+            entry.description="Archivo externo · candidato sin confirmar";
+            catalogPreview_.selectValidated(std::move(entry),std::move(input));
+            catalogViewport_={};detailRow_=0;catalogDetail_=true;state_.patternActionsFocused=false;
+            state_.page=Page::Patterns;state_.message="Ruta validada; pulsa Usar patrón para confirmar.";
+        } catch(const std::exception& error) {state_.message="Error al cargar: "+std::string(error.what())+" · se conserva el patrón confirmado";}
     }
 
     void applyThreadDraft() {
@@ -1569,53 +1481,7 @@ private:
         state_.page = Page::Main;
     }
 
-    void loadPath(const std::string& path) {
-        try {
-            InputData loaded = loadInput(path);
-            if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
-            if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
-            replaceSimulation_ = true;
-            state_.input = std::move(loaded);
-            state_.path = path;
-            state_.message = "Entrada cargada: " + path;
-        } catch (const std::exception& error) {
-            state_.message = "Error al cargar " + path + ": " + error.what();
-        }
-    }
-
-    void startSimulation() {
-        if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de visualizar.";return;}
-        if (experiment_->snapshot().active()) { state_.message = "Simulación disponible al finalizar el experimento."; return; }
-        if (!state_.input) {
-            state_.returnAfterCatalog = Page::Simulation;
-            refreshPatterns();
-            state_.page = Page::Patterns;
-            return;
-        }
-        createSimulation();
-    }
-
-    void createSimulation() {
-        if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de visualizar.";state_.page=Page::Main;return;}
-        simulationViewport_ = {};
-        if (state_.simulation) state_.simulation->poll();
-        if (replaceSimulation_ && state_.simulation && !state_.simulation->closed()) {
-            state_.page = Page::Main;
-            state_.message = "Cerrando la sesión anterior; vuelve a Visualización al terminar."; return;
-        }
-        if (!state_.simulation || state_.simulation->closed()) {
-            state_.simulation = std::make_unique<SimulationSession>(*state_.input, state_.engine,
-                defaultMPIOptions(state_.mpiProcesses), [this] { screen_.PostEvent(Event::Custom); });
-            replaceSimulation_ = false;
-        } else if (state_.simulation->engine() != state_.engine || state_.simulation->processes() != state_.mpiProcesses) {
-            state_.simulation->configure(state_.engine, state_.mpiProcesses);
-        }
-        state_.effectiveThreads = 0;
-        state_.page = Page::Simulation;
-    }
-
     void startDidactic() {
-        if(state_.simulation && !state_.simulation->closed() && (state_.simulation->engine()==Engine::MPI || state_.simulation->busy())) {state_.message="Abandona la sesión MPI con Q antes de entrar en didáctica.";return;}
         if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
@@ -1631,7 +1497,6 @@ private:
         mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0;
         state_.message.clear();
         if (!state_.input) return;
-        if(state_.simulation && !state_.simulation->closed() && (state_.simulation->engine()==Engine::MPI || state_.simulation->busy())) {state_.page=Page::Main;state_.message="Abandona la sesión MPI con Q antes de entrar en didáctica.";return;}
         if(!state_.didactic) state_.didactic=std::make_unique<DidacticController>([this]{screen_.PostEvent(Event::Custom);});
         state_.didactic->startPreparation(*state_.input,state_.engine,state_.requestedThreads,defaultMPIOptions(state_.mpiProcesses),
             state_.engine==Engine::MPI ? (state_.input->height+state_.mpiProcesses-1)/state_.mpiProcesses-1 : 0,
@@ -1640,9 +1505,9 @@ private:
     }
 
     void startBenchmark() {
+        if(!catalogPreview_.drained()) {state_.message="Espera al cierre de la vista previa antes de medir.";return;}
         if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de medir.";return;}
         if(state_.didactic && state_.didactic->busy()) {state_.message="Espera al cierre o captura didáctica antes de medir.";return;}
-        if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) { state_.message = "Abandona la sesión MPI con Q antes de medir."; return; }
         if (experiment_->snapshot().active()) return;
         if (state_.benchmarkRunning) {
             state_.page = Page::Benchmark;
@@ -1714,13 +1579,14 @@ private:
                 state_.page = Page::Patterns;
                 return true;
             }
-            if (key == "1") { state_.page = Page::BenchmarkMenu; return true; }
-            if (key == "2") { startSimulation(); return true; }
-            if (key == "3") { state_.page = Page::Engines; return true; }
-            if (key == "4") { state_.page = Page::Threads; return true; }
+            if (key == "1" || key == "b" || key == "B") {state_.page=Page::BenchmarkMenu;return true;}
+            if (key == "d" || key == "D") {startDidactic();return true;}
+            if (key == "3" || key == "m" || key == "M") {state_.page=Page::Engines;return true;}
+            if (key == "4" || key == "r" || key == "R") {openResources();return true;}
         }
         if (state_.page == Page::Patterns) {
             if (key == "m" || key == "M") {
+                if(auto* session=catalogPreview_.session())session->pause();playbackTimer_.request_stop();
                 state_.pathDraft.clear();
                 pathReturnPage_ = Page::Patterns;
                 destinationAfterPath_ = state_.returnAfterCatalog;
@@ -1728,13 +1594,13 @@ private:
                 return true;
             }
             if (key == "x" || key == "X" || key == "0") {
-                state_.page = state_.returnAfterCatalog;
+                leaveCatalog();state_.page = state_.returnAfterCatalog;
                 return true;
             }
         }
         if (state_.page == Page::Engines) {
             if (key == "m" || key == "M") { state_.engineSelection = 2; selectEngine(); return true; }
-            if (key == "c" || key == "C") { state_.engineSelection = 3; selectEngine(); return true; }
+
             if (key == "s" || key == "S") {
                 state_.engineSelection = 0;
                 selectEngine();
@@ -1747,6 +1613,7 @@ private:
             }
         }
         if (state_.page == Page::Threads) {
+            if(state_.engine==Engine::Sequential)return false;
             if (key == "1" || key == "2" || key == "4" || key == "8") {
                 state_.threadSelection = key == "1" ? 0 : key == "2" ? 1 :
                     key == "4" ? 2 : 3;
@@ -1772,8 +1639,8 @@ private:
                 requestExit();
                 break;
             case Page::Patterns:
-                state_.page = state_.returnAfterCatalog;
-                break;
+                if(catalogDetail_) {catalogDetail_=false;return;}
+                leaveCatalog();state_.page = state_.returnAfterCatalog;break;
             case Page::Engines:
             case Page::Threads:
             case Page::BenchmarkMenu:
@@ -1793,16 +1660,9 @@ private:
                 state_.page = pathReturnPage_;
                 break;
             case Page::MPIInput:
-                state_.page = Page::Engines; break;
+                state_.page = Page::Main; break;
             case Page::ThreadInput:
                 state_.page = Page::Threads;
-                break;
-            case Page::Simulation:
-                if (state_.simulation && state_.simulation->isRunning()) {
-                    state_.simulation->toggleRunning();
-                }
-                playbackTimer_.request_stop();
-                state_.page = Page::Main;
                 break;
             case Page::Didactic:
                 playbackTimer_.request_stop();
@@ -1815,7 +1675,56 @@ private:
     }
 
     Element renderMain() {
-        return panel("MENÚ PRINCIPAL", mainMenu_->Render() | ftxui::flex);
+        // Only presentation lives here. The existing Menu still owns selection
+        // and dispatch; headings and descriptions never introduce focus stops.
+        return ui::allocatedElement([this](int width,int height) {
+            const int menuWidth=std::min(width,88);
+            const bool framed=height>=14;
+            const int chrome=framed?4:0; // borders, title and title separator
+            const bool descriptions=menuWidth>=64 && height>=chrome+15;
+            int naturalHeight=chrome+10+(descriptions?5:0);
+            const bool sectionGaps=height>=naturalHeight+2;
+            if(sectionGaps)naturalHeight+=2;
+            const bool verticalPadding=framed && height>=naturalHeight+2;
+            if(verticalPadding)naturalHeight+=2;
+            const int margin=menuWidth>=80?2:menuWidth>=46?1:0;
+            const std::array<std::string,6> help{"Comprender cómo calcula cada motor","Comparar rendimiento y escalabilidad",
+                "Explorar, reproducir y elegir un patrón","Secuencial, OpenMP o MPI","Recursos según el motor",""};
+            const auto primary=ftxui::Color::RGB(25,32,38);
+            const auto secondary=ftxui::Color::RGB(168,180,188);
+            const auto selectedSecondary=ftxui::Color::RGB(40,55,65);
+            std::vector<Element> rows;
+            if(verticalPadding)rows.push_back(ftxui::text(""));
+            for(int i=0;i<6;++i) {
+                if(i==0||i==2||i==3) {
+                    if(i!=0 && sectionGaps)rows.push_back(ftxui::text(""));
+                    rows.push_back(heading(i==0?"MODOS PRINCIPALES":i==2?"EXPLORAR PATRONES":"CONFIGURACIÓN"));
+                }
+                if(i==5)rows.push_back(ftxui::separator());
+                const bool selected=state_.mainSelection==i;
+                auto name=ftxui::text(std::string(selected?"> ":"  ")+mainItems_[i])|ftxui::bold;
+                if(colorsEnabled() && selected)name=name|ftxui::color(primary);
+                std::vector<Element> lines{std::move(name)};
+                if(descriptions && !help[i].empty()) {
+                    auto description=ftxui::text("    "+help[i]);
+                    if(colorsEnabled())description=description|ftxui::color(selected?selectedSecondary:secondary);
+                    else if(!selected)description=description|ftxui::dim;
+                    lines.push_back(std::move(description));
+                }
+                auto block=ftxui::vbox(std::move(lines));
+                if(selected)block=colorsEnabled()?block|ftxui::bgcolor(identityCyan()):block|ftxui::inverted;
+                rows.push_back(std::move(block));
+            }
+            if(verticalPadding)rows.push_back(ftxui::text(""));
+            auto body=ftxui::hbox({ftxui::text(std::string(margin,' ')),ftxui::vbox(std::move(rows))|ftxui::flex,
+                ftxui::text(std::string(margin,' '))});
+            Element menu=framed?ftxui::vbox({heading("MENÚ PRINCIPAL"),ftxui::separator(),std::move(body)})|ftxui::border:std::move(body);
+            menu=menu|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,menuWidth);
+            // Let the unused terminal area remain outside the natural-height
+            // panel, rather than stretching options or the area below Salir.
+            return ftxui::vbox({ftxui::hbox({ftxui::filler(),std::move(menu),ftxui::filler()})|
+                ftxui::size(ftxui::HEIGHT,ftxui::EQUAL,naturalHeight),ftxui::filler()});
+        });
     }
 
     Element scrollDetail(std::vector<Element> rows) {
@@ -1832,130 +1741,44 @@ private:
             std::to_string(std::min(width, view.column + columns)) + "/" + std::to_string(width)) | ftxui::dim;
     }
 
-    Element catalogBoards(bool paired) {
-        if (!catalogPreview_.current || !catalogPreview_.next)
-            return ftxui::text("Sin vista previa.");
-        return ui::allocatedElement([this, paired](int width, int height) {
-            const auto& current = *catalogPreview_.current;
-            const int panelWidth = paired ? (width - 1) / 2 : width;
-            // Panel: two borders, title and separator. Grid: 2*r+1,
-            // plus one viewport line even when the origin is zero.
-            if (height < (paired ? 8 : 5) || panelWidth < 4)
-                return ftxui::text("Tablero sin espacio. Amplía la terminal.");
-            const auto rows = static_cast<std::size_t>((height - (paired ? 6 : 3)) / 2);
-            const auto columns = static_cast<std::size_t>((panelWidth - (paired ? 3 : 1)) / 3);
-            catalogViewport_.clamp(current.height(), current.width(), rows, columns);
-            auto board = [&](bool next) {
-                auto body = ftxui::vbox(boardRows(next ? *catalogPreview_.next : current,
-                    rows, columns, colorsEnabled(), catalogViewport_.row, catalogViewport_.column, false));
-                const auto title = next ? "SIGUIENTE · generación 1" : "ACTUAL · generación 0";
-                return paired ? panel(title, std::move(body))
-                    : ftxui::vbox({heading(title), std::move(body) | ftxui::flex});
-            };
-            Element boards = paired ? ftxui::hbox({board(false) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex,
-                ftxui::text(" "), board(true) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, panelWidth) | ftxui::flex}) : board(catalogNext_);
-            return ftxui::vbox({std::move(boards) | ftxui::flex,
-                viewportLabel(catalogViewport_, current.height(), current.width(), rows, columns)});
+    Element catalogBoards(bool =false) {
+        if(!catalogPreview_.session())return ftxui::text("Sin vista previa válida.");
+        return ui::allocatedElement([this](int width,int height) {
+            const auto& game=catalogPreview_.session()->game();
+            if(width<4 || height<5)return ftxui::text("Sin espacio; reduce datos o amplía la terminal.");
+            const auto rows=static_cast<std::size_t>(std::max(1,(height-3)/2));
+            const auto columns=static_cast<std::size_t>(std::max(1,(width-1)/3));
+            catalogViewport_.clamp(game.height(),game.width(),rows,columns);
+            return ftxui::vbox({heading("CURRENT · generación "+std::to_string(game.generation())),
+                ftxui::vbox(boardRows(game,rows,columns,colorsEnabled(),catalogViewport_.row,catalogViewport_.column,false))|ftxui::flex,
+                viewportLabel(catalogViewport_,game.height(),game.width(),rows,columns)});
         });
     }
 
-    Element renderCompactPatterns(Element list, std::size_t width, std::size_t height) {
-        if (!catalogDetail_) return ftxui::vbox({heading("CATÁLOGO DE PATRONES"), std::move(list) | ftxui::flex});
-        std::vector<Element> rows;
-        if (catalog_.entries.empty()) rows.push_back(ftxui::paragraph("No hay patrones disponibles."));
-        else {
-            const auto& entry = catalog_.entries[static_cast<std::size_t>(state_.patternSelection)];
-            rows.push_back(ftxui::paragraph("Patrón: " + entry.name));
-            if (!entry.valid()) rows.push_back(ftxui::paragraph(entry.error) | ftxui::color(ftxui::Color::Red));
-            else {
-                rows.push_back(ftxui::paragraph("Dimensiones: " + std::to_string(entry.height) + " × " +
-                    std::to_string(entry.width) + " · " + std::to_string(entry.aliveCells) + " vivas"));
-                if (!entry.type.empty()) rows.push_back(ftxui::paragraph("Tipo: " + entry.type));
-                if (entry.period) rows.push_back(ftxui::text("Período: " + std::to_string(*entry.period)));
-                if (!entry.description.empty()) rows.push_back(ftxui::paragraph(entry.description) | ftxui::dim);
-                if (!catalogPreview_.error.empty()) rows.push_back(ftxui::paragraph(catalogPreview_.error));
-            }
+    Element renderPatterns(std::size_t width,std::size_t,bool) {
+        const bool roomy=ui::roomyTerminal(controls::terminalSize().columns,controls::terminalSize().rows);
+        auto list=panel("CATÁLOGO DE PATRONES",ftxui::vbox({patternMenu_->Render()|ftxui::yframe|ftxui::flex,
+            ftxui::separator(),patternActionsMenu_->Render()}));
+        if(!roomy && !catalogDetail_)return list;
+        std::vector<Element> metadata;
+        if(const auto& entry=catalogPreview_.entry()) {
+            metadata.push_back(ftxui::paragraph("Explorando: "+entry->name));
+            metadata.push_back(ftxui::paragraph(entry->description));
+            metadata.push_back(ftxui::text(std::to_string(entry->width)+" × "+std::to_string(entry->height)+(catalogPreview_.initial()?" · entrada inicial validada":" · entrada no válida")));
         }
-        auto metadata = scrollDetail(std::move(rows)) | ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 5);
-        return panel("DETALLE ACTIVO · D lista · V vista", ftxui::vbox({
-            std::move(metadata), catalogBoards(false) | ftxui::flex}));
-    }
-
-    Element renderPatterns(std::size_t width, std::size_t height, bool compact) {
-        Element patternEntries = patternMenu_->Render();
-        if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
-            patternEntries = std::move(patternEntries) | ftxui::yframe;
-        Element listBody = ftxui::vbox({
-            ftxui::text("Archivos .txt disponibles") | ftxui::dim,
-            catalog_.error.empty()
-                ? std::move(patternEntries) | ftxui::flex
-                : ftxui::text("Error: " + catalog_.error) | ftxui::color(ftxui::Color::Red),
-            ftxui::separator(),
-            ftxui::text("ACCIONES") | ftxui::bold,
-            patternActionsMenu_->Render(),
-        });
-        Element patternList = panel(catalogDetail_ ? "PATRONES" : "PATRONES ACTIVOS · D detalle", std::move(listBody));
-        if (!ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows))
-            return renderCompactPatterns(std::move(patternList), width, height);
-
-        std::vector<Element> details;
-        if (catalog_.error.empty() && !catalog_.entries.empty() &&
-            state_.patternSelection >= 0 &&
-            static_cast<std::size_t>(state_.patternSelection) <
-                catalog_.entries.size()) {
-            const PatternEntry& selected = catalog_.entries[
-                static_cast<std::size_t>(state_.patternSelection)];
-            details.push_back(ftxui::text("Patrón: " + selected.name));
-            if (selected.valid()) {
-                details.push_back(ftxui::text(
-                    "Dimensiones: " + std::to_string(selected.height) + " × " +
-                    std::to_string(selected.width) + "  ·  " +
-                    std::to_string(selected.aliveCells) + " vivas"));
-                if (!selected.type.empty()) {
-                    details.push_back(ftxui::text("Tipo: " + selected.type));
-                }
-                if (selected.period) {
-                    details.push_back(ftxui::text(
-                        "Período: " + std::to_string(*selected.period)));
-                }
-                if (!selected.description.empty()) {
-                    details.push_back(ftxui::paragraph(selected.description) | ftxui::dim);
-                }
-            }
-        } else {
-            details.push_back(ftxui::text("Selecciona un archivo .txt para ver sus datos."));
+        if(!catalogPreview_.error().empty())metadata.push_back(ftxui::paragraph(catalogPreview_.error()));
+        const bool tiny=controls::terminalSize().rows<=20;
+        std::string status=tiny?"Secuencial":"Vista previa: Secuencial";
+        if(auto* session=catalogPreview_.session()) {
+            status+=" · "+std::string(session->isRunning()?"Reproduciendo":"En pausa");
+            if(!session->error().empty())metadata.push_back(ftxui::paragraph(session->error()));
         }
-
-        Element detailContent = scrollDetail(std::move(details)) |
-            ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 5);
-        if (!catalogPreview_.error.empty()) {
-            detailContent = ftxui::vbox({
-                std::move(detailContent),
-                ftxui::text("Vista previa no disponible: " + catalogPreview_.error) |
-                    ftxui::color(ftxui::Color::Red),
-            });
-        } else if (catalogPreview_.current && catalogPreview_.next) {
-            detailContent = ftxui::vbox({std::move(detailContent), ftxui::separator(),
-                catalogBoards(true) | ftxui::flex});
-        }
-        Element detailPanel = panel(catalogDetail_ ? "DETALLE ACTIVO · D lista" : "DETALLE · D activar", std::move(detailContent));
-
-        Element catalogPanels = width < 64
-            ? ftxui::vbox({
-                  std::move(patternList) | ftxui::flex,
-                  std::move(detailPanel) | ftxui::flex,
-              })
-            : ftxui::hbox({
-                  std::move(patternList) |
-                      ftxui::size(ftxui::WIDTH, ftxui::EQUAL,
-                                  static_cast<int>((width * 2) / 5)),
-                  ftxui::text(" "),
-                  std::move(detailPanel) | ftxui::flex,
-              });
-        return ftxui::vbox({
-            heading("CATÁLOGO DE PATRONES"),
-            std::move(catalogPanels) | ftxui::flex,
-        });
+        auto body=ftxui::vbox({ftxui::paragraph(status),
+            scrollDetail(std::move(metadata))|ftxui::size(ftxui::HEIGHT,ftxui::LESS_THAN,roomy?5:tiny?1:2),
+            catalogBoards()|ftxui::flex});
+        auto detail=tiny?body|ftxui::border:panel("FICHA · U Usar patrón",std::move(body));
+        if(!roomy)return detail;
+        return ftxui::hbox({list|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,static_cast<int>(width/3)),ftxui::text(" "),detail|ftxui::flex});
     }
 
     Element renderEngines() {
@@ -1963,6 +1786,8 @@ private:
     }
 
     Element renderThreads() {
+        if(state_.engine==Engine::Sequential)return panel("RECURSOS · SECUENCIAL",ftxui::vbox({
+            ftxui::paragraph("1 hilo de cálculo; sin recursos configurables."),ftxui::text("Esc volver. Se conservan los ajustes OpenMP y MPI.")}));
         return panel("CONFIGURACIÓN OPENMP",
             ftxui::vbox({
                 ftxui::text("Procesadores lógicos disponibles: " +
@@ -1980,84 +1805,18 @@ private:
             ftxui::vbox({
                 ftxui::text(std::move(hint)),
                 input->Render() | ftxui::border,
-                ftxui::text("Enter confirma  ·  Esc cancela"),
+                ftxui::text(state_.page==Page::PathInput?"Enter valida la ruta · Esc cancela":"Enter confirma · Esc cancela"),
             }));
-    }
-
-    Element renderSimulation(std::size_t width, std::size_t height, bool compact) {
-        if (!state_.simulation) {
-            return panel("SIMULACIÓN", ftxui::text("No hay una simulación activa."));
-        }
-        const Game& game = state_.simulation->game();
-        if (state_.simulation->engine() == Engine::MPI || !state_.simulation->preview()) {
-            simulationSingle_ = false;
-            const auto rows = std::max<std::size_t>(1, std::min(game.height(),height>12?(height-12)/2:1));
-            const auto columns = std::max<std::size_t>(1, (width > 6 ? width - 6 : 1) / 3);
-            simulationViewport_.clamp(game.height(), game.width(), rows, columns);
-            const auto status = state_.simulation->busy() ? (state_.simulation->isRunning() ? "Calculando" : "Operación pendiente")
-                : state_.simulation->isRunning() ? "En ejecución" : "Pausado";
-            return panel("SIMULACIÓN · " + engineName(state_.simulation->engine()) +
-                (state_.simulation->engine() == Engine::MPI ? " · P=" + std::to_string(state_.mpiProcesses) : " · cambiando motor"), ftxui::vbox({
-                ftxui::text("Generación " + std::to_string(game.generation()) + " · " + std::to_string(game.aliveCount()) + " vivas · " + status),
-                panel("CURRENT · snapshot confirmado", ftxui::vbox(boardRows(game, rows, columns, colorsEnabled(), simulationViewport_.row, simulationViewport_.column))) | ftxui::flex,
-                ftxui::paragraph(state_.simulation->error()) | ftxui::color(ftxui::Color::Red),
-                ftxui::text("N paso · Esp pausa/reanuda · R reiniciar · U recuperar · Esc menú · Q abandonar"),
-            }));
-        }
-        const bool single = !ui::roomyTerminal(controls::terminalSize().columns, controls::terminalSize().rows)
-            && !ui::pairedSimulation(width, height, game.width(), game.height());
-        simulationSingle_ = single;
-        const std::size_t rows = visibleBoardRows(single && height > 2 ? height - 2 : height, game.height(), single ? false : compact);
-        const std::size_t panelWidth = single ? (width > 6 ? width - 6 : 1) : compact
-            ? std::max<std::size_t>(1, width > 8 ? width - 8 : 1)
-            : std::max<std::size_t>(
-                  1, (width - std::min<std::size_t>(width, 10)) / 2);
-        const std::size_t columns = std::max<std::size_t>(
-            1, std::min(game.width(), single ? (panelWidth - 1) / 3 : panelWidth / 4));
-        simulationViewport_.clamp(game.height(), game.width(), rows, columns);
-        const bool colors = colorsEnabled();
-        Element current = panel("CURRENT · generación " +
-            std::to_string(game.generation()),
-            ftxui::vbox(boardRows(game, rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
-        Element next = panel("NEXT · generación " +
-            std::to_string(game.generation() + 1),
-            ftxui::vbox(boardRows(*state_.simulation->preview(), rows, columns, colors, simulationViewport_.row, simulationViewport_.column)));
-        Element boards = single ? (simulationNext_ ? std::move(next) : std::move(current)) : compact
-            ? ftxui::vbox({std::move(current) | ftxui::flex,
-                           ftxui::text(""),
-                           std::move(next) | ftxui::flex})
-            : ftxui::hbox({std::move(current) | ftxui::flex,
-                           ftxui::text(" "),
-                           std::move(next) | ftxui::flex});
-        std::string status = state_.simulation->isRunning() ? "En ejecución" : "Pausado";
-        std::string threads = state_.engine == Engine::OpenMP
-            ? "OpenMP · solicitados " + std::to_string(state_.requestedThreads) +
-                " · efectivos " + (state_.effectiveThreads > 0
-                    ? std::to_string(state_.effectiveThreads) : "pendientes")
-            : "Secuencial";
-        return ftxui::vbox({
-            heading("SIMULACIÓN · " + state_.path),
-            ftxui::text(std::to_string(game.width()) + " × " +
-                        std::to_string(game.height()) + " · " + threads),
-            std::move(boards) | ftxui::flex,
-            ftxui::hbox({
-                ftxui::text("Generación " + std::to_string(game.generation())),
-                ftxui::text("  ·  " + std::to_string(game.aliveCount()) + " vivas"),
-                ftxui::text("  ·  " + status) | ftxui::color(
-                    state_.simulation->isRunning() ? ftxui::Color::Green :
-                                                      ftxui::Color::Yellow),
-            }),
-        }) | ftxui::border;
     }
 
     void requestExit() {
-        exitAfterSimulation_ = true;
-        if (state_.simulation && !state_.simulation->closed()) state_.simulation->close();
+        leaveCatalog();
+        exitRequested_ = true;
         if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
         if (experiment_->snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else if ((!state_.simulation || state_.simulation->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
+        } else if (catalogPreview_.drained() && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -2067,13 +1826,8 @@ private:
         auto gameBytes = [&](const Game& game) {
             return checkedMultiply(2, checkedMultiply(checkedAdd(game.width(), 2), checkedAdd(game.height(), 2)));
         };
-        for (const auto* game : {&catalogPreview_.current, &catalogPreview_.next})
-            if (*game) bytes = checkedAdd(bytes, gameBytes(**game));
-        if (state_.simulation) {
-            const auto& game = state_.simulation->game();
-            bytes = checkedAdd(bytes, checkedAdd(gameBytes(game), checkedMultiply(game.width(), game.height())));
-            if (state_.simulation->preview()) bytes = checkedAdd(bytes,gameBytes(*state_.simulation->preview()));
-        }
+        if(catalogPreview_.initial())bytes=checkedAdd(bytes,catalogPreview_.initial()->cells.capacity());
+        if(catalogPreview_.session())bytes=checkedAdd(bytes,gameBytes(catalogPreview_.session()->game()));
         if (state_.didactic) {
             bytes = checkedAdd(bytes, state_.didactic->initialInput().cells.capacity());
             for (const auto* game : {state_.didactic->preStep(), state_.didactic->postStep()})
@@ -2087,8 +1841,8 @@ private:
     }
 
     std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
+        if(!catalogPreview_.drained())return "Espera al cierre de la vista previa antes de medir.";
         if(state_.didactic && state_.didactic->ownsMPISession()) return "Espera al cierre de la sesión didáctica MPI antes de medir.";
-        if (state_.simulation && !state_.simulation->closed() && (state_.simulation->engine() == Engine::MPI || state_.simulation->busy())) return "Abandona la sesión MPI con Q antes de medir.";
         if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
         if (state_.benchmarkRunning || (state_.didactic && state_.didactic->busy()))
@@ -2686,15 +2440,17 @@ private:
     }
 
     std::string footerText() const {
+        if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
+            "Esp pausa · R · U usar · D lista · ↑↓ mover · M ruta · Esc":"↑↓ lista · Enter ficha · U usar · M ruta · Esc";
+        if(state_.page==Page::Main && controls::terminalSize().columns<80)return "↑↓/Tab · Enter · D/B/C/M/R · Q salir";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · [/] rank · ↑↓ · N paso · Esp pausa · +/- · R · Esc";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
         const auto terminal = controls::terminalSize();
         if (!ui::roomyTerminal(terminal.columns, terminal.rows)) {
             switch (state_.page) {
-                case Page::Simulation: return std::string(simulationSingle_ ? "V vista · " : "") + "Flechas mover · N paso · Esp pausa · R · Esc";
                 case Page::Patterns: return catalogDetail_
-                    ? "D lista · V vista · Flechas tablero · PgUp/PgDn datos · Enter · M · Esc"
-                    : "↑↓ patrones · D detalle · Enter · M ruta · Esc";
+                    ? "D lista · Flechas tablero · Esp pausa · R · U usar · M ruta · Esc"
+                    : "↑↓ lista · Enter ficha · Esp pausa · R · U usar · M ruta · Esc";
                 case Page::Didactic: return didacticWorkers_
                     ? "T tableros · ↑↓/PgUp/PgDn hilos · N etapa · Esp · R · +/- · Esc"
                     : "V vista · T hilos · Flechas tablero · N etapa · Esp · R · +/- · Esc";
@@ -2706,16 +2462,15 @@ private:
             }
         }
         switch (state_.page) {
-            case Page::Main: return "↑↓ navegar · Enter seleccionar · C patrones · 0 salir";
+            case Page::Main: return "↑↓/Tab · Enter · D/B modos · C catálogo · M/R ajustes · Q salir";
             case Page::Patterns: return catalogDetail_
-                ? "D lista · Flechas tablero · PgUp/PgDn datos · Enter · M ruta · Esc"
-                : "↑↓ patrones · D detalle · Enter cargar · M ruta · Esc volver";
-            case Page::Engines: return "↑↓ navegar · Enter · S/O/M motor · C procesos MPI · Esc volver";
+                ? "D lista · Flechas tablero · Esp pausa · R reiniciar · U usar · M ruta · Esc"
+                : "↑↓ lista · Enter ficha · Esp pausa · R reiniciar · U usar · M ruta · Esc";
+            case Page::Engines: return "↑↓ · Enter · S/O/M motor · Esc volver";
             case Page::Threads: return "↑↓ navegar · Enter seleccionar · Esc volver";
-            case Page::PathInput:
+            case Page::PathInput:return "Enter valida · Esc conserva el candidato anterior";
             case Page::MPIInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
-            case Page::Simulation: return "Flechas mover · N paso · Espacio/P pausa/reanuda · R reiniciar · U recuperar · Esc menú · Q abandonar";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
             case Page::ExperimentExecution: return (showingComparison() || showingScaling())
                 ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración"
@@ -2741,7 +2496,7 @@ private:
     std::vector<std::string> engineItems_;
     std::vector<std::string> threadItems_;
     PatternCatalog catalog_;
-    PatternPreview catalogPreview_;
+    CatalogPreview catalogPreview_;
     Page pathReturnPage_{Page::Main};
     Page destinationAfterPath_{Page::Main};
     std::atomic<unsigned> pendingEvents_{0};
@@ -2752,18 +2507,17 @@ private:
     std::thread benchmarkWorker_;
     std::unique_ptr<ExperimentExecution> experiment_;
     bool exitWhenExperimentFinishes_{false};
-    bool exitAfterSimulation_{false}, replaceSimulation_{false};
+    bool exitRequested_{false};
     int resultRow_{0}, resultRows_{1};
     int comparisonTab_{0};
     int scalingTab_{0};
-    bool simulationSingle_{false};
     int workerRow_{0};
-    bool simulationNext_{false}, catalogNext_{false}, catalogDetail_{false};
+    bool catalogNext_{false}, catalogDetail_{false};
     int mpiDidacticView_=0, mpiDidacticRank_=0, mpiDidacticRow_=0, mpiDidacticMaxOffset_=0, mpiDidacticCol_=0;
     bool didacticNext_{true}, didacticWorkers_{false};
     std::chrono::steady_clock::time_point didacticTickAt_{};
     int detailRow_{0};
-    ui::BoardViewport simulationViewport_, catalogViewport_, didacticViewport_;
+    ui::BoardViewport catalogViewport_, didacticViewport_;
     ftxui::Component comparisonForm_, scalingForm_;
     ftxui::Component mainMenu_;
     ftxui::Component benchmarkMenu_;
@@ -2774,7 +2528,7 @@ private:
     ftxui::Component pathInput_;
     ftxui::Component threadInput_;
     ftxui::Component mpiInput_;
-    ftxui::Component simulationView_ = ftxui::Renderer([] { return ftxui::text(""); });
+    ftxui::Component passiveView_ = ftxui::Renderer([] { return ftxui::text(""); });
     ftxui::Component benchmarkView_ = ftxui::Renderer([] { return ftxui::text(""); });
     ftxui::Component didacticView_ = ftxui::Renderer([] { return ftxui::text(""); });
 };

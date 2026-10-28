@@ -113,7 +113,7 @@ def check(binary, cwd, columns, rows):
     terminal = Terminal(binary, cwd, columns, rows)
     try:
         identity = terminal.identity()
-        terminal.send("4c2\rC\r1\r")
+        terminal.send("3o4c2\rC\ru1\r")
         expect_identity_heading(terminal, "COMPARACIÓN DE MOTORES")
         visible(terminal, "cedar.txt", "7 × 3")
         execute(terminal)
@@ -178,7 +178,7 @@ def check_active_close(binary, cwd):
     os.environ["CONWAY_TEST_GATE"] = gate
     terminal = Terminal(binary, cwd, 120, 40)
     try:
-        terminal.send("\r\r")
+        terminal.send("b\r")
         field(terminal, "Ancho", "7")
         field(terminal, "Alto", "5")
         field(terminal, "Generaciones", "3")
@@ -194,9 +194,7 @@ def check_active_close(binary, cwd):
         visible(terminal, "Ya hay un experimento activo")
         terminal.send(ESC)
         terminal.send(ESC)
-        terminal.send("2")
-        visible(terminal, "Simulación disponible al finalizar")
-        terminal.send("\x1b[B" * 5 + "\r")
+        terminal.send("d")
         visible(terminal, "Modo didáctico disponible al finalizar")
         terminal.send("C")
         visible(terminal, "Catálogo disponible al finalizar")

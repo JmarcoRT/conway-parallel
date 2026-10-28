@@ -16,9 +16,11 @@ std::optional<int> parseMPIProcesses(std::string_view text) noexcept;
 // committed by poll(). game() always returns the last confirmed full snapshot.
 class SimulationSession {
 public:
+    // backgroundLocal reuses the worker for a sequential catalogue only; no speculative NEXT.
+    // Default local/MPI behavior remains compatible with existing consumers.
     SimulationSession(const InputData& input, Engine engine,
                       mpi::ClientOptions options=defaultMPIOptions(),
-                      std::function<void()> notify={});
+                      std::function<void()> notify={}, bool backgroundLocal=false);
     ~SimulationSession();
     const Game& game() const noexcept;
     const std::optional<Game>& preview() const noexcept { return preview_; }
@@ -51,6 +53,8 @@ private:
     std::function<void()> notify_;
     std::unique_ptr<Worker> worker_;
     std::optional<Action> pending_;
+    bool backgroundLocal_{false};
+    std::uint64_t epoch_{0};
     bool running_{false},busy_{false},closed_{false};
     std::string error_;
     std::vector<int> pids_;

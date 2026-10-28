@@ -14,8 +14,8 @@ def local(binary,root,size,engine="s"):
     t=Terminal(binary,root,*size)
     try:
         if engine!='s':t.send('3');t.send(engine)
-        t.send('C');t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r')
-        t.send('\x1b[B'*5+'\r')
+        t.send('C');t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r');t.send('u')
+        t.send('d')
         wait(t,lambda:'MODO DIDÁCTICO' in text(t) and 'Reproduciendo' in text(t))
         t.send(' ')
         assert 'En pausa' in text(t) and 'Generación actual 0' in text(t),text(t)
@@ -51,9 +51,9 @@ def mpi_guard(fixture,launcher,worker,root):
             t.send('\x1b');t.send('\x1b[B\r');move_to(t,'Ejecutar experimento');t.send('\r')
             assert 'sesión didáctica MPI antes de medir' in text(t),text(t)
             assert set(workers(t.process.pid))==pids
-            t.send('\x1b');t.send('\x1b');t.send('3');t.send('m');t.send('2')
-            assert 'Espera al cierre de la sesión didáctica MPI' in text(t) and 'MENÚ PRINCIPAL' in text(t),text(t)
+            t.send('\x1b');t.send('\x1b');t.send('c')
             assert set(workers(t.process.pid))==pids
+            t.send('x')
             t.send('0');assert t.process.wait(timeout=5)==0
             for pid in pids:
                 try:os.kill(pid,0)

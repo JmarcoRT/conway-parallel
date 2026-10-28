@@ -158,11 +158,11 @@ incierta prevalece sobre el epoch y bloquea cualquier reemplazo.
 
 ownsMPISession() incluye creación reservada, sesión lista, cierre pendiente y
 limpieza incierta. La UI impide los dos experimentos configurables y el benchmark
-histórico mientras esa reserva exista; tampoco abre otra visualización. A la
-inversa, una sesión MPI normal abierta o una transición pendiente impide entrar
-en didáctica. Los cierres de capturas locales pendientes también impiden empezar
-mediciones. Salir de didáctica solicita cierre asíncrono, no deja ranks ociosos
-para medir después. Salir de la aplicación espera ambas sesiones y el experimento.
+histórico mientras esa reserva exista. Los cierres de capturas locales pendientes
+también impiden empezar mediciones. El catálogo reproduce Secuencial en una sesión
+separada y no lanza MPI; su cierre se drena antes de medir. Salir de didáctica
+solicita cierre asíncrono. Salir de la aplicación espera catálogo, didáctico y
+experimento. No existe ya una página independiente de visualización normal.
 
 Los límites de captura y el protocolo se mantienen en [MPI_TRACE.md](MPI_TRACE.md).
 No cambia la metodología experimental, ADVANCE ni RUN_BATCH.

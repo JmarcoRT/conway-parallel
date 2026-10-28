@@ -44,8 +44,6 @@ struct AppState {
     conway::Engine engine{conway::Engine::Sequential};
     int requestedOpenMPThreads{defaultOpenMPThreadCount()};
     int mpiProcesses{1};
-    std::unique_ptr<SimulationSession> simulation;
-    bool replaceSimulation{false};
 };
 
 struct PathRequest {
@@ -59,7 +57,7 @@ enum class MenuAction {
     Down,
     Select,
     Benchmark,
-    Visualization,
+    Didactic,
     SelectEngine,     // abre el submenu de seleccion de motor
     ConfigureThreads,
     ChangeInput,
@@ -121,12 +119,8 @@ std::optional<controls::KeyPress> readKeyWithResize(
 
 const std::vector<ui::MenuItem>& mainMenuItems() {
     static const std::vector<ui::MenuItem> items = {
-        {"1", "Benchmark"},
-        {"2", "Visualización"},
-        {"3", "Motor"},
-        {"4", "Hilos OpenMP"},
-        {"C", "Catálogo de patrones"},
-        {"0", "Salir"}
+        {"D", "Visualización didáctica"}, {"B", "Benchmark"}, {"C", "Catálogo de patrones"},
+        {"M", "Seleccionar motor"}, {"R", "Configurar recursos"}, {"Q", "Salir"}
     };
 
     return items;
@@ -137,7 +131,6 @@ const std::vector<ui::MenuItem>& engineMenuItems() {
         {"S", "Secuencial"},
         {"O", "OpenMP"},
         {"M", "MPI"},
-        {"P", "Configurar procesos MPI"},
         {"X", "Volver"}
     };
 
@@ -168,18 +161,15 @@ const char* engineName(conway::Engine e) {
 
 void renderMenu(const AppState& state, std::size_t selected, const std::string& message) {
     clearScreen();
-    const std::string subtitle =
-        "Juego de la Vida  |  " + std::string(engineName(state.engine)) +
-        "  |  OpenMP solicitado: " + std::to_string(state.requestedOpenMPThreads);
-    ui::renderLayout(
-        "CONWAY PARALLEL",
-        subtitle,
-        makeInputInfo(state),
-        mainMenuItems(),
-        selected,
-        currentLayoutConfig(),
-        message
-    );
+    (void)selected;
+    std::cout << "\nCONWAY PARALLEL\nPatrón confirmado: " << (state.path.empty()?"Sin patrón":state.path)
+              << " · Motor: " << engineName(state.engine);
+    if(state.engine==Engine::MPI)std::cout<<" · Procesos MPI: "<<state.mpiProcesses;
+    else if(state.engine==Engine::OpenMP)std::cout<<" · Hilos OpenMP: "<<state.requestedOpenMPThreads;
+    std::cout<<"\n";
+    std::cout << "MODOS PRINCIPALES\n  D Visualización didáctica\n  B Benchmark\n"
+              << "EXPLORAR PATRONES\n  C Catálogo de patrones\nCONFIGURACIÓN\n  M Seleccionar motor\n  R Configurar recursos\n"
+              << "------------------\n  Q Salir\n" << message << "\n";
     std::cout << std::flush;
 }
 
@@ -334,215 +324,12 @@ PathRequest askPath() {
     }
 }
 
-bool loadInto(AppState& state, const std::string& path, std::string& message) {
-    try {
-        InputData data = loadInput(path);
-        if (state.simulation && !state.simulation->closed()) state.simulation->close();
-        state.replaceSimulation = true;
-        state.input = std::move(data);
-        state.path = path;
-        message = "Entrada cargada: " + path;
+bool browseCatalog(AppState&,std::string&);
 
-        return true;
-    } catch (const std::exception& e) {
-        message = "Error al cargar";
-        if (state.input) {
-            message += " (se conserva la entrada anterior)";
-        }
-        message += ": " + std::string(e.what());
-
-        return false;
-    }
+bool ensureInput(AppState& state,std::string& message) {
+    return state.input?true:browseCatalog(state,message);
 }
-
-bool selectPatternFromCatalog(AppState& state, std::string& message) {
-    const ui::ActiveInputInfo active = makeInputInfo(state);
-    const PatternCatalog catalog = discoverPatterns("patterns");
-    if (!catalog.error.empty()) {
-        message = "Error: " + catalog.error;
-        return true;
-    }
-
-    std::vector<ui::MenuItem> items;
-    items.reserve(catalog.entries.size() + 2);
-    std::size_t selected = 0;
-    for (std::size_t index = 0; index < catalog.entries.size(); ++index) {
-        const PatternEntry& entry = catalog.entries[index];
-        std::string label = entry.name;
-        if (entry.valid()) {
-            label += "  ·  " + std::to_string(entry.width) + " × " +
-                std::to_string(entry.height);
-            if (!entry.description.empty()) {
-                label += "  ·  " + entry.description;
-            }
-            if (entry.path == state.path) {
-                selected = index;
-            }
-        } else {
-            label += "  ·  inválido: " + entry.error;
-        }
-        items.push_back({std::to_string((index + 1) % 10), std::move(label)});
-    }
-    const std::size_t manualIndex = items.size();
-    items.push_back({"M", "Introducir una ruta manual"});
-    const std::size_t backIndex = items.size();
-    items.push_back({"X", "Volver sin cambiar"});
-    if (catalog.entries.empty()) {
-        selected = manualIndex;
-    }
-
-    const std::string subtitle =
-        "Catálogo dinámico: patterns/*.txt  |  Añade archivos .txt para descubrirlos" +
-        (active.hasInput ? "  |  Actual: " + active.filename : "  |  Sin patrón seleccionado");
-    const bool interactive = controls::isInteractive();
-    auto lastSize = controls::terminalSize();
-    while (true) {
-        clearScreen();
-        ui::renderLayout("SELECCIONAR PATRÓN", subtitle, active, items, selected,
-                         currentLayoutConfig(), message);
-        std::cout << std::flush;
-
-        if (!interactive) {
-            const auto choice = controls::readLine("");
-            if (!choice) {
-                return false;
-            }
-            if (*choice == "x" || *choice == "X" || *choice == "0") {
-                message = "Selección de patrón cancelada.";
-                return true;
-            }
-            if (*choice == "m" || *choice == "M") {
-                const PathRequest request = askPath();
-                if (request.eof) {
-                    return false;
-                }
-                if (!request.cancelled) {
-                    loadInto(state, request.path, message);
-                }
-                return true;
-            }
-            std::size_t index = catalog.entries.size();
-            try {
-                const auto parsed = static_cast<std::size_t>(std::stoul(*choice));
-                if (parsed > 0 && parsed <= catalog.entries.size()) {
-                    index = parsed - 1;
-                }
-            } catch (const std::exception&) {
-                index = catalog.entries.size();
-            }
-            if (index < catalog.entries.size()) {
-                if (!catalog.entries[index].valid()) {
-                    message = "Error al cargar: " + catalog.entries[index].error +
-                        " (se conserva la entrada anterior)";
-                    continue;
-                }
-                loadInto(state, catalog.entries[index].path, message);
-                return true;
-            }
-            message = "Selección inválida; introduce un número, M o X.";
-            return true;
-        }
-
-        bool resized = false;
-        const auto key = readKeyWithResize(lastSize, resized);
-        if (resized) {
-            continue;
-        }
-        if (!key) {
-            return true;
-        }
-        if (key->type == controls::Key::Up) {
-            selected = (selected + items.size() - 1) % items.size();
-            continue;
-        }
-        if (key->type == controls::Key::Down) {
-            selected = (selected + 1) % items.size();
-            continue;
-        }
-        if (key->type == controls::Key::Char &&
-            (key->value == 27 || key->value == 'x' || key->value == 'X')) {
-            message = "Selección de patrón cancelada.";
-            return true;
-        }
-
-        std::size_t index = selected;
-        if (key->type == controls::Key::Char && (key->value == 'm' || key->value == 'M')) {
-            index = manualIndex;
-        } else if (key->type == controls::Key::Char &&
-                   key->value >= '1' && key->value <= '9') {
-            const std::size_t requested =
-                static_cast<std::size_t>(key->value - '1');
-            if (requested < catalog.entries.size()) {
-                index = requested;
-            }
-        } else if (key->type != controls::Key::Enter) {
-            continue;
-        }
-
-        if (index == backIndex) {
-            message = "Selección de patrón cancelada.";
-            return true;
-        }
-        if (index == manualIndex) {
-            const PathRequest request = askPath();
-            if (request.eof) {
-                return false;
-            }
-            if (!request.cancelled) {
-                loadInto(state, request.path, message);
-            }
-            return true;
-        }
-        if (!catalog.entries[index].valid()) {
-            message = "Error al cargar: " + catalog.entries[index].error +
-                " (se conserva la entrada anterior)";
-            continue;
-        }
-        loadInto(state, catalog.entries[index].path, message);
-        return true;
-    }
-}
-
-bool ensureInput(AppState& state, std::string& message) {
-    if (!state.input) {
-        if (controls::isInteractive()) {
-            return selectPatternFromCatalog(state, message);
-        }
-        const PathRequest request = askPath();
-
-        if (request.eof) {
-            return false;
-        }
-
-        if (request.cancelled) {
-            message = "Operacion cancelada.";
-            return true;
-        }
-
-        loadInto(state, request.path, message);
-    }
-
-    return true;
-}
-
-bool changeInput(AppState& state, std::string& message) {
-    if (controls::isInteractive()) {
-        return selectPatternFromCatalog(state, message);
-    }
-    const PathRequest request = askPath();
-
-    if (request.eof) {
-        return false;
-    }
-
-    if (request.cancelled) {
-        message = "Operacion cancelada.";
-        return true;
-    }
-
-    loadInto(state, request.path, message);
-    return true;
-}
+bool changeInput(AppState& state,std::string& message) {return browseCatalog(state,message);}
 
 // Submenu de seleccion de motor. Devuelve true si el usuario salio
 // normalmente (Volver o EOF), false si no (no se usa en la practica
@@ -550,21 +337,10 @@ bool changeInput(AppState& state, std::string& message) {
 // confirmacion del motor elegido cuando hay cambio.
 bool selectEngineUI(AppState& state, std::string& message) {
     const bool interactive = controls::isInteractive();
-    constexpr std::size_t kOptionCount = 5;
+    constexpr std::size_t kOptionCount = 4;
     std::size_t selected = 0;
     auto lastSize = controls::terminalSize();
-    auto mpiChoice = [&](bool configure) {
-        if (configure) {
-            const auto value = controls::readLine("Procesos MPI P (1..1024; recomendados " + std::to_string(recommendedMPIProcesses(state.input ? state.input->height : 1024)) + "): ");
-            const auto count = value ? parseMPIProcesses(*value) : std::nullopt;
-            if (!count) { message = "Error: P debe estar entre 1 y 1024."; return; }
-            state.mpiProcesses = *count;
-            message = "Procesos MPI: " + std::to_string(*count) + " (sin sobresuscripción).";
-        } else {
-            state.engine = Engine::MPI;
-            message = "Motor seleccionado: MPI";
-        }
-    };
+    auto mpiChoice = [&](bool) {state.engine=Engine::MPI;message="Motor seleccionado: MPI";};
 
     while (true) {
         renderEngineMenu(state, selected);
@@ -598,8 +374,8 @@ bool selectEngineUI(AppState& state, std::string& message) {
                         state.engine = conway::Engine::OpenMP;
                         message = "Motor seleccionado: OpenMP";
                         return true;
-                    } else if (selected == 2 || selected == 3) {
-                        mpiChoice(selected == 3); return true;
+                    } else if (selected == 2) {
+                        mpiChoice(false); return true;
                     } else {
                         return true;  // Volver
                     }
@@ -616,7 +392,6 @@ bool selectEngineUI(AppState& state, std::string& message) {
                     message = "Motor seleccionado: OpenMP";
                     return true;
                 case 'm': case 'M': mpiChoice(false); return true;
-                case 'p': case 'P': mpiChoice(true); return true;
                 case 'x': case 'X': case 27:  // 27 = Esc
                     return true;
                 default:
@@ -640,7 +415,6 @@ bool selectEngineUI(AppState& state, std::string& message) {
             return true;
         }
         if (*line == "m" || *line == "M") { mpiChoice(false); return true; }
-        if (*line == "p" || *line == "P") { mpiChoice(true); return true; }
         if (*line == "x" || *line == "X" || *line == "0") {
             return true;
         }
@@ -649,25 +423,12 @@ bool selectEngineUI(AppState& state, std::string& message) {
 }
 
 MenuAction actionFromIndex(std::size_t index) {
-    switch (index) {
-        case 0:
-            return MenuAction::Benchmark;
-        case 1:
-            return MenuAction::Visualization;
-        case 2:
-            return MenuAction::SelectEngine;
-        case 3:
-            return MenuAction::ConfigureThreads;
-        case 4:
-            return MenuAction::ChangeInput;
-        case 5:
-            return MenuAction::Exit;
-        default:
-            return MenuAction::None;
-    }
+    static constexpr MenuAction actions[]={MenuAction::Didactic,MenuAction::Benchmark,MenuAction::ChangeInput,
+        MenuAction::SelectEngine,MenuAction::ConfigureThreads,MenuAction::Exit};
+    return index<6?actions[index]:MenuAction::None;
 }
 
-void renderSimulation(
+void renderCatalogPlayback(
     const AppState& state,
     const SimulationSession& session,
     controls::TerminalSize terminal
@@ -743,118 +504,40 @@ void renderSimulation(
         ui::renderSimulationLayout(header, execution, current, next, layout);
 }
 
-bool applySimulationCommand(char command, SimulationSession& session, bool& changed) {
-        switch (command) {
-            case 'n':
-            case 'N':
-                session.step();
-                changed = true;
-                return true;
-            case ' ':
-            case 'p':
-            case 'P':
-                session.toggleRunning();
-                if (session.isRunning()) {
-                    session.advanceIfRunning();
-                }
-                changed = true;
-                return true;
-            case 'r':
-            case 'R':
-                session.reset();
-                changed = true;
-                return true;
-            case 'x':
-            case 'X':
-            case 27:
-                session.pause(); return false;
-            case 'u': case 'U': session.recover(); changed = true; return true;
-            case 'q': case 'Q': session.close(); changed = true; return true;
-            default:
-                return true;
+bool browseCatalog(AppState& state,std::string& message) {
+    const auto catalog=discoverPatterns("patterns");
+    while(true) {
+        std::cout<<"\nCATÁLOGO DE PATRONES · explorar no confirma\n";
+        for(std::size_t i=0;i<catalog.entries.size();++i)std::cout<<i+1<<" "<<catalog.entries[i].name<<"\n";
+        std::cout<<"M ruta manual · X volver sin cambiar\n"<<std::flush;
+        const auto choice=controls::readLine("");if(!choice)return false;
+        if(*choice=="x"||*choice=="X"||*choice=="0")return true;
+        std::string path;
+        if(*choice=="m"||*choice=="M") {auto request=askPath();if(request.eof)return false;if(request.cancelled)continue;path=request.path;}
+        else {
+            try {std::size_t end=0;auto index=std::stoul(*choice,&end);if(end==choice->size()&&index>0&&index<=catalog.entries.size())path=catalog.entries[index-1].path;}
+            catch(...) {}
+            if(path.empty())path=*choice;
         }
-}
-
-bool runVisualization(AppState& state) {
-        if (state.engine == Engine::OpenMP) {
-            omp_set_num_threads(state.requestedOpenMPThreads);
-        }
-        if (state.simulation) state.simulation->poll();
-        if (state.replaceSimulation && state.simulation && !state.simulation->closed()) {
-            std::cout << "Cerrando la sesión anterior; vuelve a Visualización al terminar.\n";
-            return true;
-        }
-        if (!state.simulation || state.simulation->closed()) {
-            state.simulation = std::make_unique<SimulationSession>(*state.input, state.engine, defaultMPIOptions(state.mpiProcesses));
-            state.replaceSimulation = false;
-        } else if (state.simulation->engine() != state.engine || state.simulation->processes() != state.mpiProcesses)
-            state.simulation->configure(state.engine, state.mpiProcesses);
-        auto& session = *state.simulation;
-        const bool interactive = controls::isInteractive();
-        bool redraw = true;
-        controls::TerminalSize lastSize = controls::terminalSize();
-
-        while (true) {
-            const bool wasBusy = session.busy();
-            session.poll();
-            if (wasBusy != session.busy()) redraw = true;
-            if (session.closed()) return true;
-            const controls::TerminalSize currentSize = controls::terminalSize();
-            if (currentSize != lastSize) {
-                lastSize = currentSize;
-                redraw = true;
-            }
-            if (redraw) {
-                if (interactive) {
-                    clearScreen();
-                }
-                renderSimulation(state, session, currentSize);
-                std::cout << std::flush;
-                redraw = false;
-            }
-
-            if (interactive) {
-                const auto timeout = session.isRunning()
-                    ? std::chrono::milliseconds(150)
-                    : std::chrono::milliseconds(500);
-                const controls::TimedKeyPress reading = controls::readKeyFor(timeout);
-                if (!reading.ready) {
-                    if (session.isRunning()) {
-                        session.advanceIfRunning();
-                        redraw = true;
-                    }
-                    continue;
-                }
-                if (!reading.key) {
-                    return false;
-                }
-                const char command = reading.key->type == controls::Key::Char
-                    ? reading.key->value
-                    : '\0';
-                if (!applySimulationCommand(command, session, redraw)) {
-                    return true;
-                }
-                continue;
-            }
-
-            // Deliver asynchronous snapshots even while the line-based client
-            // is waiting for its next command. Never wait on mpi::Client here.
-            if (session.busy() || session.isRunning()) {
+        try {
+            const auto initial=loadInput(path);
+            SimulationSession preview(initial,Engine::Sequential);
+            AppState display;display.input=initial;display.path=path;display.engine=Engine::Sequential;
+            while(true) {
+                renderCatalogPlayback(display,preview,controls::terminalSize());
+                std::cout<<"Vista previa: Secuencial · sin confirmar · generación "<<preview.game().generation()
+                         <<"\nP o Espacio+Enter pausa/reproduce · N paso · R reinicia · U Usar patrón · X lista\n"<<std::flush;
                 pollfd input{STDIN_FILENO,POLLIN,0};
-                if (::poll(&input,1,150) <= 0) {
-                    session.advanceIfRunning(); redraw = true; continue;
-                }
+                if(preview.isRunning() && ::poll(&input,1,150)==0) {preview.advanceIfRunning();continue;}
+                const auto command=controls::readLine("");if(!command)return false;
+                if(*command=="x"||*command=="X")break;
+                if(*command=="u"||*command=="U") {state.input=initial;state.path=path;message="Patrón confirmado: "+path+" · entrada inicial";return true;}
+                if(*command=="r"||*command=="R")preview.reset();
+                else if(*command=="n"||*command=="N") {if(!preview.isRunning())preview.step();}
+                else if(command->empty()||*command=="p"||*command=="P")preview.toggleRunning();
             }
-            const auto line = controls::readLine("");
-            if (!line) {
-                return false;
-            }
-            session.poll();
-            const char command = line->empty() ? '\0' : (*line)[0];
-            if (!applySimulationCommand(command, session, redraw)) {
-                return true;
-            }
-        }
+        } catch(const std::exception& error) {std::cout<<"Error al cargar: "<<error.what()<<" · se conserva el patrón confirmado\n";}
+    }
 }
 
 bool waitForModuleReturn(bool interactive) {
@@ -865,10 +548,6 @@ bool waitForModuleReturn(bool interactive) {
 }
 
 bool runBenchmarkUI(AppState& state, std::string& message) {
-        if (state.simulation && !state.simulation->closed() &&
-            (state.simulation->engine() == Engine::MPI || state.simulation->busy())) {
-            message = "Abandona la sesión MPI con Q antes de medir."; return true;
-        }
         if (!ensureInput(state, message)) {
             return false;
         }
@@ -964,81 +643,14 @@ bool runBenchmarkUI(AppState& state, std::string& message) {
         return true;
 }
 
-std::optional<MenuAction> pollMenuAction(
-    bool interactive,
-    controls::TerminalSize& lastSize
-) {
-    if (interactive) {
-        bool resized = false;
-        const auto key = readKeyWithResize(lastSize, resized);
-        if (resized) {
-            return MenuAction::None;
-        }
-
-        if (!key) {
-            return std::nullopt;
-        }
-
-        switch (key->type) {
-            case controls::Key::Up:
-                return MenuAction::Up;
-            case controls::Key::Down:
-                return MenuAction::Down;
-            case controls::Key::Enter:
-                return MenuAction::Select;
-            case controls::Key::Char:
-                break;
-        }
-
-        switch (key->value) {
-            case '1':
-                return MenuAction::Benchmark;
-            case '2':
-                return MenuAction::Visualization;
-            case '3':
-                return MenuAction::SelectEngine;
-            case '4':
-                return MenuAction::ConfigureThreads;
-            case 'c':
-            case 'C':
-                return MenuAction::ChangeInput;
-            case '0':
-                return MenuAction::Exit;
-            default:
-                return MenuAction::None;
-        }
-    }
-
-    const auto line = controls::readLine("");
-
-    if (!line) {
-        return std::nullopt;
-    }
-
-    if (*line == "1") {
-        return MenuAction::Benchmark;
-    }
-
-    if (*line == "2") {
-        return MenuAction::Visualization;
-    }
-
-    if (*line == "3") {
-        return MenuAction::SelectEngine;
-    }
-
-    if (*line == "4") {
-        return MenuAction::ConfigureThreads;
-    }
-
-    if (*line == "c" || *line == "C") {
-        return MenuAction::ChangeInput;
-    }
-
-    if (*line == "0") {
-        return MenuAction::Exit;
-    }
-
+std::optional<MenuAction> pollMenuAction(bool,controls::TerminalSize&) {
+    const auto line=controls::readLine("");if(!line)return {};
+    if(*line=="b"||*line=="B"||*line=="1")return MenuAction::Benchmark;
+    if(*line=="d"||*line=="D")return MenuAction::Didactic;
+    if(*line=="c"||*line=="C")return MenuAction::ChangeInput;
+    if(*line=="m"||*line=="M"||*line=="3")return MenuAction::SelectEngine;
+    if(*line=="r"||*line=="R"||*line=="4")return MenuAction::ConfigureThreads;
+    if(*line=="q"||*line=="Q"||*line=="0")return MenuAction::Exit;
     return MenuAction::None;
 }
 
@@ -1058,7 +670,6 @@ int runLoop() {
         message.clear();
 
         auto action = pollMenuAction(interactive, lastSize);
-        if (state.simulation) state.simulation->poll();
 
         if (!action) {
             break;
@@ -1080,23 +691,19 @@ int runLoop() {
                     return 0;
                 }
                 break;
-            case MenuAction::Visualization:
-                if (!ensureInput(state, message)) {
-                    return 0;
-                }
-                if (state.input && !runVisualization(state)) {
-                    return 0;
-                }
-                if (state.input) {
-                    message = "Visualizacion finalizada.";
-                }
-                break;
+            case MenuAction::Didactic:
+                message="Didáctico requiere una terminal interactiva con FTXUI.";break;
             case MenuAction::SelectEngine:
                 if (!selectEngineUI(state, message)) return 0;
-                if (state.simulation && !state.simulation->closed() && state.engine != Engine::MPI)
-                    state.simulation->configure(state.engine, state.mpiProcesses);
                 break;
             case MenuAction::ConfigureThreads:
+                if(state.engine==Engine::Sequential) {message="1 hilo de cálculo; sin recursos configurables.";break;}
+                if(state.engine==Engine::MPI) {
+                    auto value=controls::readLine("Procesos MPI (1..1024): ");if(!value)return 0;
+                    auto count=parseMPIProcesses(*value);if(count) {state.mpiProcesses=*count;message="Procesos MPI: "+std::to_string(*count);}
+                    else message="P debe estar entre 1 y 1024.";
+                    break;
+                }
                 if (!configureThreadsUI(state, message)) {
                     return 0;
                 }
