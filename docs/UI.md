@@ -209,7 +209,8 @@ Esc o Q. Los errores de tamaño/lanzamiento se muestran en la simulación.
 
 La entrada didáctica MPI está habilitada: V alterna Global/Local/Explicación,
 [ / ] seleccionan rank (incluidos los vacíos) y ↑↓/Home/End desplazan el contenido.
-En terminal amplia muestra paneles por rank cuando caben. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
+En terminal amplia muestra tablero global y cuadrícula privada del rank
+seleccionado, con halos y NEXT revelados según la etapa. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_CONTROLLER.md).
 Benchmark configurable admite MPI;
 debe abandonarse una sesión MPI de visualización antes de medir. En resultados,
 el principal MPI es el máximo entre ranks; los tiempos de arranque, carga,

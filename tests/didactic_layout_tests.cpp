@@ -5,6 +5,28 @@
 int main() {
     using namespace conway::app;
     using namespace ftxui;
+    // Both MPI and OpenMP call this same primitive. Check pixels, not labels.
+    for(bool colors:{false,true})for(bool alive:{false,true})for(bool known:{false,true})for(int width:{2,4,8}) {
+        auto screen=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(1));
+        Render(screen,didacticCellElement(alive,known,0,width,colors));
+        for(int x=0;x<width;++x) {
+            const auto& pixel=screen.PixelAt(x,0);
+            if(pixel.character!=" " || pixel.underlined!=!known || (!colors && pixel.inverted!=(known&&alive))) {
+                std::cerr<<"Cell interior/state differs from shared didactic style\n";return 1;
+            }
+            if(colors && known && pixel.background_color!=(alive?Color::RGB(98,232,137):workerColor(0)))return 1;
+        }
+        if(!known) {
+            auto other=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(1));
+            Render(other,didacticCellElement(!alive,false,0,width,colors));
+            if(screen.ToString()!=other.ToString()) {std::cerr<<"Hidden cell leaks actual value\n";return 1;}
+        }
+        if(width==2) {
+            auto other=Screen::Create(Dimension::Fixed(2),Dimension::Fixed(1));
+            Render(other,didacticCellElement(alive,known,0,colors));
+            if(screen.ToString()!=other.ToString()) {std::cerr<<"Cell overloads disagree\n";return 1;}
+        }
+    }
     for (bool compact : {false, true}) {
         for (auto [width, height] : {std::pair{110, 28}, {70, 18}, {40, 9}}) {
             DidacticFrame frame;

@@ -26,18 +26,57 @@ void compare(const DidacticController& c,const Game& expected) {
         check(actual->isAlive(r,col)==expected.isAlive(r,col),"MPI cells differ from oracle");
     check(f.mpi_trace && !c.stepTrace() && f.workers.empty(),"MPI capture replaced by local explanation");
     const auto& trace=*f.mpi_trace;
-    const auto global=didactic_view::global(trace,true);
-    check(global.back()=="Población global: "+std::to_string(expected.aliveCount()),"view global population not from capture");
+    using namespace didactic_view;
+    const auto globalResult=global(trace,DidacticStage::GenerationResult);
+    check(globalResult.back().text=="Población global: "+std::to_string(expected.aliveCount()),"view global population not from capture");
+    check(globalResult.front().grid && globalResult.front().grid->values.size()==trace.width*trace.height,"missing global grid");
+    const auto beforeGlobal=global(trace,DidacticStage::MPIState).front().grid.value();
+    for(const auto& r:trace.ranks)for(std::size_t y=0;y<r.partition.rowCount;++y)for(std::size_t x=0;x<trace.width;++x) {
+        const auto i=(r.partition.firstRow+y)*trace.width+x;
+        check(beforeGlobal.known[i] && beforeGlobal.owners[i]==r.partition.rank && beforeGlobal.values[i]==r.currentBefore[(y+1)*(trace.width+2)+x+1],"global grid changed input/ownership");
+    }
     for(std::size_t rank=0;rank<trace.ranks.size();++rank) {
-        const auto before=didactic_view::local(trace,rank,false),after=didactic_view::local(trace,rank,true);
-        const auto explanation=didactic_view::explanation(trace,rank,DidacticStage::MPICell);
-        auto contains=[](const auto& rows,const auto& text) {return std::any_of(rows.begin(),rows.end(),[&](const auto& row){return row.find(text)!=std::string::npos;});};
-        if(trace.ranks[rank].partition.empty())check(contains(before,"Sin filas propias") && contains(explanation,"sin Sendrecv"),"view invented empty rank work");
-        else {
-            check(contains(before,"CURRENT usado") && contains(after,"CURRENT nuevo") && contains(after,"NEXT nuevo"),"view buffer roles wrong");
-            for(const auto& exchange:trace.ranks[rank].exchanges)if(!exchange.received.empty())
-                check(contains(explanation,"Contenido recibido: "+didactic_view::bits(exchange.received)),"view lost real halo content");
+        const auto& r=trace.ranks[rank];
+        for(auto stage:{DidacticStage::MPIState,DidacticStage::MPIExchangeFirst,DidacticStage::MPIExchangeSecond,DidacticStage::MPICell,DidacticStage::MPIBuffers,DidacticStage::GenerationResult}) {
+            const auto blocks=local(trace,rank,stage),explain=explanation(trace,rank,stage);
+            if(r.partition.empty()) {check(!blocks.front().grid && blocks.size()==2,"view invented empty rank work");continue;}
+            const auto& current=*blocks[1].grid;
+            if(stage==DidacticStage::MPIState || stage==DidacticStage::GenerationResult) {
+                for(std::size_t x=0;x<trace.width;++x)check(!current.known[x]&&!current.known[(current.height-1)*current.width+x],"stale halo exposed");
+            } else {
+                for(std::size_t i=0;i<r.exchanges.size();++i) {
+                    const auto& e=r.exchanges[i];
+                    const bool known=i<static_cast<std::size_t>(exchangesVisible(stage)) || e.receivedFrom==mpi::noPeer;
+                    for(std::size_t x=0;x<trace.width;++x) {
+                        const auto index=e.receiveLocalRow*trace.width+x;
+                        check(bool(current.known[index])==known,"halo revealed at wrong stage");
+                        if(known)check(current.values[index]==(e.receivedFrom==mpi::noPeer?0:e.received[x]) && current.owners[index]==e.receivedFrom,"halo content/source not captured");
+                    }
+                }
+            }
+            std::size_t grids=0;for(const auto& b:blocks)grids+=b.grid.has_value();
+            check(grids==static_cast<std::size_t>(stage==DidacticStage::MPICell||stage==DidacticStage::MPIBuffers?2:1),"NEXT exposed at wrong stage");
+            if(stage==DidacticStage::MPICell) {
+                const auto& next=*blocks[3].grid;
+                const auto count=std::count(next.known.begin(),next.known.end(),1);
+                check(count==(r.cell&&r.cell->captured?1:0),"NEXT reveals unevaluated cells");
+                if(r.cell&&r.cell->captured)check(next.values[(r.cell->row-1)*trace.width+r.cell->column-1]==r.cell->evaluation.after,"selected NEXT does not match captured evaluation");
+            }
+            if(stage==DidacticStage::MPIState || stage==DidacticStage::MPIExchangeFirst || stage==DidacticStage::MPIExchangeSecond) {
+                for(const auto* collection:{&blocks,&explain})for(const auto& b:*collection)
+                    check(b.text.find("NEXT")==std::string::npos && b.text.find("Swap")==std::string::npos && b.text.find("Regla")==std::string::npos && b.text.find("Resultado generación")==std::string::npos,"presentation leaks future stage");
+            }
         }
+    }
+    for(auto stage:{DidacticStage::MPIExchangeFirst,DidacticStage::MPIExchangeSecond}) {
+        const std::size_t call=stage==DidacticStage::MPIExchangeFirst?0:1;
+        const auto messages=explanation(trace,0,stage);std::size_t sent=0,shown=0;
+        for(const auto& r:trace.ranks)if(!r.partition.empty() && r.exchanges[call].sendTo!=mpi::noPeer) {
+            ++sent;const auto& e=r.exchanges[call];
+            const auto name="ENVÍA R"+std::to_string(r.partition.rank)+" -> R"+std::to_string(e.sendTo)+" · tag "+std::to_string(e.tag);
+            check(std::any_of(messages.begin(),messages.end(),[&](const auto& b){return b.text==name && b.grid && b.grid->values==e.sent;}),"directed message missing or wrong content");
+        }
+        for(const auto& b:messages)shown+=b.grid.has_value();check(shown==sent,"Sendrecv represented as one global message");
     }
     check(f.stage_duration_ns==2000000000ULL && f.stages.size()==6 && f.total_playback_ns==12000000000ULL,"MPI clock not independent");
 }

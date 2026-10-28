@@ -15,21 +15,46 @@ velocidad. El aviso permanente indica «Captura MPI real; orden de presentación
 didáctico». Reparto actual es contexto, no un Scatterv nuevo en cada paso.
 
 V alterna Global/Local/Explicación; [ y ] seleccionan cualquier rank, incluidos
-los vacíos. En terminal amplia, Global y Local muestran el tablero global y
-paneles separados para tantos ranks como quepan, agrupados alrededor del rank
-seleccionado. Explicación conserva todo el ancho. En terminal pequeña cada vista
-ocupa el ancho disponible. Flechas arriba/abajo, PgUp/PgDn y Home/End recorren
-líneas físicas envueltas, con indicador de posición; el estado y la ayuda quedan
-fuera del contenido desplazable. Cambiar vista, rank o tamaño no toca el controlador.
+los vacíos. En terminal amplia, Global y Local muestran dos paneles: tablero
+global y memoria privada del rank seleccionado, con su explicación debajo.
+Explicación conserva todo el ancho. En terminal pequeña cada vista ocupa el ancho
+disponible. Flechas arriba/abajo, PgUp/PgDn y Home/End recorren líneas físicas,
+incluidas las cuadrículas; izquierda/derecha desplazan las columnas cuando no
+caben. El indicador de posición, estado y ayuda quedan fuera del contenido
+desplazable. Cambiar vista, rank o tamaño no toca el controlador.
 
-Global reúne exclusivamente filas propias capturadas. Local etiqueta filas
-propias, halos y bordes laterales; distingue CURRENT antes de comunicación,
-CURRENT con halos válidos y NEXT calculado. En Cambio de buffers muestra CURRENT
-nuevo y el buffer anterior reutilizado como NEXT. Los halos de la generación
-resultante se marcan NO vigentes. Estos buffers son snapshots capturados, no
-memoria compartida ni una ejecución en vivo. Explicación muestra mensajes y
-valores reales, MPI_PROC_NULL, procedencia de cada vecino y evaluación B3/S23.
-Rank 0 también calcula; ranks vacíos no intercambian ni evalúan células.
+Las cuadrículas reutilizan geometría, bordes y celdas de la didáctica local.
+Las vivas conservan el verde; las muertas y bandas de fila llevan el color del
+rank, acompañado de etiquetas Rn y fila global. Los colores se repiten cada ocho
+ranks: las etiquetas identifican siempre al propietario. Los interiores están
+vacíos: no contienen letras ni símbolos de estado. Viva usa fondo verde (inversión
+sin color), muerta usa el fondo del rank (vacío sin color) y oculta usa fondo
+neutral con subrayado tenue. El estilo oculto no depende del valor capturado.
+Se usa una sola función de célula para MPI y OpenMP, en ambos anchos de celda.
+La seleccionada tiene bordes verticales dobles y sus vecinos bordes gruesos;
+los halos tienen borde discontinuo y el borde global es punteado. Las etiquetas,
+coordenadas y leyendas están fuera de las células.
+
+Global reúne filas propias capturadas y se rotula «captura reconstruida»: es una
+vista para el usuario, no memoria compartida. Su generación cambia en Resultado.
+Local muestra CURRENT previo y halos no vigentes ocultos en Reparto actual.
+En Intercambio 1 incorpora únicamente el primer mensaje recibido y los bordes
+fijos a cero: se rotula composición didáctica, no snapshot intermedio capturado.
+En Intercambio 2 presenta los valores reales de CURRENT con ambos halos. No se
+adelanta NEXT ni la evaluación durante estas etapas.
+
+Cada etapa de intercambio muestra los envíos dirigidos de TODOS los ranks para
+esa llamada local Sendrecv, con contenido en una tira de células, origen, destino
+y tag. Una llamada puede enviar a un vecino y recibir de otro; no representa un
+único mensaje global. MPI_PROC_NULL se explica como ausencia de mensaje y borde
+fijo, no como un proceso. El halo recibido lleva el color y etiqueta del emisor.
+
+En Célula y vecinos se presenta la evaluación B3/S23 capturada, la procedencia
+de los ocho vecinos y únicamente la célula seleccionada de NEXT. Cambio de
+buffers revela NEXT completo y el swap confirmado; Resultado muestra CURRENT
+nuevo y población global, con halos nuevamente no vigentes. Rank 0 también
+calcula; ranks vacíos no intercambian ni evalúan células. El avance es progreso
+de la explicación, nunca porcentaje observado de ejecución por proceso.
 
 Espacio pausa/reanuda, N avanza una etapa en pausa, +/- cambia velocidad, R
 reinicia y Esc cierra asincrónicamente. Los errores iniciales y posteriores se
@@ -165,7 +190,14 @@ generaciones, pausa, paso, reinicio, fallo real de trabajador y cierre. Redimens
 120×40 → 50×24 → 40×18 → 160×45. Otro recorrido consulta un rank vacío y muestra
 el diagnóstico de una primera captura rechazada sin lanzar procesos.
 `didactic_mpi` verifica además que las filas de presentación conservan los halos,
-roles de buffers, población y estados vacíos de las capturas reales.
+roles de buffers, población y estados vacíos de las capturas reales. También
+comprueba visibilidad por etapa, máscara parcial de NEXT y todos los mensajes
+dirigidos para cada llamada local. El PTY comprueba las células dibujadas del
+blinker antes/después, colores, halos ocultos/recibidos, columnas desplazadas y
+la misma representación con NO_COLOR, leyendo fondos y atributos ANSI del PTY
+y verificando que todos los interiores están vacíos. `didactic_layout` contrasta
+los píxeles del renderizado compartido, incluidas células ocultas con ambos
+valores reales, con y sin color.
 
 Las regresiones PTY de accesibilidad/redimensionado pausan explícitamente la
 reproducción antes de verificar las filas. Ninguna prueba exige aceleración.

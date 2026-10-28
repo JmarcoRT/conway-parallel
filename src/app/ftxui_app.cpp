@@ -418,39 +418,21 @@ ftxui::Color workerColor(int index) {
 // muertas; las celdas vivas se distinguen por su color canonico.
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index, bool colors) {
-    if (!revealed) {
-        return ftxui::text("  ") |
-            ftxui::bgcolor(ftxui::Color::RGB(0x1F, 0x2A, 0x30));
-    }
-    if (!colors) {
-        return ftxui::text(alive ? "▓▓" : "░░");
-    }
-    if (alive) {
-        return ftxui::text("  ") | ftxui::bgcolor(ftxui::Color::RGB(98, 232, 137));
-    }
-    return ftxui::text("  ") | ftxui::bgcolor(workerColor(worker_index));
+    return didacticCellElement(alive,revealed,worker_index,2,colors);
 }
 
-// Variante con ancho de celda variable. Mismas reglas de color
-// que la version de 2 chars, pero el fondo ocupa `cell_chars`.
+// Shared by OpenMP and MPI: blank interiors, state conveyed by fill/attributes.
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
                              std::size_t cell_chars, bool colors) {
-    if (cell_chars < 2) cell_chars = 2;
-    if (cell_chars > 8) cell_chars = 8;
-    if (!revealed) {
-        return ftxui::text(std::string(cell_chars, ' ')) |
-            ftxui::bgcolor(ftxui::Color::RGB(0x1F, 0x2A, 0x30));
+    cell_chars=std::clamp<std::size_t>(cell_chars,2,8);
+    auto cell=ftxui::text(std::string(cell_chars,' '));
+    if(!revealed) {
+        if(colors)cell=cell|ftxui::bgcolor(workerColor(-1));
+        return cell|ftxui::underlined|ftxui::dim;
     }
-    if (!colors) {
-        return ftxui::text(alive ? "▓▓" : "░░");
-    }
-    if (alive) {
-        return ftxui::text(std::string(cell_chars, ' ')) |
-            ftxui::bgcolor(ftxui::Color::RGB(98, 232, 137));
-    }
-    return ftxui::text(std::string(cell_chars, ' ')) |
-        ftxui::bgcolor(workerColor(worker_index));
+    if(!colors)return alive?cell|ftxui::inverted:cell;
+    return cell|ftxui::bgcolor(alive?ftxui::Color::RGB(98,232,137):workerColor(worker_index));
 }
 
 // Construye el tablero NEXT del panel didactico, usando la mascara
@@ -533,7 +515,7 @@ std::vector<Element> didacticCurrentRows(
         for (std::size_t column = 0; column < columns; ++column) {
             const std::size_t idx = row * frame.width + column;
             const bool alive = frame.current_alive_map[idx] != 0;
-            cells.push_back(cellElement(alive, colors));
+            cells.push_back(didacticCellElement(alive,true,-1,colors));
             cells.push_back(gridElement("│", colors));
         }
         output.push_back(ftxui::hbox(std::move(cells)));
@@ -677,7 +659,7 @@ Element renderDidacticBoardPanel(
         for (std::size_t c = 0; c < geom.visible_cols; ++c) {
             const std::size_t logical_c = c + geom.col_offset;
             if (logical_r >= frame.height || logical_c >= frame.width) {
-                cells.push_back(cellElement(false, cell, colors));
+                cells.push_back(didacticCellElement(false,true,-1,cell,colors));
             } else {
                 const std::size_t idx = logical_r * frame.width + logical_c;
                 const bool alive = is_next
@@ -690,7 +672,7 @@ Element renderDidacticBoardPanel(
                     cells.push_back(didacticCellElement(
                         alive, revealed, wid, cell, colors));
                 } else {
-                    cells.push_back(cellElement(alive, cell, colors));
+                    cells.push_back(didacticCellElement(alive,true,-1,cell,colors));
                 }
             }
             cells.push_back(gridElement("│", colors));
@@ -1100,6 +1082,9 @@ public:
                     const auto count=capture&&capture->mpiTrace?static_cast<int>(capture->mpiTrace->ranks.size()):state_.mpiProcesses;
                     mpiDidacticRank_=(mpiDidacticRank_+count+(k=="]"?1:-1))%count;mpiDidacticRow_=0;return true;
                 }
+            }
+            if(event==Event::ArrowLeft||event==Event::ArrowRight) {
+                mpiDidacticCol_=std::max(0,mpiDidacticCol_+(event==Event::ArrowRight?1:-1));return true;
             }
             if(event==Event::ArrowDown||event==Event::ArrowUp||event==Event::PageDown||event==Event::PageUp||event==Event::Home||event==Event::End) {
                 if(event==Event::Home)mpiDidacticRow_=0;
@@ -1643,7 +1628,7 @@ private:
 
     void createDidactic() {
         didacticViewport_ = {};
-        mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0;
+        mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0;
         state_.message.clear();
         if (!state_.input) return;
         if(state_.simulation && !state_.simulation->closed() && (state_.simulation->engine()==Engine::MPI || state_.simulation->busy())) {state_.page=Page::Main;state_.message="Abandona la sesión MPI con Q antes de entrar en didáctica.";return;}
@@ -2318,6 +2303,71 @@ private:
     // Render del modo didactico. Esta vista NO recalcula reglas de
     // Conway; solo muestra la StepTrace capturada por el worker y
     // la revelacion progresiva basada en el reloj de reproduccion.
+    std::vector<Element> mpiDidacticRows(const didactic_view::Blocks& blocks,int width) {
+        std::vector<Element> rows;
+        const bool colors=colorsEnabled();
+        auto appendText=[&](const std::string& line) {
+            std::string row;int cells=0;
+            for(std::size_t offset=0;offset<line.size();) {
+                std::size_t end=offset+1;
+                while(end<line.size() && (static_cast<unsigned char>(line[end])&0xc0)==0x80)++end;
+                const auto glyph=line.substr(offset,end-offset);const int size=ftxui::string_width(glyph);
+                if(glyph=="\n") {rows.push_back(ftxui::text(row));row.clear();cells=0;offset=end;continue;}
+                if(cells+size>width && !row.empty()) {
+                    const auto space=row.rfind(' ');
+                    if(space!=std::string::npos && space>row.size()/2) {
+                        rows.push_back(ftxui::text(row.substr(0,space)));row=row.substr(space+1);cells=ftxui::string_width(row);
+                    } else {rows.push_back(ftxui::text(row));row.clear();cells=0;}
+                }
+                row+=glyph;cells+=size;offset=end;
+            }
+            rows.push_back(ftxui::text(row));
+        };
+        for(const auto& block:blocks) {
+            appendText(block.text);
+            if(!block.grid)continue;
+            const auto& g=*block.grid;
+            // Same grid borders, geometry and cells as local didactic boards.
+            // All physical rows remain scrollable; only columns use a viewport.
+            const int labelWidth=std::min(16,std::max(6,width/3));
+            const auto geometry=computeDidacticBoardGeometry(std::max(0,width-labelWidth),g.height*2+1,g.width,g.height);
+            if(!geometry.visible_cols) {appendText("Sin espacio para la cuadrícula.");continue;}
+            const auto count=geometry.visible_cols;
+            const auto offset=std::min(static_cast<std::size_t>(mpiDidacticCol_),g.width-count);
+            if(count<g.width)appendText("Columnas "+std::to_string(offset)+"-"+std::to_string(offset+count-1)+"/"+std::to_string(g.width)+" · ←→ mover");
+            auto border=[&](const char* middle,const char* left,const char* right) {
+                rows.push_back(ftxui::hbox({ftxui::text(std::string(labelWidth,' ')),gridElement(gridBorder(count,middle,left,right,geometry.cell_chars),colors)}));
+            };
+            border("┬","┌","┐");
+            for(std::size_t y=0;y<g.height;++y) {
+                const auto label=y<g.labels.size()?g.labels[y]:std::string{};
+                // Keep full provenance above the row when it exceeds the band.
+                if(ftxui::string_width(label)>labelWidth-1)appendText(label);
+                auto band=ftxui::text(ftxui::string_width(label)>labelWidth-1?"HALO":label)|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,labelWidth);
+                const int owner=g.owners[y*g.width+offset];
+                if(colors && owner>=0)band=band|ftxui::bgcolor(workerColor(owner))|ftxui::color(ftxui::Color::Black)|ftxui::bold;
+                auto edge=[&](std::size_t x) {
+                    int emphasis=0;
+                    if(x>offset)emphasis=std::max(emphasis,static_cast<int>(g.emphasis[y*g.width+x-1]));
+                    if(x<offset+count)emphasis=std::max(emphasis,static_cast<int>(g.emphasis[y*g.width+x]));
+                    const auto kind=g.rowKinds[y];
+                    auto line=gridElement(emphasis==2?"║":emphasis==1?"┃":kind==1?"┆":kind==2?"╎":"│",colors);
+                    if(emphasis) {line=line|ftxui::bold;if(colors)line=line|ftxui::color(ftxui::Color::Yellow);}
+                    return line;
+                };
+                std::vector<Element> cells{std::move(band),edge(offset)};
+                for(std::size_t x=offset;x<offset+count;++x) {
+                    const auto i=y*g.width+x;
+                    cells.push_back(didacticCellElement(g.values[i]!=0,g.known[i]!=0,static_cast<std::int8_t>(g.owners[i]),geometry.cell_chars,colors));
+                    cells.push_back(edge(x+1));
+                }
+                rows.push_back(ftxui::hbox(std::move(cells)));
+                if(y+1==g.height)border("┴","└","┘");else border("┼","├","┤");
+            }
+        }
+        return rows;
+    }
+
     Element renderMPIDidactic(std::shared_ptr<const DidacticFrame> snapshot) {
         const auto& f=*snapshot;
         const bool tiny=controls::terminalSize().columns<=44 || controls::terminalSize().rows<=20;
@@ -2327,55 +2377,33 @@ private:
             ftxui::paragraph("Visible G"+std::to_string(f.viewed_generation)+(tiny?std::string{}:" · capturada "+(f.captured_generation?std::to_string(*f.captured_generation):"pendiente"))+
                 " · "+(f.playing?"Reproduciendo":"En pausa")+" · "+speedLabel(f.speed)),
             ftxui::paragraph(f.stages.empty()?"Etapa pendiente":("Etapa "+std::to_string(f.stage_index+1)+"/"+std::to_string(f.stages.size())+" · "+didactic_view::stage(stage)))};
+        if(!tiny)status.push_back(ftxui::text(controls::terminalSize().columns<80?"Viva: verde/inversa · oculto: subrayado":"Viva: verde/inversa sin color · oculta: subrayado · selección: borde doble · vecinos: borde grueso"));
         if(!f.error_message.empty())status.push_back(ftxui::paragraph("ERROR: captura detenida. Diagnóstico abajo.")|ftxui::color(ftxui::Color::Red));
         if(f.is_preparing)status.push_back(ftxui::text("Capturando; UI y pausa disponibles."));
         Element content=ftxui::text("Sin captura disponible. R reinicia; Esc cierra.");
         {
             const auto trace=f.mpi_trace;
             if(trace)mpiDidacticRank_=std::clamp(mpiDidacticRank_,0,static_cast<int>(trace->ranks.size())-1);
-            const bool result=stage==DidacticStage::GenerationResult;
-            const bool swapped=result||stage==DidacticStage::MPIBuffers;
-            content=ui::allocatedElement([this,trace,result,swapped,stage,error=f.error_message](int w,int h) {
-                const bool multiple=trace && error.empty() && w>=110 && h>=18 && mpiDidacticView_!=2;
-                std::vector<didactic_view::Rows> columns;
-                if(!error.empty())columns.push_back({"Diagnóstico de captura MPI",error,"No se reintenta el paso automáticamente. R reinicia; Esc cierra."});
-                else if(!trace)columns.push_back({"Sin captura disponible; esperando al trabajador.","R reinicia; Esc cierra."});
+            content=ui::allocatedElement([this,trace,stage,error=f.error_message](int w,int h) {
+                const bool multiple=trace && error.empty() && w>=110 && h>=14 && mpiDidacticView_!=2;
+                std::vector<didactic_view::Blocks> columns;
+                if(!error.empty())columns.push_back({{"Diagnóstico de captura MPI",{}},{error,{}},{"No se reintenta el paso automáticamente. R reinicia; Esc cierra.",{}}});
+                else if(!trace)columns.push_back({{"Sin captura disponible; esperando al trabajador.",{}},{"R reinicia; Esc cierra.",{}}});
                 else if(multiple) {
-                    columns.push_back(didactic_view::global(*trace,result));
-                    const auto capacity=std::max(1,std::min(static_cast<int>(trace->ranks.size()),w/38-1));
-                    const int first=(mpiDidacticRank_/capacity)*capacity;
-                    for(int r=first;r<std::min(first+capacity,static_cast<int>(trace->ranks.size()));++r)
-                        columns.push_back(didactic_view::local(*trace,r,swapped));
-                } else if(mpiDidacticView_==0)columns.push_back(didactic_view::global(*trace,result));
-                else if(mpiDidacticView_==1)columns.push_back(didactic_view::local(*trace,mpiDidacticRank_,swapped));
+                    columns.push_back(didactic_view::global(*trace,stage));
+                    auto local=didactic_view::local(*trace,mpiDidacticRank_,stage);
+                    auto explanation=didactic_view::explanation(*trace,mpiDidacticRank_,stage);
+                    local.insert(local.end(),explanation.begin(),explanation.end());
+                    columns.push_back(std::move(local));
+                } else if(mpiDidacticView_==0)columns.push_back(didactic_view::global(*trace,stage));
+                else if(mpiDidacticView_==1)columns.push_back(didactic_view::local(*trace,mpiDidacticRank_,stage));
                 else columns.push_back(didactic_view::explanation(*trace,mpiDidacticRank_,stage));
-                // Wrap into physical rows before scrolling. This makes every line,
-                // including long buffer contents, reachable after a resize.
-                const int cw=std::max(8,w/static_cast<int>(columns.size())-3);
-                std::vector<std::vector<std::string>> wrapped;
+                const int cw=std::max(8,w/static_cast<int>(columns.size())-2);
+                std::vector<std::vector<Element>> wrapped;
                 int maxRows=0;
                 for(const auto& col:columns) {
-                    std::vector<std::string> lines;
-                    for(const auto& line:col) {
-                        std::string row;
-                        int cells=0;
-                        for(std::size_t offset=0;offset<line.size();) {
-                            std::size_t end=offset+1;
-                            while(end<line.size() && (static_cast<unsigned char>(line[end])&0xc0)==0x80)++end;
-                            const auto glyph=line.substr(offset,end-offset);
-                            if(glyph=="\n") {lines.push_back(std::move(row));row.clear();cells=0;offset=end;continue;}
-                            const int width=ftxui::string_width(glyph);
-                            if(cells+width>cw && !row.empty()) {
-                                const auto space=row.rfind(' ');
-                                if(space!=std::string::npos && space>row.size()/2) {
-                                    lines.push_back(row.substr(0,space));row=row.substr(space+1);cells=ftxui::string_width(row);
-                                } else {lines.push_back(std::move(row));row.clear();cells=0;}
-                            }
-                            row+=glyph;cells+=width;offset=end;
-                        }
-                        lines.push_back(std::move(row));
-                    }
-                    maxRows=std::max(maxRows,static_cast<int>(lines.size()));wrapped.push_back(std::move(lines));
+                    auto rows=mpiDidacticRows(col,cw);
+                    maxRows=std::max(maxRows,static_cast<int>(rows.size()));wrapped.push_back(std::move(rows));
                 }
                 const int visible=std::max(1,h-1);
                 mpiDidacticMaxOffset_=std::max(0,maxRows-visible);
@@ -2383,7 +2411,7 @@ private:
                 std::vector<Element> panels;
                 for(const auto& lines:wrapped) {
                     std::vector<Element> rows;
-                    for(int y=start;y<std::min(start+visible,static_cast<int>(lines.size()));++y)rows.push_back(ftxui::text(lines[y]));
+                    for(int y=start;y<std::min(start+visible,static_cast<int>(lines.size()));++y)rows.push_back(lines[y]);
                     panels.push_back(ftxui::vbox(std::move(rows))|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,cw)|ftxui::flex);
                     if(panels.size()<wrapped.size()*2-1)panels.push_back(ftxui::separator());
                 }
@@ -2731,7 +2759,7 @@ private:
     bool simulationSingle_{false};
     int workerRow_{0};
     bool simulationNext_{false}, catalogNext_{false}, catalogDetail_{false};
-    int mpiDidacticView_=0, mpiDidacticRank_=0, mpiDidacticRow_=0, mpiDidacticMaxOffset_=0;
+    int mpiDidacticView_=0, mpiDidacticRank_=0, mpiDidacticRow_=0, mpiDidacticMaxOffset_=0, mpiDidacticCol_=0;
     bool didacticNext_{true}, didacticWorkers_{false};
     std::chrono::steady_clock::time_point didacticTickAt_{};
     int detailRow_{0};
