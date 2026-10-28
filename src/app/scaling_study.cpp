@@ -76,6 +76,26 @@ std::size_t positionOf(ScalingOrder order, std::size_t round,
 
 ScalingResult execute(const InputData& input, const ScalingConfig& config,
                       const input::GenerationMetadata* generated) {
+    if(config.parallelEngine==Engine::MPI) {
+        if(config.requestedProcesses.empty() ||
+           (config.order!=ScalingOrder::RotateLeft && config.order!=ScalingOrder::RotateRight))
+            throw std::invalid_argument("Invalid MPI scaling configurations/order");
+        std::vector<ExecutionConfiguration> configurations{{Engine::Sequential,{},{}}};
+        for(auto p:config.requestedProcesses) {
+            if(p<1 || p>1024) throw std::invalid_argument("MPI processes must be in 1..1024");
+            configurations.push_back({Engine::MPI,{},static_cast<int>(p)});
+        }
+        auto identity=detail::validateInput(input);
+        detail::attachGeneratedMetadata(identity,input,generated);
+        ScalingResult result{config,std::move(identity),0,0,{},{}};
+        result.study=runExperimentalStudy(input,std::move(configurations),config.generations,
+            config.warmups,config.repetitions,config.order==ScalingOrder::RotateRight,
+            config.mpiOptions,config.maxMemoryBytes);
+        result.completedWarmupRuns=result.study->completedWarmupRuns;
+        result.estimatedPeakBytes=result.study->estimatedPeakBytes;
+        return result;
+    }
+    if(config.parallelEngine!=Engine::OpenMP) throw std::invalid_argument("Scaling requires OpenMP or MPI");
     const auto shape = validateConfig(config);
     auto identity = detail::validateInput(input);
     const auto padded = checkedMultiply(checkedAdd(input.width, 2), checkedAdd(input.height, 2));
@@ -99,7 +119,9 @@ ScalingResult execute(const InputData& input, const ScalingConfig& config,
                                                 position, shape.configurations);
             const auto engine = index ? Engine::OpenMP : Engine::Sequential;
             const int threads = index ? static_cast<int>(config.requestedThreads[index - 1]) : 1;
-            (void)detail::runOnce(input, engine, threads, config.generations);
+            const auto warmed=detail::runOnce(input, engine, threads, config.generations);
+            if(!detail::sameState(warmed.finalGame,oracle.finalGame))
+                throw std::runtime_error("Warmup differs from sequential oracle");
             ++result.completedWarmupRuns;
         }
     }

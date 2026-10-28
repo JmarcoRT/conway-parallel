@@ -3,10 +3,12 @@
 #include "input/input.hpp"
 #include "mpi/local_state.hpp"
 #include "mpi/partition.hpp"
+#include "mpi/counts.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -91,6 +93,22 @@ int main() {
     expect(throws([] { partition_rows(5, 0, 0); }), "size 0 lanza");
     expect(throws([] { partition_rows(5, 3, 3); }), "rank == size lanza");
     expect(throws([] { partition_rows(5, 3, -1); }), "rank negativo lanza");
+
+    // Count bounds are tested without allocating the corresponding boards.
+    const auto intMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    const auto sizeMax = std::numeric_limits<std::size_t>::max();
+    expect(checked_cell_count(7, 3) == 21, "conteo MPI valido");
+    if (sizeof(std::size_t) > sizeof(int))
+        expect(checked_cell_count(intMax, 1) == intMax, "limite INT_MAX valido sin reservar");
+    expect(throws([&] { checked_cell_count(intMax + 1, 1); }), "ancho mayor a INT_MAX rechazado");
+    expect(throws([&] { checked_cell_count(intMax, 2); }), "producto mayor a INT_MAX rechazado");
+    expect(throws([&] { checked_cell_count(sizeMax, sizeMax); }), "producto que desbordaria size_t rechazado");
+    expect(throws([] { checked_cell_count(0, 1); }), "ancho cero rechazado");
+    expect(throws([] { checked_cell_count(1, 0); }), "alto cero rechazado");
+    auto malformed = partition_rows(3, 1, 0);
+    malformed.rowCount = sizeMax;
+    expect(throws([&] { make_local_state_from_rows(3, malformed, {}); }),
+           "particion malformada rechazada antes de multiplicar filas");
 
     // 4) GameState local: forma comun, contenido y reensamblado.
     for (std::size_t h : {1u, 5u, 6u, 13u}) {

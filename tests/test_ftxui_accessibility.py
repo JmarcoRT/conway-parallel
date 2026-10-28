@@ -50,7 +50,7 @@ def ready(t):
     deadline = time.monotonic() + 30
     while "Preparando generación" in screen(t):
         assert time.monotonic() < deadline, screen(t)
-        t.send(LEFT)  # El controlador existente entrega datos al siguiente evento.
+        t.send(LEFT)  # Esperar la notificación de captura asíncrona.
     visible(t, "MODO DIDÁCTICO")
 
 
@@ -116,6 +116,7 @@ def check(binary, cwd, size, name):
         t.send("\x1b")
         t.send(DOWN * 5 + "\r")
         ready(t)
+        t.send(" ")  # Playback now starts automatically; freeze for viewport assertions.
         visible(t, "efectivos 12")
         old = endpoints(t, paired)
         before = screen(t)

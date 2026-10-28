@@ -1,6 +1,7 @@
 // Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 //
-// NO evoluciona el tablero ni intercambia halos. Comprueba que:
+// Sin --steps comprueba solamente la distribucion. Con --steps N evoluciona
+// con halos y compara cada paso contra el motor secuencial. Comprueba que:
 //   1. MPI se inicializa/finaliza bien y cada proceso conoce su rank y size;
 //   2. el reparto de filas es reproducible, contiguo y balanceado;
 //   3. no se pierden ni se duplican filas (el tablero reensamblado a partir
@@ -18,11 +19,16 @@
 #include <unistd.h>
 
 #include "core/game_state.hpp"
+#include "core/engines/mpi.hpp"
+#include "core/engines/sequential.hpp"
 #include "input/input.hpp"
 #include "mpi/local_state.hpp"
 #include "mpi/partition.hpp"
+#include "mpi/counts.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <optional>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -42,6 +48,7 @@ struct Options {
     std::size_t synHeight{0};
     std::size_t synWidth{0};
     bool show{false};
+    int steps{0};
 };
 
 bool parse_args(int argc, char** argv, Options& opt) {
@@ -49,6 +56,11 @@ bool parse_args(int argc, char** argv, Options& opt) {
         const std::string a = argv[i];
         if (a == "--show") {
             opt.show = true;
+        } else if (a == "--steps" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), opt.steps);
+            if (error != std::errc{} || end != value.data() + value.size() || opt.steps < 0)
+                return false;
         } else if (a == "--synthetic" && i + 2 < argc) {
             char* e1 = nullptr;
             char* e2 = nullptr;
@@ -77,7 +89,7 @@ InputData make_synthetic(std::size_t h, std::size_t w) {
     InputData in{};
     in.width = w;
     in.height = h;
-    in.cells.assign(w * h, 0);
+    in.cells.assign(conway::mpi::checked_cell_count(w, h), 0);
     for (std::size_t r = 0; r < h; ++r) {
         for (std::size_t c = 0; c < w; ++c) {
             in.cells[r * w + c] = ((r * 7 + c * 3 + r * c) % 5 == 0) ? 1 : 0;
@@ -126,10 +138,7 @@ int run(int rank, int size, const Options& opt) {
             input = opt.synthetic ? make_synthetic(opt.synHeight, opt.synWidth)
                                   : loadInput(opt.path);
             // Los conteos de MPI son int: el tablero completo debe caber.
-            if (input.width * input.height >
-                static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("tablero demasiado grande para los conteos int de MPI");
-            }
+            (void)conway::mpi::checked_cell_count(input.width, input.height);
             dims[1] = input.height;
             dims[2] = input.width;
         } catch (const std::exception& e) {
@@ -162,7 +171,7 @@ int run(int rank, int size, const Options& opt) {
                  MPI_UNSIGNED_CHAR, myRows.data(), static_cast<int>(myRows.size()),
                  MPI_UNSIGNED_CHAR, 0, MPI_COMM_WORLD);
 
-    const auto state = conway::mpi::make_local_state_from_rows(W, part, myRows);
+    auto state = conway::mpi::make_local_state_from_rows(W, part, myRows);
     const int localOk = local_state_ok(state, part, W) ? 1 : 0;
     int allLocalOk = 0;
     MPI_Allreduce(&localOk, &allLocalOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
@@ -310,6 +319,31 @@ int run(int rank, int size, const Options& opt) {
         std::cout << "\nRESULTADO: " << (ok ? "OK" : "FALLO") << '\n';
         status = ok ? 0 : 1;
     }
+    // Keep the original distribution demo intact; evolution is opt-in.
+    std::optional<conway::core::GameState> reference;
+    if (rank == 0 && opt.steps > 0)
+        reference = conway::mpi::make_local_state(input, conway::mpi::partition_rows(H, 1, 0));
+    for (int step = 0; step < opt.steps; ++step) {
+        const auto globalAlive = conway::core::step_mpi(state, part, MPI_COMM_WORLD);
+        const auto rows = conway::mpi::pack_local_rows(state);
+        MPI_Gatherv(rows.data(), static_cast<int>(rows.size()), MPI_UINT8_T,
+                    board.data(), counts.data(), displs.data(), MPI_UINT8_T, 0, MPI_COMM_WORLD);
+        int generationOk = state.generation == static_cast<std::size_t>(step) + 1;
+        int allGenerationsOk = 0;
+        MPI_Allreduce(&generationOk, &allGenerationsOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if (rank == 0) {
+            conway::core::step_sequential(*reference);
+            const bool equivalent = allGenerationsOk &&
+                state.generation == reference->generation &&
+                globalAlive == reference->aliveCount &&
+                board == conway::mpi::pack_local_rows(*reference);
+            std::cout << (equivalent ? "[OK] " : "[FALLO] ") << "generacion "
+                      << state.generation << ": celulas, generacion y poblacion\n";
+            if (!equivalent) status = 1;
+        }
+    }
+    if (rank == 0 && opt.steps > 0)
+        std::cout << "EVOLUCION: " << (status == 0 ? "OK" : "FALLO") << '\n';
     return status;
 }
 
@@ -326,11 +360,17 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, opt)) {
         if (rank == 0) {
             std::cerr << "Uso: mpirun -np P " << argv[0]
-                      << " [archivo.txt | --synthetic ALTO ANCHO] [--show]\n";
+                      << " [archivo.txt | --synthetic ALTO ANCHO] [--show] [--steps N]\n";
         }
         status = 2;
     } else {
-        status = run(rank, size, opt);
+        try {
+            status = run(rank, size, opt);
+        } catch (const std::exception& error) {
+            std::cerr << "rank " << rank << ": " << error.what() << '\n';
+            MPI_Abort(MPI_COMM_WORLD, 2);
+            return 2;
+        }
     }
     MPI_Bcast(&status, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Finalize();

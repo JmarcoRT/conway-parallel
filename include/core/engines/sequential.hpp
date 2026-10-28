@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/game_state.hpp"
+#include "core/cell_probe.hpp"
 #include "core/step_trace.hpp"
 
 namespace conway::core {
@@ -17,6 +18,6 @@ namespace conway::core {
 // sink al final del step. La rama de instrumentacion no introduce
 // dependencias de OpenMP en este motor: usa std::chrono::steady_clock
 // para medir el tiempo total del step y la duracion del bucle.
-void step_sequential(GameState& s, StepTraceSink* sink = kNoTrace);
+void step_sequential(GameState& s, StepTraceSink* sink = kNoTrace, CellProbe* cell = nullptr);
 
 }  // namespace conway::core

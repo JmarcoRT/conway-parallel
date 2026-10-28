@@ -591,8 +591,19 @@ if command -v script >/dev/null 2>&1; then
         "COMPARACIÓN DE MOTORES" "$work/benchmark-pty-clean.txt"
     check interactive_comparison_shows_measurement_fields \
         "Generaciones:" "$work/benchmark-pty-clean.txt"
-    check interactive_comparison_shows_thread_field \
-        "Hilos OpenMP:" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_defaults_to_sequential \
+        "[x] Secuencial" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_leaves_openmp_unselected \
+        "[ ] OpenMP" "$work/benchmark-pty-clean.txt"
+    check interactive_comparison_leaves_mpi_unselected \
+        "[ ] MPI" "$work/benchmark-pty-clean.txt"
+    checks=$((checks + 1))
+    if ! grep -qF "Hilos OpenMP:" "$work/benchmark-pty-clean.txt"; then
+        echo "PASS: interactive_comparison_hides_threads_without_openmp"
+    else
+        echo "FAIL: interactive_comparison_hides_threads_without_openmp"
+        failures=$((failures + 1))
+    fi
     check interactive_comparison_exposes_validation_action \
         "Ejecutar experimento" "$work/benchmark-pty-clean.txt"
     checks=$((checks + 1))

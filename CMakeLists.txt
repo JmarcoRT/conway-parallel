@@ -24,13 +24,15 @@ FetchContent_MakeAvailable(ftxui)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
 
+
 # Standalone reproducible input module: standard C++ only, no engine or UI.
 add_library(conway_generated_input STATIC src/input/generated_input.cpp)
 target_include_directories(conway_generated_input PUBLIC include)
 
-# Experimental runner remains independent of FTXUI/MPI and its presentation.
+# Experimental runner is independent of FTXUI; MPI executes in an external worker.
 add_library(conway_experiments STATIC
     src/app/scaling_study.cpp
+    src/app/experimental_study.cpp
     src/app/experiment_runner.cpp
     src/app/benchmark.cpp
     src/core/game.cpp
@@ -39,7 +41,8 @@ add_library(conway_experiments STATIC
     src/core/bs23.cpp
 )
 target_include_directories(conway_experiments PUBLIC include)
-target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(conway_experiments PUBLIC OpenMP::OpenMP_CXX conway_mpi_client)
+target_compile_definitions(conway_experiments PRIVATE CONWAY_EXPERIMENT_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
 
 # Snapshot generated compile commands and Git only in a controlled build step.
 set(experiment_snapshot_multi_config FALSE)
@@ -79,7 +82,6 @@ add_executable(conway
     src/ui/menu.cpp
     src/app/app.cpp
     src/app/controls.cpp
-    src/app/simulation.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
     src/app/pattern_preview.cpp
@@ -87,6 +89,7 @@ add_executable(conway
     src/app/ftxui_app.cpp
     src/app/experiment_execution.cpp
     src/app/comparison_view.cpp
+    src/app/experimental_study_view.cpp
     src/app/scaling_view.cpp
     src/app/experiment_form.cpp
     src/app/experiment_form_view.cpp
@@ -108,24 +111,121 @@ target_link_libraries(conway PRIVATE
 
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 # Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
+# Portable protocol/capture contract shared by client and worker (no MPI runtime).
+add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/partition.cpp)
+target_include_directories(conway_mpi_protocol PUBLIC include)
+add_library(conway_mpi STATIC
+    src/core/engines/mpi.cpp
+    src/core/engines/sequential.cpp
+    src/core/bs23.cpp
+    src/mpi/local_state.cpp)
+target_include_directories(conway_mpi PUBLIC include)
+target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX conway_mpi_protocol)
+
+add_library(conway_mpi_client STATIC src/mpi/client.cpp)
+target_link_libraries(conway_mpi_client PUBLIC conway_mpi_protocol)
+target_include_directories(conway_mpi_client PUBLIC include)
+add_library(conway_simulation STATIC src/app/simulation.cpp)
+target_include_directories(conway_simulation PUBLIC include)
+target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_CXX)
+target_compile_definitions(conway_simulation PRIVATE CONWAY_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
+target_link_libraries(conway PRIVATE conway_simulation)
+
+add_executable(conway_mpi_worker src/mpi/worker.cpp)
+target_link_libraries(conway_mpi_worker PRIVATE conway_mpi)
+
 add_executable(mpi_partition_prototype
     src/mpi/partition_prototype.cpp
-    src/mpi/partition.cpp
-    src/mpi/local_state.cpp
     src/input/input.cpp
 )
 target_include_directories(mpi_partition_prototype PRIVATE include)
-target_link_libraries(mpi_partition_prototype PRIVATE MPI::MPI_CXX)
+target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
 
 include(CTest)
 
 if(BUILD_TESTING)
-    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    add_executable(experimental_review_tests tests/experimental_review_tests.cpp src/app/experiment_execution.cpp)
+    target_link_libraries(experimental_review_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_test(NAME experimental_review COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experimental_review_csv.py" $<TARGET_FILE:experimental_review_tests>)
+    set_tests_properties(experimental_review PROPERTIES TIMEOUT 15)
+
+    add_test(NAME experimental_visualization_guard_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experimental_visualization_guard.py"
+        $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(experimental_visualization_guard_pty PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+
+    add_executable(experimental_mpi_tests tests/experimental_mpi_tests.cpp src/app/experiment_execution.cpp)
+    target_link_libraries(experimental_mpi_tests PRIVATE conway_experiment_export conway_generated_input)
+    add_dependencies(experimental_mpi_tests conway_mpi_worker)
+    add_test(NAME experimental_mpi COMMAND experimental_mpi_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>
+        "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/mpi_exclusive_launcher.py")
+    set_tests_properties(experimental_mpi PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4
+        ENVIRONMENT "OMP_NUM_THREADS=2;OMP_DYNAMIC=FALSE")
+    add_executable(mpi_batch_metrics_tests tests/mpi_batch_metrics_tests.cpp)
+    target_link_libraries(mpi_batch_metrics_tests PRIVATE conway_mpi)
+    add_test(NAME mpi_batch_metrics COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+        ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_batch_metrics_tests> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(mpi_batch_metrics PROPERTIES TIMEOUT 15 RUN_SERIAL TRUE PROCESSORS 4)
+
+    add_executable(mpi_simulation_tests tests/mpi_simulation_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(mpi_simulation_tests PRIVATE conway_simulation)
+    add_dependencies(mpi_simulation_tests conway_mpi_worker)
+    add_test(NAME mpi_simulation COMMAND mpi_simulation_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(mpi_simulation PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4
+        ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_executable(mpi_trace_failure_worker src/mpi/worker.cpp)
+    target_link_libraries(mpi_trace_failure_worker PRIVATE conway_mpi)
+    target_compile_definitions(mpi_trace_failure_worker PRIVATE CONWAY_MPI_TRACE_FAIL_AFTER_STEP=1)
+    add_executable(mpi_trace_tests tests/mpi_trace_tests.cpp)
+    target_link_libraries(mpi_trace_tests PRIVATE conway_mpi_client conway_mpi)
+    add_dependencies(mpi_trace_tests conway_mpi_worker mpi_trace_failure_worker)
+    add_test(NAME mpi_trace_client COMMAND mpi_trace_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> $<TARGET_FILE:mpi_trace_failure_worker>)
+    set_tests_properties(mpi_trace_client PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 7)
+    foreach(processes IN ITEMS 1 2 4 7)
+        add_test(NAME mpi_trace_engine_${processes} COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+            ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_trace_tests> --engine ${MPIEXEC_POSTFLAGS})
+        set_tests_properties(mpi_trace_engine_${processes} PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE PROCESSORS ${processes})
+    endforeach()
+    add_executable(mpi_client_tests tests/mpi_client_tests.cpp src/input/input.cpp)
+    target_link_libraries(mpi_client_tests PRIVATE conway_mpi_client conway_mpi)
+    add_dependencies(mpi_client_tests conway_mpi_worker)
+    add_test(NAME mpi_client COMMAND mpi_client_tests "${MPIEXEC_EXECUTABLE}"
+        $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mpi_client PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4)
+    add_executable(mpi_evolution_tests tests/mpi_evolution_tests.cpp src/input/input.cpp)
+    target_link_libraries(mpi_evolution_tests PRIVATE conway_mpi)
+    foreach(processes IN ITEMS 1 2 3 4 7 8)
+        add_test(NAME mpi_evolution_${processes}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+                ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_evolution_tests>
+                ${MPIEXEC_POSTFLAGS} "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(mpi_evolution_${processes} PROPERTIES TIMEOUT 45
+            PROCESSORS ${processes} RUN_SERIAL TRUE)
+    endforeach()
+    foreach(processes IN ITEMS 1 8)
+        add_test(NAME mpi_prototype_evolution_${processes}
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${processes}
+                ${MPIEXEC_PREFLAGS} --oversubscribe $<TARGET_FILE:mpi_partition_prototype>
+                ${MPIEXEC_POSTFLAGS} --synthetic 3 5 --steps 30)
+        set_tests_properties(mpi_prototype_evolution_${processes} PROPERTIES
+            TIMEOUT 45 PROCESSORS ${processes} RUN_SERIAL TRUE)
+    endforeach()
+    add_executable(experimental_study_view_tests tests/experimental_study_view_tests.cpp
+        src/app/experimental_study_view.cpp src/app/comparison_view.cpp src/app/scaling_view.cpp)
+    target_include_directories(experimental_study_view_tests PRIVATE include)
+    target_link_libraries(experimental_study_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
+    add_test(NAME experimental_study_view COMMAND experimental_study_view_tests)
+
+    add_executable(scaling_view_tests tests/scaling_view_tests.cpp src/app/scaling_view.cpp src/app/experimental_study_view.cpp)
     target_include_directories(scaling_view_tests PRIVATE include)
     target_link_libraries(scaling_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
     add_test(NAME scaling_view COMMAND scaling_view_tests)
-    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp)
+    add_executable(comparison_view_tests tests/comparison_view_tests.cpp src/app/comparison_view.cpp src/app/experimental_study_view.cpp)
     target_include_directories(comparison_view_tests PRIVATE include)
     target_link_libraries(comparison_view_tests PRIVATE conway_experiments ftxui::dom ftxui::screen)
     add_test(NAME comparison_view COMMAND comparison_view_tests)
@@ -286,7 +386,6 @@ if(BUILD_TESTING)
 
     add_executable(app_runtime_tests
         tests/app_runtime_tests.cpp
-        src/app/simulation.cpp
         src/app/thread_config.cpp
         src/app/pattern_catalog.cpp
         src/app/pattern_preview.cpp
@@ -368,10 +467,17 @@ add_executable(didactic_session_tests
     src/input/input.cpp
 )
 target_include_directories(didactic_session_tests PRIVATE include)
-target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(didactic_session_tests PRIVATE OpenMP::OpenMP_CXX conway_simulation)
 add_test(NAME didactic_session
     COMMAND didactic_session_tests "${CMAKE_CURRENT_SOURCE_DIR}"
 )
+set_tests_properties(didactic_session PROPERTIES TIMEOUT 20 ENVIRONMENT "OMP_DYNAMIC=FALSE;OMP_THREAD_LIMIT=8")
+add_executable(didactic_mpi_tests tests/didactic_mpi_tests.cpp src/app/didactic_session.cpp)
+target_link_libraries(didactic_mpi_tests PRIVATE conway_experiments conway_simulation)
+add_dependencies(didactic_mpi_tests conway_mpi_worker mpi_trace_failure_worker)
+add_test(NAME didactic_mpi COMMAND didactic_mpi_tests "${MPIEXEC_EXECUTABLE}"
+    $<TARGET_FILE:conway_mpi_worker> $<TARGET_FILE:mpi_trace_failure_worker>)
+set_tests_properties(didactic_mpi PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4)
 # Compila los helpers reales de FTXUI para comprobar coordenadas renderizadas.
 get_target_property(didactic_layout_sources conway SOURCES)
 list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
@@ -384,7 +490,26 @@ add_executable(ftxui_execution_fixture tests/ftxui_execution_fixture.cpp ${didac
 target_include_directories(ftxui_execution_fixture PRIVATE include)
 target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
     OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
+add_executable(ftxui_didactic_fixture tests/ftxui_didactic_fixture.cpp ${didactic_layout_sources})
+target_include_directories(ftxui_didactic_fixture PRIVATE include)
+target_link_libraries(ftxui_didactic_fixture PRIVATE conway_experiment_export conway_generated_input conway_simulation
+    OpenMP::OpenMP_CXX MPI::MPI_CXX ftxui::component ftxui::dom ftxui::screen)
+add_dependencies(ftxui_didactic_fixture conway_mpi_worker)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME ftxui_didactic_controller_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_controller.py" $<TARGET_FILE:conway>
+    $<TARGET_FILE:ftxui_didactic_fixture> "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_didactic_controller_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME ftxui_didactic_mpi_views_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_mpi_views.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_didactic_mpi_views_pty PROPERTIES TIMEOUT 100 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME ftxui_mpi_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_mpi_pty PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME text_mpi COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_text_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(text_mpi PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+
 add_test(NAME experiment_csv_roundtrip
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_experiment_csv.py"
             "$<TARGET_FILE:experiment_csv_tests>" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -410,6 +535,12 @@ add_test(NAME ftxui_menu_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_menu.py"
             "$<TARGET_FILE:conway>")
 set_tests_properties(ftxui_menu_pty PROPERTIES TIMEOUT 60)
+add_test(NAME ftxui_result_scroll_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_result_scroll.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_result_scroll_pty PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+add_test(NAME ftxui_experimental_mpi_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_experimental_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_experimental_mpi_pty PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE)
 add_test(NAME ftxui_benchmark_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
             "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")
@@ -448,3 +579,11 @@ add_executable(conway_simulation_demo
     src/ui/layout.cpp
 )
 target_include_directories(conway_simulation_demo PRIVATE include)
+
+# All applications/fixtures use the same simulation session and MPI runtime path.
+foreach(session_target IN ITEMS app_runtime_tests didactic_layout_tests ftxui_execution_fixture)
+    if(TARGET ${session_target})
+        target_link_libraries(${session_target} PRIVATE conway_simulation)
+    endif()
+endforeach()
+add_dependencies(conway conway_mpi_worker)

@@ -1,4 +1,5 @@
 #include "mpi/local_state.hpp"
+#include "mpi/counts.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -9,7 +10,10 @@ namespace conway::mpi {
 core::GameState make_local_state_from_rows(std::size_t width,
                                            const RowPartition& part,
                                            const std::vector<std::uint8_t>& rows) {
-    if (width == 0 || rows.size() != width * part.rowCount) {
+    (void)checked_cell_count(width, part.globalHeight);
+    const auto expected = partition_rows(part.globalHeight, part.size, part.rank);
+    if (part.firstRow != expected.firstRow || part.rowCount != expected.rowCount ||
+        rows.size() != width * part.rowCount) {
         throw std::invalid_argument(
             "make_local_state_from_rows: tamano de filas inconsistente con la particion");
     }
@@ -36,9 +40,10 @@ core::GameState make_local_state_from_rows(std::size_t width,
 
 core::GameState make_local_state(const InputData& input,
                                  const RowPartition& part) {
+    const auto count = checked_cell_count(input.width, input.height);
     if (part.globalHeight != input.height ||
-        part.endRow() > input.height ||
-        input.cells.size() != input.width * input.height) {
+        part.firstRow > input.height || part.rowCount > input.height - part.firstRow ||
+        input.cells.size() != count) {
         throw std::invalid_argument(
             "make_local_state: la particion no corresponde a la entrada");
     }

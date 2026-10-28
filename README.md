@@ -36,7 +36,7 @@ rendimiento mediante experimentos reproducibles.
 |---|---|
 | Secuencial | Implementado |
 | OpenMP | Implementado |
-| MPI | Prototipo independiente |
+| MPI | Simulación local con procesos separados (Linux/WSL2) |
 | Pthreads | Pendiente |
 
 ## Inicio rápido

@@ -7,7 +7,8 @@ using namespace conway::app;
 int main() {
     int failures = 0;
     auto check = [&](bool value, const char* label) { if (!value) { ++failures; std::cerr << "FAIL: " << label << '\n'; } };
-    auto config = *validateExperimentForm(standardExperimentForm(false, 2, false), false, nullptr).config;
+    auto draft=standardExperimentForm(false,2,false);draft.openmp=true;
+    auto config = *validateExperimentForm(draft, false, nullptr).config;
     config.generated = conway::input::GenerationConfig{7, 5, 3000, 42};
     config.comparison.generations = config.scaling.generations = 3;
     config.comparison.warmups = config.scaling.warmups = 0;
@@ -27,7 +28,7 @@ int main() {
     auto first = real.snapshot();
     check(first.phase == ExecutionPhase::Finished && first.latest, "real result published");
     const auto& comparison = std::get<ExperimentResult>(first.latest->result);
-    check(comparison.summary.equivalent && comparison.summary.validForComparison && comparison.samples.size() == 4,
+    check(comparison.study && comparison.study->complete && comparison.study->summaries[1].valid && comparison.study->samples.size()==4,
           "real comparison equivalence and measured samples");
     check(comparison.input.generated && comparison.input.generated->seed == 42 && comparison.input.width == 7,
           "generated provenance retained");

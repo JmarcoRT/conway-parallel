@@ -76,6 +76,7 @@ def check(binary, cwd, size):
             assert time.monotonic() < deadline, text(t)
             # El controlador existente publica el resultado al siguiente evento UI.
             t.send("\x1b[D")
+        t.send(" ")  # Keep the automatic didactic clock paused during resize checks.
         visible(t, "MODO DIDÁCTICO", "NEXT · generación 1")
         t.send("v")
         visible(t, "CURRENT · generación 0")
@@ -100,6 +101,8 @@ def experiments(binary, cwd):
     try:
         t.send("C\r1\r")
         for scaling in (False, True):
+            if not scaling:
+                move_to(t,"OpenMP");t.send(" ")
             field(t, "Generaciones", "2")
             field(t, "Calentamientos", "0")
             field(t, "Repeticiones", "1")

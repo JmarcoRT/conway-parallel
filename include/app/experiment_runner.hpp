@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/benchmark.hpp"
+#include "app/experimental_study.hpp"
 #include "input/generated_input.hpp"
 
 #include <cstdint>
@@ -19,6 +20,12 @@ struct ExperimentConfig {
     int repetitions{5}; // Measured rounds, one sample per engine per round.
     int requestedThreads{1};
     MeasurementOrder order{MeasurementOrder::AlternatingSequentialFirst};
+    // Empty preserves the existing two-engine API/UI. Explicit selections use
+    // the generalized rotating executor; Sequential is selected by default.
+    std::vector<ExecutionConfiguration> participants;
+    bool rotateRight{false}; // Explicit participants only; legacy order stays unchanged.
+    mpi::ClientOptions mpiOptions;
+    std::size_t maxMemoryBytes{256u*1024u*1024u};
 };
 
 struct GeneratedInputIdentity {
@@ -70,6 +77,7 @@ struct ExperimentResult {
     std::size_t completedWarmupRuns;
     std::vector<ExperimentSample> samples; // Actual acquisition order; no warmups.
     ExperimentSummary summary;
+    std::optional<ExperimentalStudy> study; // Generalized results, CSV v2.
 };
 
 // Both overloads borrow the same input throughout; no regeneration or board copy.

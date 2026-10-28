@@ -39,8 +39,11 @@ bool density(std::string_view text, int& value) {
 } // namespace
 
 ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, bool hasPattern) {
-    return {hasPattern ? 0 : 1, {"1000", "1000", "30", "42", "20", "1", "5",
-                                scaling ? "1, 2, 4, 8" : std::to_string(currentThreads), ""}};
+    ExperimentFormDraft draft;
+    draft.source=hasPattern?0:1;
+    draft.values={"1000","1000","30","42","20","1","5",
+        scaling?"1, 2, 4, 8":std::to_string(currentThreads),"","1",""};
+    return draft;
 }
 
 ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft, bool scaling,
@@ -61,31 +64,47 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
     parsed.scaling.generations = parsed.comparison.generations;
     parsed.scaling.warmups = parsed.comparison.warmups;
     parsed.scaling.repetitions = parsed.comparison.repetitions;
+    const bool usesMPI=scaling?draft.parallelEngine==1:draft.mpi;
     if (!scaling) {
-        parseInt(ExperimentField::Threads, parsed.comparison.requestedThreads);
+        if(static_cast<int>(draft.sequential)+draft.openmp+draft.mpi<2)
+            error(ExperimentField::Participants,"Selecciona al menos dos participantes.");
+        if(draft.openmp) parseInt(ExperimentField::Threads, parsed.comparison.requestedThreads);
+        int processes=1;
+        if(draft.mpi) {
+            parseInt(ExperimentField::Processes,processes);
+            if(processes>1024) error(ExperimentField::Processes,"Procesos MPI entre 1 y 1024.");
+        }
+        if(draft.sequential) parsed.comparison.participants.push_back({Engine::Sequential,{},{}});
+        if(draft.openmp) parsed.comparison.participants.push_back({Engine::OpenMP,parsed.comparison.requestedThreads,{}});
+        if(draft.mpi) parsed.comparison.participants.push_back({Engine::MPI,{},processes});
     } else {
-        parsed.scaling.requestedThreads.clear();
+        if(draft.parallelEngine!=0 && draft.parallelEngine!=1)
+            error(ExperimentField::Participants,"Selecciona OpenMP o MPI.");
+        parsed.scaling.parallelEngine=usesMPI?Engine::MPI:Engine::OpenMP;
+        auto& resources=usesMPI?parsed.scaling.requestedProcesses:parsed.scaling.requestedThreads;
+        resources.clear();
         auto remaining = trim(draft.values[index(ExperimentField::Threads)]);
         std::set<int> seen;
         while (!remaining.empty()) {
             const auto comma = remaining.find(',');
             int threads = 0;
-            if (!integer(remaining.substr(0, comma), threads) || threads <= 0) {
-                error(ExperimentField::Threads, "Lista de enteros positivos separados por comas, hasta " +
-                      std::to_string(std::numeric_limits<int>::max()) + ".");
+            if (!integer(remaining.substr(0, comma), threads) || threads <= 0 || (usesMPI && threads>1024)) {
+                error(ExperimentField::Threads, usesMPI?"Lista de procesos entre 1 y 1024, separados por comas.":"Lista de enteros positivos separados por comas.");
                 break;
             }
             if (!seen.insert(threads).second) {
-                error(ExperimentField::Threads, "La lista contiene hilos duplicados.");
+                error(ExperimentField::Threads, "La lista contiene recursos duplicados.");
                 break;
             }
-            parsed.scaling.requestedThreads.push_back(threads);
+            resources.push_back(threads);
             if (comma == remaining.npos) break;
             remaining = trim(remaining.substr(comma + 1));
             if (remaining.empty()) error(ExperimentField::Threads, "Falta un número después de la coma.");
         }
-        if (seen.empty()) error(ExperimentField::Threads, "Indica al menos un número de hilos.");
+        if (seen.empty()) error(ExperimentField::Threads, "Indica al menos un recurso.");
     }
+    if(usesMPI && parsed.comparison.generations>100000)
+        error(ExperimentField::Generations,"MPI admite entre 1 y 100000 generaciones por lote.");
     std::size_t width = 0, height = 0, inputCapacity = 0;
     if (draft.source == 1) {
         input::GenerationConfig generated{};
@@ -124,6 +143,9 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
             if (height >= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()))
                 throw std::length_error("index");
             const auto count = detail::checkedMultiply(width, height);
+            if(usesMPI && count>mpi::wire::maxPayload-32) {
+                error(draft.source==1?ExperimentField::Width:ExperimentField::Source,"El tablero supera el límite MPI de 64 MiB menos 32 bytes.");
+            }
             padded = detail::checkedMultiply(detail::checkedAdd(width, 2), detail::checkedAdd(height, 2));
             const auto capacity = std::vector<std::uint8_t>{}.max_size();
             if (count > capacity || padded > capacity) throw std::length_error("capacity");
@@ -151,7 +173,7 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
                 if (pairs > std::vector<ExperimentSample>{}.max_size()) throw std::length_error("capacity");
                 (void)checkedAdd(1, checkedAdd(pairs, checkedMultiply(warmups, 2)));
             } else {
-                const auto threads = parsed.scaling.requestedThreads.size();
+                const auto threads = (usesMPI?parsed.scaling.requestedProcesses:parsed.scaling.requestedThreads).size();
                 if (threads >= static_cast<std::size_t>(std::numeric_limits<int>::max())) throw std::length_error("index");
                 const auto configurations = checkedAdd(threads, 1);
                 const auto samples = checkedMultiply(configurations, repetitions);
@@ -174,6 +196,26 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
             }
         } catch (const std::length_error&) {
             error(ExperimentField::Repetitions, "Configuración excede la capacidad o el presupuesto de memoria del experimento.");
+        }
+    }
+    if((!scaling || usesMPI) && padded && std::all_of(result.errors.begin(),result.errors.end(),[](const auto& e){return e.empty();})) {
+        try {
+            using detail::checkedAdd;using detail::checkedMultiply;
+            const auto configs=scaling?parsed.scaling.requestedProcesses.size()+1:parsed.comparison.participants.size();
+            const auto samples=checkedMultiply(configs,static_cast<std::size_t>(parsed.comparison.repetitions));
+            auto bytes=checkedAdd(inputCapacity,checkedMultiply(6,padded));
+            bytes=checkedAdd(bytes,checkedMultiply(samples,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
+            if(usesMPI) {
+                std::size_t maximum=1;
+                if(scaling) for(auto p:parsed.scaling.requestedProcesses) maximum=std::max(maximum,static_cast<std::size_t>(p));
+                else maximum=static_cast<std::size_t>(*parsed.comparison.participants.back().requestedProcesses);
+                bytes=checkedAdd(bytes,checkedMultiply(2,checkedMultiply(checkedAdd(height,checkedMultiply(2,maximum)),checkedAdd(width,2))));
+                bytes=checkedAdd(bytes,checkedMultiply(2,checkedMultiply(width,height)));
+            }
+            bytes=checkedAdd(bytes,128u*1024u);
+            if(bytes>parsed.scaling.maxMemoryBytes) throw std::length_error("budget");
+        } catch(const std::length_error&) {
+            error(ExperimentField::Repetitions,"Entrada y mediciones superan 256 MiB; reduce dimensiones o repeticiones.");
         }
     }
     if (std::all_of(result.errors.begin(), result.errors.end(), [](const auto& e) { return e.empty(); }))

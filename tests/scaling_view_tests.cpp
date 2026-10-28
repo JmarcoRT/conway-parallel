@@ -36,7 +36,7 @@ int main() {
     for (int width : {80,120}) {
         auto text=render(r,ScalingTab::Summary,width);
         for (const char* heading : {"IDENTIFICACIÓN","REFERENCIA SECUENCIAL","TABLA DE ESCALABILIDAD","GRÁFICO DE SPEEDUP","INTERPRETACIÓN"}) check(text.find(heading)!=text.npos,"summary blocks both widths");
-        check(text.find("Mediana secuencial compartida: 8 ms")!=text.npos,"shared baseline once");
+        check(text.find("Mediana secuencial compartida: 8.000 ms")!=text.npos,"shared baseline once");
         check(text.find("Solic.")!=text.npos && text.find("Efic. %")!=text.npos && text.find("1.00×")!=text.npos,"table units and baseline");
         check(text.find("*")!=text.npos && text.find("sin interpolación")!=text.npos,"real ASCII graph and categorical explanation");
         text=render(r,ScalingTab::Samples,width);
@@ -62,7 +62,7 @@ int main() {
     check(text.find("limitado/diferente")!=text.npos && text.find("equipo variable")!=text.npos && text.find("eficiencia N/D")!=text.npos,"limited variable teams explicit");
     r.summary.points[2].summary.speedup=1e-300; r.summary.points[3].summary.speedup=1e300;
     text=render(r,ScalingTab::Summary);
-    check(text.find("log1p(S)")!=text.npos && text.find("1e-300")!=text.npos && text.find("1e+300")!=text.npos,"extreme finite range logarithmic plot and intact values");
+    check(text.find("log1p(S)")!=text.npos && text.find("1.000e-300")!=text.npos && text.find("1.000e+300")!=text.npos,"extreme finite range logarithmic plot and intact values");
     r=fixture();
     r.summary.points[0].summary.speedup=std::numeric_limits<double>::infinity();
     r.summary.points[1].summary.speedup=std::numeric_limits<double>::quiet_NaN();
@@ -86,7 +86,7 @@ int main() {
     check(text.find("#100 · Ronda 19")!=text.npos,"many measurements retained");
     r.samples[1].execution.measurement.elapsedMs=0.039999999999999996;
     text=render(r,ScalingTab::Samples);
-    check(text.find("0.04 ms")!=text.npos && text.find("0.039999999999999996")==text.npos && r.samples[1].execution.measurement.elapsedMs==0.039999999999999996,"rounding only visual");
+    check(text.find("0.040 ms")!=text.npos && text.find("0.039999999999999996")==text.npos && r.samples[1].execution.measurement.elapsedMs==0.039999999999999996,"rounding only visual");
     r.samples.clear();r.summary={};
     check(scalingPlotPoints(r).empty() && render(r,ScalingTab::Summary).find("Gráfico N/D")!=text.npos && render(r,ScalingTab::Samples).find("No hay muestras medidas")!=text.npos,"empty explicit");
     std::cout<<(failures ? "FAIL" : "PASS")<<": synthetic scaling presentation\n";

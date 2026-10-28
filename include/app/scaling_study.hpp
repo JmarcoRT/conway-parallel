@@ -15,6 +15,9 @@ struct ScalingConfig {
     ScalingOrder order{ScalingOrder::RotateLeft};
     // Payload policy, adjustable; includes input, Games, results and summary workspace.
     std::size_t maxMemoryBytes{256u * 1024u * 1024u};
+    Engine parallelEngine{Engine::OpenMP};
+    std::vector<std::int64_t> requestedProcesses{1, 2, 4};
+    mpi::ClientOptions mpiOptions;
 };
 
 struct ScalingSample {
@@ -50,6 +53,7 @@ struct ScalingResult {
     std::size_t completedWarmupRuns;
     std::vector<ScalingSample> samples; // Actual order; shared Sequential samples stored once.
     ScalingSummary summary;
+    std::optional<ExperimentalStudy> study; // MPI study, CSV v2.
 };
 
 ScalingResult runScalingStudy(const InputData& input, const ScalingConfig& config);
