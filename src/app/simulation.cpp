@@ -48,7 +48,7 @@ std::optional<int> parseMPIProcesses(std::string_view text) noexcept {
     return count;
 }
 struct SimulationSession::Worker {
-    struct Job { Action action; Engine engine; InputData input; std::size_t generation; mpi::ClientOptions options; bool backgroundLocal{}; std::uint64_t epoch{}; };
+    struct Job { Action action; Engine engine; InputData input; std::size_t generation; mpi::ClientOptions options; bool backgroundLocal{}; std::uint64_t epoch{}; core::CudaBlockSize block{core::kDefaultCudaBlock}; };
     struct Delivery { std::optional<Game> game; std::string error; bool closed{}; std::vector<int> pids; std::uint64_t epoch{}; };
     std::mutex mutex;
     std::condition_variable wake;
@@ -86,6 +86,7 @@ struct SimulationSession::Worker {
                         result.game=*local;
                     } else {
                         result.game.emplace(task.input,task.generation);
+                        if(task.engine==Engine::CUDA) result.game->setCudaBlockSize(task.block);
                         result.game->setEngine(task.engine);
                     }
                 } else {
@@ -102,7 +103,8 @@ struct SimulationSession::Worker {
                     result.pids=client->workerPids();
                 }
             } catch(const std::exception& e) {
-                result.error=task.backgroundLocal?std::string("Error de vista previa: ")+e.what():mpiError(e); client.reset();
+                result.game.reset();
+                result.error=task.engine==Engine::CUDA ? std::string("Error CUDA: ")+e.what()+" · U recuperar; Esc menú. Sin fallback." : task.backgroundLocal?std::string("Error de vista previa: ")+e.what():mpiError(e); client.reset();
                 result.closed=task.action==Action::Close;
             }
             {std::lock_guard lock(mutex); delivery=std::move(result);}
@@ -111,11 +113,18 @@ struct SimulationSession::Worker {
         client.reset();
     }
 };
-SimulationSession::SimulationSession(const InputData& input,Engine engine,mpi::ClientOptions options,std::function<void()> notify,bool backgroundLocal)
-    :initialInput_(input),engine_(engine),game_(input),options_(std::move(options)),notify_(std::move(notify)),backgroundLocal_(backgroundLocal) {
+SimulationSession::SimulationSession(const InputData& input,Engine engine,mpi::ClientOptions options,std::function<void()> notify,bool backgroundLocal,core::CudaBlockSize block)
+    :initialInput_(input),engine_(engine),cudaBlock_(block),game_(input),options_(std::move(options)),notify_(std::move(notify)),backgroundLocal_(backgroundLocal) {
     if(backgroundLocal_ && engine_!=Engine::Sequential)throw std::invalid_argument("La vista previa asíncrona requiere Secuencial");
     if(engine_==Engine::MPI || backgroundLocal_) submit(Action::Configure);
-    else {game_.setEngine(engine_);updatePreview();}
+    else {
+        game_.setEngine(engine_);
+        if(engine_==Engine::CUDA) {
+            try {game_.setCudaBlockSize(cudaBlock_);}
+            catch(const std::exception& e) {error_=std::string("Error CUDA: ")+e.what();}
+        }
+        updatePreview();
+    }
 }
 SimulationSession::~SimulationSession()=default;
 const Game& SimulationSession::game() const noexcept {return game_;}
@@ -123,7 +132,10 @@ bool SimulationSession::isRunning() const noexcept {return running_;}
 void SimulationSession::updatePreview() {
     preview_.reset();
     if(backgroundLocal_)return;
-    if(engine_!=Engine::MPI && !closed_) {preview_=game_;preview_->step();}
+    if(engine_!=Engine::MPI && engine_!=Engine::CUDA && !closed_) {
+        try {preview_=game_;preview_->step();}
+        catch(const std::exception& e) {preview_.reset();running_=false;error_=std::string("Error de vista previa: ")+e.what();}
+    }
 }
 void SimulationSession::submit(Action action) {
     running_=action==Action::Step?running_:false;
@@ -133,7 +145,7 @@ void SimulationSession::submit(Action action) {
     if(!worker_) worker_=std::make_unique<Worker>(notify_);
     Worker::Job job{action,engine_,action==Action::Reset?initialInput_:
                     action==Action::Step || action==Action::Close?InputData{}:cells(game_),
-                    action==Action::Reset?0:game_.generation(),options_,backgroundLocal_,epoch_};
+                    action==Action::Reset?0:game_.generation(),options_,backgroundLocal_,epoch_,cudaBlock_};
     {std::lock_guard lock(worker_->mutex); worker_->job=std::move(job);}
     busy_=true; preview_.reset(); worker_->wake.notify_one();
 }
@@ -151,13 +163,20 @@ void SimulationSession::poll() {
     if(!result->pids.empty()) pids_=std::move(result->pids);
     error_=std::move(result->error); closed_=result->closed;
     if(!error_.empty()) running_=false;
-    if(pending_) {const auto next=*pending_;pending_.reset();submit(next);}
-    else updatePreview();
+    if(pending_) {
+        const auto next=*pending_;pending_.reset();
+        try {submit(next);}
+        catch(const std::exception& e) {running_=false;error_=std::string("Error de configuración pendiente: ")+e.what();}
+    } else updatePreview();
 }
 void SimulationSession::step() {
     if(busy_ || closed_ || !error_.empty()) return;
     if(engine_==Engine::MPI || backgroundLocal_) submit(Action::Step);
-    else {game_.step();updatePreview();}
+    else {
+        if(engine_!=Engine::CUDA) {game_.step();updatePreview();return;}
+        try {game_.step();updatePreview();}
+        catch(const std::exception& e) {running_=false;preview_.reset();error_=std::string("Error CUDA: ")+e.what()+" · U recuperar; Esc menú. Sin fallback.";}
+    }
 }
 void SimulationSession::toggleRunning() noexcept {if(!closed_ && error_.empty()) running_=!running_;}
 void SimulationSession::advanceIfRunning() {if(running_) step();}
@@ -165,17 +184,39 @@ void SimulationSession::reset() {
     running_=false;
     if(backgroundLocal_)++epoch_;
     if(engine_==Engine::MPI || backgroundLocal_ || busy_) submit(Action::Reset);
-    else {game_=Game(initialInput_);game_.setEngine(engine_);error_.clear();updatePreview();}
+    else {
+        try {
+            Game candidate(initialInput_);
+            if(engine_==Engine::CUDA)candidate.setCudaBlockSize(cudaBlock_);
+            candidate.setEngine(engine_);game_=std::move(candidate);error_.clear();updatePreview();
+        } catch(const std::exception& e) {error_=std::string("Error al reiniciar: ")+e.what();}
+    }
 }
-void SimulationSession::configure(Engine engine,int processes) {
+void SimulationSession::configure(Engine engine,int processes,core::CudaBlockSize block) {
     if(backgroundLocal_ && engine!=Engine::Sequential)throw std::invalid_argument("La vista previa solo usa Secuencial");
     if(processes<1 || processes>1024) throw std::invalid_argument("P debe estar entre 1 y 1024.");
     running_=false;
     const bool needsWorker=backgroundLocal_ || engine_==Engine::MPI || engine==Engine::MPI || busy_;
-    engine_=engine; options_.processes=processes;
-    if(needsWorker) submit(Action::Configure);
-    else {game_.setEngine(engine_);error_.clear();updatePreview();}
+    // Validation precedes configuration publication and never advances the board.
+    if(engine==Engine::CUDA) {
+        if(needsWorker) {Game validation(game_);validation.setCudaBlockSize(block);}
+        else game_.setCudaBlockSize(block);
+    }
+    const auto oldEngine=engine_;
+    const auto oldProcesses=options_.processes;
+    const auto oldBlock=cudaBlock_;
+    engine_=engine; options_.processes=processes; cudaBlock_=block;
+    if(needsWorker) {
+        try {submit(Action::Configure);}
+        catch(...) {engine_=oldEngine;options_.processes=oldProcesses;cudaBlock_=oldBlock;throw;}
+    } else {game_.setEngine(engine_);error_.clear();updatePreview();}
 }
-void SimulationSession::recover() {running_=false;submit(Action::Configure);}
+void SimulationSession::recover() {
+    running_=false;
+    if(engine_==Engine::CUDA && !busy_) {
+        try {game_.setCudaBlockSize(cudaBlock_);game_.setEngine(Engine::CUDA);error_.clear();closed_=false;}
+        catch(const std::exception& e) {error_=std::string("Error CUDA: ")+e.what();}
+    } else submit(Action::Configure);
+}
 void SimulationSession::close() {if(closed_) return;running_=false;if(backgroundLocal_)++epoch_;submit(Action::Close);}
 } // namespace conway::app

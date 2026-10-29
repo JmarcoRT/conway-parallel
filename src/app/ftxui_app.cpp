@@ -14,6 +14,10 @@
 #include "app/pattern_catalog.hpp"
 #include "app/pattern_preview.hpp"
 #include "app/simulation.hpp"
+#include "app/cuda_info.hpp"
+#include "app/cuda_didactic_session.hpp"
+#include "ui/cuda_didactic_view.hpp"
+#include "ui/board_renderer.hpp"
 #include "app/thread_config.hpp"
 #include "core/engines/openmp.hpp"
 #include "input/input.hpp"
@@ -98,16 +102,7 @@ class DifferentialOutputBuffer;
 // tamano de celda mas grande que permita mostrarlo completo dentro
 // del area disponible. Si no cabe, usa cell_chars = 2 (el menor) y un
 // viewport con el mayor numero posible de filas y columnas.
-struct DidacticBoardGeometry {
-    std::size_t cell_chars = 2;
-    std::size_t visible_rows = 0;
-    std::size_t visible_cols = 0;
-    std::size_t row_offset = 0;
-    std::size_t col_offset = 0;
-    std::size_t board_chars = 0;
-    std::size_t board_lines = 0;
-    bool full_board_shown = false;
-};
+using DidacticBoardGeometry = ui::BoardGeometry;
 
 DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t panel_inner_width,
@@ -123,6 +118,9 @@ Element renderDidacticBoardPanel(
 
 enum class Page {
     Main,
+    Simulation,
+    CudaBlocks,
+    CudaDidactic,
     Patterns,
     Engines,
     Threads,
@@ -143,6 +141,9 @@ struct InteractiveState {
     std::string path;
     std::string message;
     Engine engine{Engine::Sequential};
+    core::CudaBlockSize cudaBlock{core::kDefaultCudaBlock};
+    CudaUiInfo cudaInfo;
+    int blockSelection{1};
     int requestedThreads{defaultOpenMPThreadCount()};
     int effectiveThreads{0};
     int mpiProcesses{1};
@@ -267,7 +268,7 @@ private:
 };
 
 std::string engineName(Engine engine) {
-    return engine == Engine::Sequential ? "Secuencial" : engine == Engine::OpenMP ? "OpenMP" : "MPI";
+    return engine == Engine::Sequential ? "Secuencial" : engine == Engine::OpenMP ? "OpenMP" : engine==Engine::CUDA ? "CUDA" : "MPI";
 }
 
 std::string activePattern(const InteractiveState& state) {
@@ -341,7 +342,7 @@ Element renderContextBar(const InteractiveState& state, std::size_t width) {
         label += "Sin cargar";
     }
     const std::string engine = width < 44
-        ? (state.engine == Engine::Sequential ? "Sec." : state.engine == Engine::OpenMP ? "OMP" : "MPI")
+        ? (state.engine == Engine::Sequential ? "Sec." : state.engine == Engine::OpenMP ? "OMP" : state.engine==Engine::CUDA ? "CUDA" : "MPI")
         : engineName(state.engine);
     const bool experiment = state.page == Page::ComparisonConfig || state.page == Page::BenchmarkScaling ||
         state.page == Page::ExperimentExecution || state.page == Page::BenchmarkResults || state.page == Page::BenchmarkMenu;
@@ -350,6 +351,7 @@ Element renderContextBar(const InteractiveState& state, std::size_t width) {
         suffix += width < 44 ? " · H:" : compact ? " · Hilos: " : " · Hilos solicitados: ";
         suffix += std::to_string(state.requestedThreads);
     }
+    if (state.engine == Engine::CUDA) suffix += " · B:"+std::to_string(state.cudaBlock.x)+"x"+std::to_string(state.cudaBlock.y);
     if (state.engine == Engine::MPI) suffix += " · P:" + std::to_string(state.mpiProcesses);
     const auto suffixWidth = static_cast<std::size_t>(ftxui::string_width(suffix));
     const auto labelWidth = width > suffixWidth ? width - suffixWidth : 0;
@@ -591,40 +593,7 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t board_width,
     std::size_t board_height
 ) {
-    DidacticBoardGeometry g;
-    if (panel_inner_width < 3 || panel_inner_height < 3 ||
-        board_width == 0 || board_height == 0) {
-        return g;
-    }
-    // Intentar con cell_chars de mayor a menor hasta que el tablero
-    // completo quepa.
-    for (std::size_t cw = 8; cw >= 2; --cw) {
-        const std::size_t needed_w = board_width * (cw + 1) + 1;
-        const std::size_t needed_h = board_height * 2 + 1;
-        if (needed_w <= panel_inner_width &&
-            needed_h <= panel_inner_height) {
-            g.cell_chars = cw;
-            g.visible_rows = board_height;
-            g.visible_cols = board_width;
-            g.board_chars = needed_w;
-            g.board_lines = needed_h;
-            g.full_board_shown = true;
-            return g;
-        }
-    }
-    // No cabe el tablero completo. Usar cell_chars = 2 (maxima cantidad
-    // de columnas visibles) y calcular el viewport mas grande que
-    // quepa en el area.
-    g.cell_chars = 2;
-    g.visible_cols = (panel_inner_width >= 1)
-        ? std::min(board_width, (panel_inner_width - 1) / 3)
-        : 0;
-    g.visible_rows = (panel_inner_height >= 1)
-        ? std::min(board_height, (panel_inner_height - 1) / 2)
-        : 0;
-    g.board_chars = g.visible_cols * 3 + 1;
-    g.board_lines = g.visible_rows * 2 + 1;
-    return g;
+    return ui::computeBoardGeometry(panel_inner_width,panel_inner_height,board_width,board_height);
 }
 
 // Renderiza un panel (CURRENT o NEXT) aplicando la geometria. La
@@ -637,74 +606,22 @@ Element renderDidacticBoardPanel(
     bool is_next,
     bool colors, bool showViewport
 ) {
-    if (geom.visible_rows == 0 || geom.visible_cols == 0 ||
-        frame.width == 0 || frame.height == 0) {
-        return ftxui::text("Tablero sin espacio") | ftxui::dim;
-    }
-
-    const std::size_t cell = geom.cell_chars;
-    std::vector<Element> rows;
-    rows.reserve(geom.visible_rows * 2 + 3);
-
-    rows.push_back(gridElement(
-        gridBorder(geom.visible_cols, "┬", "┌", "┐", cell), colors));
-
-    for (std::size_t r = 0; r < geom.visible_rows; ++r) {
-        const std::size_t logical_r = r + geom.row_offset;
-        std::vector<Element> cells;
-        cells.reserve(geom.visible_cols * 2 + 1);
-        cells.push_back(gridElement("│", colors));
-        for (std::size_t c = 0; c < geom.visible_cols; ++c) {
-            const std::size_t logical_c = c + geom.col_offset;
-            if (logical_r >= frame.height || logical_c >= frame.width) {
-                cells.push_back(didacticCellElement(false,true,-1,cell,colors));
-            } else {
-                const std::size_t idx = logical_r * frame.width + logical_c;
-                const bool alive = is_next
-                    ? (frame.next_alive_map[idx] != 0)
-                    : (frame.current_alive_map[idx] != 0);
-                if (is_next) {
-                    const bool revealed = frame.revealed[idx] != 0;
-                    const std::int8_t wid = revealed
-                        ? frame.worker_id[idx] : std::int8_t{-1};
-                    cells.push_back(didacticCellElement(
-                        alive, revealed, wid, cell, colors));
-                } else {
-                    cells.push_back(didacticCellElement(alive,true,-1,cell,colors));
-                }
+    ui::BoardPrimitives primitives{
+        [&](std::size_t r,std::size_t c,std::size_t cell) {
+            if(r>=frame.height || c>=frame.width)return didacticCellElement(false,true,-1,cell,colors);
+            const auto index=r*frame.width+c;
+            const bool alive=is_next?frame.next_alive_map[index]!=0:frame.current_alive_map[index]!=0;
+            if(is_next) {
+                const bool revealed=frame.revealed[index]!=0;
+                return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors);
             }
-            cells.push_back(gridElement("│", colors));
-        }
-        rows.push_back(ftxui::hbox(std::move(cells)));
-        if (r + 1 < geom.visible_rows) {
-            rows.push_back(gridElement(
-                gridBorder(geom.visible_cols, "┼", "├", "┤", cell), colors));
-        } else {
-            rows.push_back(gridElement(
-                gridBorder(geom.visible_cols, "┴", "└", "┘", cell), colors));
-        }
-    }
-
-    if (showViewport && !geom.full_board_shown) {
-        rows.push_back(ftxui::text(
-            "Viewport: filas " + std::to_string(geom.row_offset + 1) + "–" +
-            std::to_string(geom.row_offset + geom.visible_rows) + "/" + std::to_string(frame.height) +
-            " · col. " + std::to_string(geom.col_offset + 1) + "–" +
-            std::to_string(geom.col_offset + geom.visible_cols) + "/" + std::to_string(frame.width)) | ftxui::dim);
-    }
-
-    Element board = ftxui::vbox(std::move(rows));
-    // Centrar horizontal y verticalmente: fillers en ambos ejes
-    // absorben el espacio sobrante del panel.
-    return ftxui::vbox({
-        ftxui::filler(),
-        ftxui::hbox({
-            ftxui::filler(),
-            std::move(board),
-            ftxui::filler(),
-        }),
-        ftxui::filler(),
-    });
+            return didacticCellElement(alive,true,-1,cell,colors);
+        },[&](std::string value){return gridElement(std::move(value),colors);}};
+    std::string label;
+    if(showViewport && !geom.full_board_shown)label="Viewport: filas "+std::to_string(geom.row_offset+1)+"–"+
+        std::to_string(geom.row_offset+geom.visible_rows)+"/"+std::to_string(frame.height)+" · col. "+
+        std::to_string(geom.col_offset+1)+"–"+std::to_string(geom.col_offset+geom.visible_cols)+"/"+std::to_string(frame.width);
+    return ui::renderBoardGrid(geom,frame.width,frame.height,primitives,nullptr,std::move(label));
 }
 
 // Ambos cuerpos reservan la misma cabecera y expanden el area del tablero.
@@ -829,6 +746,7 @@ public:
                                [this] { selectEngine(); })),
           threadMenu_(makeMenu(threadItems_, state_.threadSelection,
                                [this] { selectThreadOption(); })),
+          blockMenu_(makeMenu(blockItems_, state_.blockSelection,[this]{selectCudaBlock();})),
           pathInput_(makePathInput()),
           threadInput_(makeThreadInput()),
           mpiInput_(makeMPIInput()) {
@@ -843,6 +761,7 @@ public:
         Add(patternActionsMenu_);
         Add(engineMenu_);
         Add(threadMenu_);
+        Add(blockMenu_);
         Add(pathInput_);
         Add(threadInput_);
         Add(mpiInput_);
@@ -855,7 +774,8 @@ public:
             "Comparación de motores", "Escalabilidad",
             "Resultados de la sesión",
         };
-        engineItems_ = {"Secuencial", "OpenMP", "MPI", "Volver"};
+        engineItems_ = {"Secuencial", "OpenMP", "MPI", "CUDA", "Volver"};
+        blockItems_={"8x8 (64 hilos/bloque)","16x16 (256 hilos/bloque, predeterminado)","32x8 (256 hilos/bloque)","Volver"};
         threadItems_ = {
             "1 hilo", "2 hilos", "4 hilos", "8 hilos",
             "Número personalizado", "Volver",
@@ -907,13 +827,19 @@ public:
             std::max(0, top->requirement().min_y - 4));
         const bool reduced = !ui::roomyTerminal(size.columns, size.rows);
         const auto extraFooterRows = reduced && !state_.message.empty()
-            && state_.page != Page::ExperimentExecution && state_.page != Page::BenchmarkResults ? 1u : 0u;
+            && state_.page != Page::ExperimentExecution && state_.page != Page::BenchmarkResults && state_.page != Page::CudaDidactic ? 1u : 0u;
         const auto helpWidth = static_cast<std::size_t>(ftxui::string_width(footerText()));
         const auto helpRows = reduced && size.columns > 2 ? (helpWidth + size.columns - 3) / (size.columns - 2) : 1;
         const auto overhead = extraHeaderRows + extraFooterRows + (helpRows > 1 ? helpRows - 1 : 0);
         const auto layoutHeight = size.rows > overhead ? size.rows - overhead : 0;
         Element content;
         switch (state_.page) {
+            case Page::CudaDidactic:
+                content=renderCudaDidactic();break;
+            case Page::Simulation:
+                content=renderNormal();break;
+            case Page::CudaBlocks:
+                content=panel("BLOQUE CUDA",ftxui::vbox({ftxui::paragraph("Enter confirma · Esc conserva. No indica simultaneidad ni ocupación."),blockMenu_->Render()|ftxui::flex}));break;
             case Page::Main:
                 content = renderMain();
                 break;
@@ -981,6 +907,8 @@ public:
         if (!ui::usableTerminal(size.columns, size.rows)) {
             content = ftxui::vbox({ftxui::paragraph("Terminal insuficiente. Mínimo 40 × 18."),
                 ftxui::paragraph("Amplía la ventana. El estado se conserva.")});
+            if(state_.page==Page::CudaDidactic)content=ftxui::vbox({
+                ftxui::paragraph("Exploración conceptual; no representa el orden de ejecución GPU"),std::move(content)});
             bottom = ftxui::text("Esc volver · Q salir");
         }
         Element frame = ftxui::vbox({
@@ -1005,6 +933,10 @@ public:
         if(state_.page==Page::Main && (event==Event::Tab || event==Event::TabReverse))return mainMenu_->OnEvent(event==Event::Tab?Event::ArrowDown:Event::ArrowUp);
         if (event == Event::Custom) {
             catalogPreview_.poll();
+            if(normalSession_) {
+                normalSession_->poll();
+                if(!normalSession_->error().empty() && state_.page==Page::Simulation)state_.message=normalSession_->error();
+            }
             bool didacticBecameReady=false;
             if(state_.didactic) {
                 const bool preparing=state_.didactic->isPreparing();state_.didactic->poll();
@@ -1013,7 +945,7 @@ public:
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
             if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
-                catalogPreview_.drained() && (!state_.didactic || state_.didactic->closed())) {
+                catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1022,7 +954,11 @@ public:
                 receiveBenchmarkResult();
             }
             if ((pending & kPlaybackEvent) != 0) {
-                if(state_.page==Page::Patterns && catalogPreview_.session() && catalogPreview_.session()->isRunning()) {
+                if(state_.page==Page::Simulation && normalSession_ && normalSession_->isRunning()) {
+                    normalSession_->advanceIfRunning();
+                    if(!normalSession_->error().empty())state_.message=normalSession_->error();
+                    if(normalSession_->isRunning())schedulePlaybackTick();
+                } else if(state_.page==Page::Patterns && catalogPreview_.session() && catalogPreview_.session()->isRunning()) {
                     catalogPreview_.session()->advanceIfRunning();schedulePlaybackTick();
                 } else if (state_.page == Page::Didactic && state_.didactic &&
                            state_.didactic->isPlaying() && state_.didactic->isReady() && !didacticBecameReady) {
@@ -1032,6 +968,69 @@ public:
                 }
             }
             return true;
+        }
+        if(state_.page==Page::CudaDidactic) {
+            if(event==Event::Escape || (event.is_character() && (event.character()=="x"||event.character()=="X"||event.character()=="q"||event.character()=="Q"))) {
+                if(normalSession_)normalSession_->pause();playbackTimer_.request_stop();state_.page=Page::Main;return true;
+            }
+            if(!normalSession_ || !cudaDidactic_.initialized())return true;
+            normalSession_->pause();
+            if(event==Event::ArrowUp || event==Event::ArrowDown || event==Event::ArrowLeft || event==Event::ArrowRight) {
+                cudaViewport_.move(event==Event::ArrowDown?1:event==Event::ArrowUp?-1:0,
+                    event==Event::ArrowRight?1:event==Event::ArrowLeft?-1:0);cudaFollow_=false;return true;
+            }
+            if(event==Event::PageDown) {++cudaDetailRow_;return true;}
+            if(event==Event::PageUp) {if(cudaDetailRow_)--cudaDetailRow_;return true;}
+            if(event==Event::Home) {cudaDetailRow_=0;return true;}
+            if(event.is_character()) {
+                const auto k=event.character();const auto& game=normalSession_->game();
+                bool selection=true;
+                if(k=="[")cudaDidactic_.moveBlock(-1,game);
+                else if(k=="]")cudaDidactic_.moveBlock(1,game);
+                else if(k=="h"||k=="H")cudaDidactic_.moveThread(-1,0,game);
+                else if(k=="l"||k=="L")cudaDidactic_.moveThread(1,0,game);
+                else if(k=="j"||k=="J")cudaDidactic_.moveThread(0,1,game);
+                else if(k=="k"||k=="K")cudaDidactic_.moveThread(0,-1,game);
+                else if(k=="n"||k=="N")cudaDidactic_.nextThread(game);
+                else {selection=false;
+                    if(k=="v"||k=="V") {cudaDetail_=!cudaDetail_;cudaDetailRow_=0;}
+                    if(k=="a"||k=="A")cudaCoverage_=!cudaCoverage_;
+                    if(k=="b"||k=="B") {openResources(Page::CudaDidactic);return true;}
+                    if(k=="g"||k=="G") {cudaDidactic_.advance(*normalSession_);cudaFollow_=true;state_.message=normalSession_->error();}
+                    if(k=="u"||k=="U") {cudaDidactic_.recover(*normalSession_);state_.message=normalSession_->error();}
+                    if(k=="r"||k=="R") {
+                        if(cudaDidactic_.reset(*normalSession_)) {cudaViewport_={};cudaFollow_=true;cudaDetailRow_=0;}
+                        state_.message=normalSession_->error();
+                    }
+                    if(k==" "||k=="p"||k=="P"||k=="+"||k=="-"||k=="=")state_.message="Exploración manual. G avanza una generación CUDA real.";
+                }
+                if(selection) {cudaFollow_=true;cudaDetailRow_=0;}
+                return true;
+            }
+            return true;
+        }
+        if(state_.page==Page::Simulation) {
+            if(event==Event::Escape) {normalSession_->pause();playbackTimer_.request_stop();state_.page=Page::Main;return true;}
+            if(event==Event::ArrowUp || event==Event::ArrowDown || event==Event::ArrowLeft || event==Event::ArrowRight) {
+                normalViewport_.move(event==Event::ArrowDown?1:event==Event::ArrowUp?-1:0,
+                                     event==Event::ArrowRight?1:event==Event::ArrowLeft?-1:0);return true;
+            }
+            if(event.is_character()) {
+                const auto k=event.character();
+                if(k=="x"||k=="X") {normalSession_->pause();playbackTimer_.request_stop();state_.page=Page::Main;return true;}
+                if(k=="d"||k=="D") {startCudaDidactic();return true;}
+                if(k=="m"||k=="M") {openEngines(Page::Simulation);return true;}
+                if(k=="b"||k=="B") {openResources(Page::Simulation);return true;}
+                if(k=="n"||k=="N") {if(!normalSession_->isRunning())normalSession_->step();}
+                if(k=="r"||k=="R") {playbackTimer_.request_stop();normalSession_->reset();if(normalSession_->error().empty()){cudaDidactic_={};cudaViewport_={};}}
+                if(k=="u"||k=="U")normalSession_->recover();
+                if(k==" "||k=="p"||k=="P") {
+                    normalSession_->toggleRunning();if(normalSession_->isRunning())schedulePlaybackTick();else playbackTimer_.request_stop();
+                }
+                if(!normalSession_->error().empty())state_.message=normalSession_->error();
+                else state_.message.clear();
+                return true;
+            }
         }
         if ((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
             && (showingComparison() || showingScaling()) && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
@@ -1254,6 +1253,9 @@ private:
 
     ftxui::Component activeComponent() const {
         switch (state_.page) {
+            case Page::CudaDidactic:
+            case Page::Simulation: return passiveView_;
+            case Page::CudaBlocks: return blockMenu_;
             case Page::Main: return mainMenu_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
             case Page::ExperimentExecution: return benchmarkView_;
@@ -1375,7 +1377,108 @@ private:
     void leaveCatalog() {
         playbackTimer_.request_stop();catalogPreview_.close();
     }
-    void openResources() {
+    void refreshCuda(core::CudaBlockSize block) {
+        auto info=inspectCuda(state_.input?state_.input->width:1,state_.input?state_.input->height:1,block);
+        if(!info.available && normalSession_) {info.gpu=state_.cudaInfo.gpu;info.geometry=state_.cudaInfo.geometry;}
+        state_.cudaInfo=std::move(info);
+    }
+    void openEngines(Page destination=Page::Main) {
+        configReturn_=destination;
+        if(normalSession_)normalSession_->pause();playbackTimer_.request_stop();
+        refreshCuda(state_.cudaBlock);state_.page=Page::Engines;
+    }
+    bool applyNormalConfiguration(Engine engine,core::CudaBlockSize block) {
+        std::optional<CudaUiInfo> candidateInfo;
+        if(engine==Engine::CUDA) {
+            auto info=inspectCuda(state_.input?state_.input->width:1,state_.input?state_.input->height:1,block);
+            if(!info.available) {state_.message="Error: "+info.diagnostic;return false;}
+            candidateInfo=std::move(info);
+        }
+        try {
+            if(normalSession_)normalSession_->configure(engine,state_.mpiProcesses,block);
+            state_.engine=engine;state_.cudaBlock=block;
+            if(candidateInfo)state_.cudaInfo=std::move(*candidateInfo);
+            return true;
+        } catch(const std::exception& e) {state_.message="Error al configurar: "+std::string(e.what());return false;}
+    }
+    void selectCudaBlock() {
+        if(state_.blockSelection==3) {state_.page=configReturn_;return;}
+        const core::CudaBlockSize presets[]={core::kCudaBlock8x8,core::kCudaBlock16x16,core::kCudaBlock32x8};
+        if(applyNormalConfiguration(Engine::CUDA,presets[state_.blockSelection])) {
+            state_.message="Bloque CUDA confirmado: "+cudaGeometryLabel(state_.cudaBlock,state_.cudaInfo);
+            if(configReturn_==Page::CudaDidactic && normalSession_) {
+                cudaDidactic_.refresh(normalSession_->game());cudaFollow_=true;cudaDetailRow_=0;
+            }
+            state_.page=configReturn_;
+        }
+    }
+    void startNormal() {
+        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de simular.";return;}
+        if(!state_.input) {openCatalog(Page::Simulation);return;}
+        try {
+            if(state_.engine==Engine::CUDA && !normalSession_) {refreshCuda(state_.cudaBlock);if(!state_.cudaInfo.available) {state_.message="Error: "+state_.cudaInfo.diagnostic;return;}}
+            if(!normalSession_)normalSession_=std::make_unique<SimulationSession>(*state_.input,state_.engine,
+                defaultMPIOptions(state_.mpiProcesses),[this]{screen_.PostEvent(Event::Custom);},false,state_.cudaBlock);
+            normalSession_->pause();state_.page=Page::Simulation;state_.message=normalSession_->error();
+        } catch(const std::exception& e) {state_.message="Error al abrir simulación: "+std::string(e.what());}
+    }
+    void startCudaDidactic() {
+        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de explorar CUDA.";return;}
+        playbackTimer_.request_stop();pendingEvents_.fetch_and(~kPlaybackEvent,std::memory_order_acq_rel);
+        if(normalSession_)normalSession_->pause();
+        if(!state_.input) {openCatalog(Page::CudaDidactic);return;}
+        startNormal();
+        if(!normalSession_ || state_.page!=Page::Simulation)return;
+        if(normalSession_->busy() || normalSession_->game().engine()!=Engine::CUDA) {
+            state_.message="Espera o recupera la configuración CUDA con U antes de explorar.";return;
+        }
+        cudaDidactic_.enter(*normalSession_);cudaFollow_=true;state_.page=Page::CudaDidactic;
+    }
+    Element renderCudaDidactic() {
+        if(!normalSession_ || !cudaDidactic_.initialized())return ftxui::text("Sin sesión confirmada. Esc menú.");
+        return ui::allocatedElement([this](int width,int height) {
+            ui::CudaDidacticPrimitives primitives{
+                [](bool alive,std::size_t width){return didacticCellElement(alive,true,-1,width,colorsEnabled());},
+                [](std::string line){return gridElement(std::move(line),colorsEnabled());},colorsEnabled()};
+            const auto& error=normalSession_->error().empty() && state_.message.starts_with("Error")?state_.message:normalSession_->error();
+            return ui::renderCudaDidactic(normalSession_->game(),cudaDidactic_.frame(),state_.cudaInfo.gpu,error,
+                cudaViewport_,cudaDetail_,cudaDetailRow_,cudaFollow_,width,height,primitives,cudaCoverage_);
+        });
+    }
+    Element renderNormal() {
+        if(!normalSession_)return ftxui::text("Sin simulación confirmada. V para abrir.");
+        return ui::allocatedElement([this](int width,int height) {
+            const auto& game=normalSession_->game();
+            const auto rows=static_cast<std::size_t>(std::max(1,(height-7)/2));
+            const auto cols=static_cast<std::size_t>(std::max(1,(width-3)/3));
+            normalViewport_.clamp(game.height(),game.width(),rows,cols);
+            ftxui::Elements lines;
+            lines.push_back(heading("SIMULACIÓN NORMAL · "+engineName(normalSession_->engine())));
+            lines.push_back(ftxui::text("Generación "+std::to_string(game.generation())+" · Vivas "+std::to_string(game.aliveCount())+
+                (normalSession_->busy()?" · Operación pendiente":normalSession_->isRunning()?" · En ejecución":" · En pausa")));
+            if(state_.engine==Engine::CUDA) {
+                lines.push_back(ftxui::paragraph("GPU: "+state_.cudaInfo.gpu));
+                if(width<64) {
+                    lines.push_back(ftxui::text("Bloque "+std::to_string(state_.cudaBlock.x)+"x"+std::to_string(state_.cudaBlock.y)+
+                        " · "+std::to_string(state_.cudaBlock.x*state_.cudaBlock.y)+" h/bloque"));
+                    if(state_.cudaInfo.geometry)lines.push_back(ftxui::text("grid "+std::to_string(state_.cudaInfo.geometry->gridX)+
+                        "x"+std::to_string(state_.cudaInfo.geometry->gridY)));
+                } else lines.push_back(ftxui::text(cudaGeometryLabel(state_.cudaBlock,state_.cudaInfo)));
+            }
+            if(!normalSession_->error().empty())lines.push_back(ftxui::paragraph(normalSession_->error())|ftxui::color(ftxui::Color::Red));
+            lines.push_back(heading("CURRENT · snapshot confirmado"));
+            lines.push_back(ftxui::vbox(boardRows(game,rows,cols,colorsEnabled(),normalViewport_.row,normalViewport_.column,false))|ftxui::flex);
+            lines.push_back(viewportLabel(normalViewport_,game.height(),game.width(),rows,cols));
+            return ftxui::vbox(std::move(lines));
+        });
+    }
+    void openResources(Page destination=Page::Main) {
+        configReturn_=destination;
+        if(normalSession_)normalSession_->pause();playbackTimer_.request_stop();
+        if(state_.engine==Engine::CUDA) {
+            state_.blockSelection=state_.cudaBlock==core::kCudaBlock8x8?0:state_.cudaBlock==core::kCudaBlock16x16?1:2;
+            state_.page=Page::CudaBlocks;return;
+        }
         if(state_.engine==Engine::MPI) {state_.mpiDraft=std::to_string(state_.mpiProcesses);state_.page=Page::MPIInput;}
         else state_.page=Page::Threads;
     }
@@ -1384,7 +1487,7 @@ private:
             case 0:startDidactic();break;
             case 1:state_.page=Page::BenchmarkMenu;break;
             case 2:openCatalog();break;
-            case 3:state_.page=Page::Engines;break;
+            case 3:openEngines();break;
             case 4:openResources();break;
             case 5:requestExit();break;
         }
@@ -1406,10 +1509,13 @@ private:
         if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
         // Confirm the immutable validated initial input, never the current frame.
         state_.input=*catalogPreview_.initial();state_.path=catalogPreview_.entry()->path;
+        normalSession_.reset();normalViewport_={};cudaDidactic_={};cudaViewport_={};cudaDetail_=false;cudaCoverage_=false;cudaDetailRow_=0;
         if(state_.didactic && !state_.didactic->closed())state_.didactic->close();
         state_.message="Patrón confirmado: "+catalogPreview_.entry()->name+" · entrada inicial";
         leaveCatalog();state_.page=state_.returnAfterCatalog;
         if(state_.page==Page::Didactic)createDidactic();
+        if(state_.page==Page::Simulation)startNormal();
+        if(state_.page==Page::CudaDidactic)startCudaDidactic();
     }
     void selectPatternAction() {
         if(state_.patternActionSelection==0) {usePattern();return;}
@@ -1421,25 +1527,30 @@ private:
     }
 
     void selectEngine() {
-        if (state_.engineSelection == 3) { state_.page = Page::Main; return; }
-        state_.engine = state_.engineSelection == 0 ? Engine::Sequential
-            : state_.engineSelection == 1 ? Engine::OpenMP : Engine::MPI;
-        state_.message = "Motor seleccionado: " + engineName(state_.engine);
-        state_.page = Page::Main;
+        if(state_.engineSelection==4) {state_.page=configReturn_;return;}
+        const Engine engines[]={Engine::Sequential,Engine::OpenMP,Engine::MPI,Engine::CUDA};
+        if(applyNormalConfiguration(engines[state_.engineSelection],state_.cudaBlock)) {
+            state_.message="Motor seleccionado: "+engineName(state_.engine);
+            state_.page=configReturn_;
+        }
     }
 
     void applyMPIDraft() {
         const auto count = parseMPIProcesses(state_.mpiDraft);
         if (!count) { state_.message = "Error: P debe ser un entero entre 1 y 1024."; return; }
+        if(normalSession_) {
+            try {normalSession_->configure(state_.engine,*count,state_.cudaBlock);}
+            catch(const std::exception& e) {state_.message=e.what();return;}
+        }
         state_.mpiProcesses = *count;
-        state_.message = "Procesos MPI: " + std::to_string(*count) + " · se aplicarán al iniciar Didáctico.";
-        state_.page = Page::Main;
+        state_.message = "Procesos MPI: " + std::to_string(*count);
+        state_.page = configReturn_;
     }
 
     void selectThreadOption() {
         if(state_.engine==Engine::Sequential)return;
         if (state_.threadSelection == 5) {
-            state_.page = Page::Main;
+            state_.page = configReturn_;
             return;
         }
         if (state_.threadSelection == 4) {
@@ -1452,7 +1563,7 @@ private:
         omp_set_num_threads(state_.requestedThreads);
         state_.message = "Hilos OpenMP solicitados: " +
             std::to_string(state_.requestedThreads);
-        state_.page = Page::Main;
+        state_.page = configReturn_;
     }
 
     void loadPathDraft() {
@@ -1478,10 +1589,11 @@ private:
         omp_set_num_threads(state_.requestedThreads);
         state_.message = "Hilos OpenMP solicitados: " +
             std::to_string(state_.requestedThreads);
-        state_.page = Page::Main;
+        state_.page = configReturn_;
     }
 
     void startDidactic() {
+        if(state_.engine==Engine::CUDA) {startCudaDidactic();return;}
         if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
@@ -1580,8 +1692,9 @@ private:
                 return true;
             }
             if (key == "1" || key == "b" || key == "B") {state_.page=Page::BenchmarkMenu;return true;}
+            if (key == "v" || key == "V") {startNormal();return true;}
             if (key == "d" || key == "D") {startDidactic();return true;}
-            if (key == "3" || key == "m" || key == "M") {state_.page=Page::Engines;return true;}
+            if (key == "3" || key == "m" || key == "M") {openEngines();return true;}
             if (key == "4" || key == "r" || key == "R") {openResources();return true;}
         }
         if (state_.page == Page::Patterns) {
@@ -1598,7 +1711,11 @@ private:
                 return true;
             }
         }
+        if(state_.page==Page::CudaBlocks && (key=="1"||key=="2"||key=="3")) {
+            state_.blockSelection=key=="1"?0:key=="2"?1:2;selectCudaBlock();return true;
+        }
         if (state_.page == Page::Engines) {
+            if(key=="g"||key=="G") {state_.engineSelection=3;selectEngine();return true;}
             if (key == "m" || key == "M") { state_.engineSelection = 2; selectEngine(); return true; }
 
             if (key == "s" || key == "S") {
@@ -1641,8 +1758,13 @@ private:
             case Page::Patterns:
                 if(catalogDetail_) {catalogDetail_=false;return;}
                 leaveCatalog();state_.page = state_.returnAfterCatalog;break;
+            case Page::CudaDidactic:
+            case Page::Simulation:
+                if(normalSession_)normalSession_->pause();playbackTimer_.request_stop();state_.page=Page::Main;break;
+            case Page::CudaBlocks:
             case Page::Engines:
             case Page::Threads:
+                state_.page=configReturn_;break;
             case Page::BenchmarkMenu:
                 state_.page = Page::Main;
                 break;
@@ -1660,7 +1782,7 @@ private:
                 state_.page = pathReturnPage_;
                 break;
             case Page::MPIInput:
-                state_.page = Page::Main; break;
+                state_.page = configReturn_; break;
             case Page::ThreadInput:
                 state_.page = Page::Threads;
                 break;
@@ -1782,7 +1904,7 @@ private:
     }
 
     Element renderEngines() {
-        return panel("MOTOR DE EJECUCIÓN", engineMenu_->Render() | ftxui::flex);
+        return panel("MOTOR DE EJECUCIÓN",ftxui::vbox({ftxui::paragraph(state_.cudaInfo.diagnostic),engineMenu_->Render()|ftxui::flex}));
     }
 
     Element renderThreads() {
@@ -1812,11 +1934,12 @@ private:
     void requestExit() {
         leaveCatalog();
         exitRequested_ = true;
+        if(normalSession_)normalSession_->close();
         if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
         if (experiment_->snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else if (catalogPreview_.drained() && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
+        } else if (catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -2440,9 +2563,13 @@ private:
     }
 
     std::string footerText() const {
+        if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
+            "G CUDA · HJKL · [/] · A cobertura · V · Esc":"HJKL hilo · [/] bloque · N explora · G CUDA real · B preset · A cobertura · R · U · V detalle · PgUp/PgDn · Esc";
+        if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
+        if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
             "Esp pausa · R · U usar · D lista · ↑↓ mover · M ruta · Esc":"↑↓ lista · Enter ficha · U usar · M ruta · Esc";
-        if(state_.page==Page::Main && controls::terminalSize().columns<80)return "↑↓/Tab · Enter · D/B/C/M/R · Q salir";
+        if(state_.page==Page::Main && controls::terminalSize().columns<80)return "Q salir · V normal · ↑↓/Tab · Enter · D/B/C/M/R";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · [/] rank · ↑↓ · N paso · Esp pausa · +/- · R · Esc";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
         const auto terminal = controls::terminalSize();
@@ -2462,11 +2589,14 @@ private:
             }
         }
         switch (state_.page) {
-            case Page::Main: return "↑↓/Tab · Enter · D/B modos · C catálogo · M/R ajustes · Q salir";
+            case Page::CudaDidactic:
+            case Page::Simulation:
+            case Page::CudaBlocks: return {};
+            case Page::Main: return "Q salir · V normal · ↑↓/Tab · Enter · D/B modos · C catálogo · M/R ajustes";
             case Page::Patterns: return catalogDetail_
                 ? "D lista · Flechas tablero · Esp pausa · R reiniciar · U usar · M ruta · Esc"
                 : "↑↓ lista · Enter ficha · Esp pausa · R reiniciar · U usar · M ruta · Esc";
-            case Page::Engines: return "↑↓ · Enter · S/O/M motor · Esc volver";
+            case Page::Engines: return "↑↓ · Enter · S/O/M/G motor · Esc volver";
             case Page::Threads: return "↑↓ navegar · Enter seleccionar · Esc volver";
             case Page::PathInput:return "Enter valida · Esc conserva el candidato anterior";
             case Page::MPIInput:
@@ -2495,6 +2625,14 @@ private:
     std::vector<std::string> patternActionItems_;
     std::vector<std::string> engineItems_;
     std::vector<std::string> threadItems_;
+    std::vector<std::string> blockItems_;
+    Page configReturn_{Page::Main};
+    std::unique_ptr<SimulationSession> normalSession_;
+    ui::BoardViewport normalViewport_;
+    CudaDidacticController cudaDidactic_;
+    ui::BoardViewport cudaViewport_;
+    bool cudaDetail_{false},cudaFollow_{true},cudaCoverage_{false};
+    std::size_t cudaDetailRow_{};
     PatternCatalog catalog_;
     CatalogPreview catalogPreview_;
     Page pathReturnPage_{Page::Main};
@@ -2525,6 +2663,7 @@ private:
     ftxui::Component patternActionsMenu_;
     ftxui::Component engineMenu_;
     ftxui::Component threadMenu_;
+    ftxui::Component blockMenu_;
     ftxui::Component pathInput_;
     ftxui::Component threadInput_;
     ftxui::Component mpiInput_;

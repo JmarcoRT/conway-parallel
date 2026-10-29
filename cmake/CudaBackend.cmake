@@ -1,5 +1,5 @@
-# Optional standalone backend. OFF never probes CUDA or searches its toolkit.
-option(CONWAY_ENABLE_CUDA "Build the standalone resident CUDA backend" OFF)
+# Optional backend. OFF never probes CUDA or searches its toolkit.
+option(CONWAY_ENABLE_CUDA "Build the optional resident CUDA backend" OFF)
 if(CONWAY_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
@@ -11,10 +11,10 @@ if(CONWAY_ENABLE_CUDA)
         message(FATAL_ERROR "This backend requires NVIDIA nvcc >= 12.5")
     endif()
     find_package(CUDAToolkit 12.5 REQUIRED)
-    set(CONWAY_CUDA_ARCHITECTURES "86" CACHE STRING "CUDA architectures for the standalone backend")
+    set(CONWAY_CUDA_ARCHITECTURES "86" CACHE STRING "CUDA architectures (86: RTX 3050; 75: GTX 1650)")
     add_library(conway_cuda STATIC src/core/engines/cuda.cu)
     target_include_directories(conway_cuda PUBLIC "${PROJECT_SOURCE_DIR}/include")
-    target_link_libraries(conway_cuda PRIVATE CUDA::cudart)
+    target_link_libraries(conway_cuda PUBLIC conway_cuda_launch PRIVATE CUDA::cudart)
     target_compile_definitions(conway_cuda PUBLIC CONWAY_HAS_CUDA=1)
     set_target_properties(conway_cuda PROPERTIES
         CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_EXTENSIONS OFF
@@ -28,10 +28,13 @@ if(CONWAY_ENABLE_CUDA)
         target_link_libraries(cuda_backend_tests PRIVATE conway_cuda OpenMP::OpenMP_CXX)
         # GNU-compatible Linux linker wrapping is confined to this test target.
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            add_executable(cuda_failure_tests tests/cuda_failure_tests.cpp)
-            target_link_libraries(cuda_failure_tests PRIVATE conway_cuda CUDA::cudart)
+            add_executable(cuda_failure_tests tests/cuda_failure_tests.cpp
+                src/core/game.cpp src/core/engines/sequential.cpp
+                src/core/engines/openmp.cpp src/core/bs23.cpp)
+            target_link_libraries(cuda_failure_tests PRIVATE conway_cuda CUDA::cudart OpenMP::OpenMP_CXX)
             foreach(api IN ITEMS cudaMalloc cudaFree cudaStreamCreateWithFlags cudaStreamDestroy
-                                 cudaMemcpyAsync cudaMemsetAsync cudaStreamSynchronize cudaGetLastError)
+                                 cudaMemcpyAsync cudaMemsetAsync cudaStreamSynchronize cudaGetLastError
+                                 cudaGetDeviceProperties_v2 cudaFuncGetAttributes cudaGetDeviceCount cudaGetDevice)
                 target_link_options(cuda_failure_tests PRIVATE "LINKER:--wrap=${api}")
             endforeach()
             add_test(NAME cuda_failure_cleanup COMMAND cuda_failure_tests)

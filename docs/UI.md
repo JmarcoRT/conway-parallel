@@ -195,3 +195,45 @@ halos/NEXT revelados según la etapa. Véase [DIDACTIC_CONTROLLER.md](DIDACTIC_C
 Una sesión didáctica MPI abierta o cerrándose impide medir. En benchmark, el
 principal MPI es MAX entre ranks y los tiempos auxiliares se muestran separados.
 Véanse [MPI_SESSION.md](MPI_SESSION.md) y [MPI_EXPERIMENTS.md](MPI_EXPERIMENTS.md).
+
+## Simulación normal y CUDA
+
+V abre el patrón confirmado en simulación normal. M → G selecciona CUDA cuando
+está compilado y disponible; R en el menú configura recursos y B lo hace dentro
+de la simulación. CUDA ofrece 8×8, 16×16 (predeterminado) y 32×8. N avanza en
+pausa, Esp/P reproduce, R reinicia, Esc/X vuelve al menú y V retoma el mismo estado.
+Los ajustes pausan; Enter/atajo confirma y Esc cancela sin cambiar generación.
+Motor, GPU y geometría se muestran desde datos guardados, sin consultar CUDA al
+renderizar. Los fallos conservan el snapshot confirmado y se recuperan con U.
+El catálogo sigue previsualizando con Secuencial. CUDA dispone de didáctico manual con D sobre la misma sesión; todavía no hay
+benchmark CUDA. Véase [CUDA.md](CUDA.md#cuda-en-selección-y-simulación-normal-2026-10-29)
+para comandos exactos y diagnóstico de disponibilidad en ON/OFF.
+
+## Didáctico CUDA manual
+
+Con CUDA seleccionado, D (desde menú o simulación normal) pausa la simulación y
+abre exploración conceptual. HJKL mueve hilo; [/] bloque; N siguiente hilo; las
+flechas desplazan el viewport. G avanza una generación CUDA real. B conserva el
+selector de tres presets; R reinicia y U recupera errores. V alterna tablero y
+detalle; PgUp/PgDn desplazan detalle y Home vuelve al inicio. Esc/X/Q vuelve al
+menú conservando selección y estado. No hay reproducción automática ni velocidad.
+
+El tablero usa la geometría, espaciado, colores y bordes del renderer didáctico
+compartido. La selección lleva @1/@0 (viva/muerta) sobre ámbar; los vecinos :1/:0
+sobre azul. Sin color se mantienen los marcadores, selección invertida y vecinos
+subrayados. El bloque seleccionado tiene contorno cian (invertido sin color),
+sin rellenar cada célula. La leyenda muestra las mismas muestras visuales.
+
+Línea gruesa: límite real de bloque; fina en el perímetro: corte por el borde real
+del tablero; discontinua: recorte por viewport, incluso si coincide con un límite
+de bloque. Los vecinos pueden cruzar los bloques. Un hilo exterior conserva su
+diagnóstico sin mover la cámara hacia una célula ficticia. El tablero 5×5 ocupa
+solo 5×5, sin rellenarlo hasta 16×16 con símbolos exteriores.
+
+A alterna cobertura secundaria compacta: extensión lanzada, posiciones exteriores
+y mapa acotado de bloques en detalle; en terminal pequeña, A:+cantidad en la
+leyenda y V para detalle. No cambia posición, tamaño ni píxeles del tablero real.
+Se conserva al volver al menú y entrar de nuevo. El aviso conceptual queda visible;
+la predicción es CPU con B3/S23 compartida y se distingue del avance G real.
+A 40×18 se prioriza tablero y detalle esencial, sin consultar CUDA, copiar el
+estado completo ni reconstruir mapas al renderizar.

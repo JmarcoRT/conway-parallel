@@ -1,14 +1,17 @@
 #pragma once
 
 #include "core/game_state.hpp"
+#include "core/cuda_launch.hpp"
 #include "core/step_trace.hpp"
 #include "input/input.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <memory>
 
 namespace conway {
+namespace detail { struct GameTestAccess; }
 
 // Selección de motor. Game::step() solo admite los motores locales; MPI se
 // coordina desde SimulationSession en un trabajador externo.
@@ -18,17 +21,25 @@ namespace conway {
 enum class Engine {
     Sequential,  // core::step_sequential (referencia de correccion; por defecto)
     OpenMP,      // core::step_openmp (numero de hilos: OMP_NUM_THREADS / omp_set_num_threads)
-    MPI          // Owned by SimulationSession; never executed by a local Game.
+    MPI,         // Owned by SimulationSession; never executed by a local Game.
+    CUDA         // Optional local GPU engine; explicit errors, no CPU fallback.
 };
 
 // Fachada que mantiene la API publica intacta y delega su representacion
 // interna en core::GameState. Game NO incluye omp.h ni usa pragmas: solo
-// elige a que motor (core::step_sequential o core::step_openmp) delega step().
+// elige el motor local. CUDA mantiene una cache exclusiva y publica snapshots CPU.
 // El motor por defecto es Engine::Sequential. La selección MPI pertenece a la
 // sesión, nunca a un Game local que pueda copiarse para visualización.
 class Game {
 public:
     explicit Game(const InputData& input);
+    // Copies own independent CPU buffers and start without a GPU cache. Moves
+    // transfer exclusive ownership; moved-from objects can be assigned or destroyed.
+    ~Game();
+    Game(const Game&);
+    Game& operator=(const Game&);
+    Game(Game&&) noexcept;
+    Game& operator=(Game&&) noexcept;
 
     // Variante que fija la generacion inicial a `start_generation`.
     // Util para construir un Game que representa el estado de la
@@ -53,6 +64,7 @@ public:
     // Sobrecarga opcional: si sink != conway::core::kNoTrace, el motor
     // delegado construye una StepTrace observada y la entrega al sink al
     // final del step. Sin sink, el comportamiento es idéntico a step().
+    // CUDA rechaza un sink no nulo antes de avanzar o modificar estado.
     void step(core::StepTraceSink* sink);
 
     // Selecciona el motor usado por step(). No modifica el tablero, la
@@ -60,8 +72,22 @@ public:
     void setEngine(Engine engine) noexcept;
     Engine engine() const noexcept;
 
+    core::CudaBlockSize cudaBlockSize() const noexcept;
+    // Requires compiled CUDA and a visible device, even before the first step.
+    // Failure preserves configuration, cache and confirmed CPU state.
+    void setCudaBlockSize(core::CudaBlockSize block);
+    core::CudaLaunchGeometry cudaLaunchConfiguration() const;
+
 private:
+    // Test-only definition lives in tests/game_test_access.hpp, never in production.
+    friend struct detail::GameTestAccess;
+    core::CudaBlockSize cudaBlock_{core::kDefaultCudaBlock};
+    // Stable layout in CUDA ON/OFF builds. Never shared by copies.
+    struct GpuCache;
+    std::unique_ptr<GpuCache> gpu_;
     core::GameState state_;
+    void swap(Game&) noexcept;
+    void stepCuda(core::StepTraceSink*);
     Engine engine_{Engine::Sequential};
 
     std::size_t index(std::size_t row, std::size_t col) const;

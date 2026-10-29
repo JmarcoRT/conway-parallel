@@ -87,28 +87,29 @@ private:
     bool pending_{true};
 };
 
-constexpr unsigned blockSize = 256;
+constexpr unsigned maxBlockThreads = 256; // Largest supported preset.
 __global__ void evolve(const std::uint8_t* current, std::uint8_t* next,
-                       std::size_t width, std::size_t cells, std::size_t stride,
+                       std::size_t width, std::size_t height, std::size_t stride,
                        unsigned long long* population) {
+    const auto col = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const auto row = static_cast<std::size_t>(blockIdx.y) * blockDim.y + threadIdx.y;
+    const unsigned lane = threadIdx.y * blockDim.x + threadIdx.x;
+    const unsigned threads = blockDim.x * blockDim.y;
     unsigned long long alive = 0;
-    const auto step = static_cast<std::size_t>(gridDim.x) * blockDim.x;
-    for (auto cell = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-         cell < cells; cell += step) {
-        const auto row = cell / width + 1;
-        const auto col = cell % width + 1;
-        const auto after = detail::evaluate_cell(current, stride, row, col).after;
-        next[row * stride + col] = after;
-        alive += after;
+    if (row < height && col < width) {
+        const auto after = detail::evaluate_cell(current, stride, row + 1, col + 1).after;
+        next[(row + 1) * stride + col + 1] = after;
+        alive = after;
     }
-    __shared__ unsigned long long partial[blockSize];
-    partial[threadIdx.x] = alive;
+    // Out-of-board threads still participate in every block barrier/reduction.
+    __shared__ unsigned long long partial[maxBlockThreads];
+    partial[lane] = alive;
     __syncthreads();
-    for (unsigned offset = blockSize / 2; offset; offset /= 2) {
-        if (threadIdx.x < offset) partial[threadIdx.x] += partial[threadIdx.x + offset];
+    for (unsigned offset = threads / 2; offset; offset /= 2) {
+        if (lane < offset) partial[lane] += partial[lane + offset];
         __syncthreads();
     }
-    if (threadIdx.x == 0) atomicAdd(population, partial[0]);
+    if (lane == 0) atomicAdd(population, partial[0]);
 }
 } // namespace
 
@@ -128,13 +129,13 @@ CudaDeviceStatus cuda_device_status() {
 struct CudaBackend::Impl {
     int device;
     std::size_t width, height, stride, cells, padded, generation;
-    unsigned blocks{};
+    CudaLaunchGeometry launch;
     bool failed{};
     DeviceBuffer<std::uint8_t> current, next;
     DeviceBuffer<unsigned long long> population;
     Stream stream;
 
-    Impl(const InputData& input, std::size_t initialGeneration, int requestedDevice)
+    Impl(const InputData& input, std::size_t initialGeneration, int requestedDevice, CudaBlockSize block)
         : device(requestedDevice), width(input.width), height(input.height), generation(initialGeneration) {
         // Match Game's validation before touching CUDA or allocating either board.
         const auto shape = conway::input::detail::validateDimensions(width, height);
@@ -145,18 +146,8 @@ struct CudaBackend::Impl {
         stride = shape.stride;
         cells = shape.cells;
         padded = shape.padded;
-        const auto status = cuda_device_status();
-        if (status.availability != CudaAvailability::Available)
-            throw CudaError(status.errorCode, status.diagnostic);
-        if (device < 0 || device >= status.deviceCount)
-            throw std::invalid_argument("CUDA device index out of range");
+        launch = CudaBackend::launchConfiguration(width, height, block, device);
         DeviceSelection selected(device);
-        cudaDeviceProp properties{};
-        check(cudaGetDeviceProperties(&properties, device), "cudaGetDeviceProperties");
-        if (properties.maxThreadsPerBlock < static_cast<int>(blockSize) || properties.maxGridSize[0] <= 0)
-            throw std::runtime_error("CUDA device cannot support the launch configuration");
-        blocks = static_cast<unsigned>(std::min({(cells - 1) / blockSize + 1,
-                    static_cast<std::size_t>(properties.maxGridSize[0]), std::size_t{1024}}));
         std::vector<std::uint8_t> initial(padded, 0);
         unsigned long long alive = 0;
         for (std::size_t row = 0; row < height; ++row)
@@ -181,8 +172,57 @@ struct CudaBackend::Impl {
     }
 };
 
-CudaBackend::CudaBackend(const InputData& input, std::size_t generation, int device)
-    : impl_(std::make_unique<Impl>(input, generation, device)) {}
+CudaLaunchGeometry CudaBackend::launchConfiguration(std::size_t width, std::size_t height,
+                                                     CudaBlockSize block, int device) {
+    const auto launch = planCudaLaunch(width, height, block);
+    const auto status = cuda_device_status();
+    if (status.availability != CudaAvailability::Available)
+        throw CudaError(status.errorCode, status.diagnostic);
+    if (device < 0 || device >= status.deviceCount)
+        throw std::invalid_argument("CUDA device index out of range");
+    DeviceSelection selected(device);
+    cudaDeviceProp properties{};
+    check(cudaGetDeviceProperties(&properties, device), "cudaGetDeviceProperties");
+    cudaFuncAttributes kernel{};
+    check(cudaFuncGetAttributes(&kernel, evolve), "cudaFuncGetAttributes");
+    if (properties.maxThreadsDim[0] < static_cast<int>(block.x) ||
+        properties.maxThreadsDim[1] < static_cast<int>(block.y) || properties.maxThreadsDim[2] < 1 ||
+        properties.maxThreadsPerBlock < static_cast<int>(launch.threadsPerBlock) ||
+        kernel.maxThreadsPerBlock < static_cast<int>(launch.threadsPerBlock))
+        throw std::invalid_argument("CUDA block exceeds device/kernel limits");
+    if (properties.maxGridSize[0] < 1 || properties.maxGridSize[1] < 1 || properties.maxGridSize[2] < 1 ||
+        launch.gridX > static_cast<std::size_t>(properties.maxGridSize[0]) ||
+        launch.gridY > static_cast<std::size_t>(properties.maxGridSize[1]))
+        throw std::invalid_argument("CUDA grid exceeds device limits");
+    return launch;
+}
+
+std::string CudaBackend::deviceName(int device) {
+    const auto status = cuda_device_status();
+    if (status.availability != CudaAvailability::Available)
+        throw CudaError(status.errorCode, status.diagnostic);
+    if (device < 0 || device >= status.deviceCount)
+        throw std::invalid_argument("CUDA device index out of range");
+    DeviceSelection selected(device);
+    cudaDeviceProp properties{};
+    check(cudaGetDeviceProperties(&properties, device), "cudaGetDeviceProperties");
+    return properties.name;
+}
+
+CudaBackend::CudaBackend(const InputData& input, std::size_t generation, int device, CudaBlockSize block)
+    : impl_(std::make_unique<Impl>(input, generation, device, block)) {}
+
+CudaLaunchGeometry CudaBackend::launchConfiguration() const {
+    if (!impl_) throw std::logic_error("Moved-from CUDA backend");
+    impl_->usable();
+    return impl_->launch;
+}
+void CudaBackend::setBlockSize(CudaBlockSize block) {
+    if (!impl_) throw std::logic_error("Moved-from CUDA backend");
+    impl_->usable();
+    const auto candidate = launchConfiguration(impl_->width, impl_->height, block, impl_->device);
+    impl_->launch = candidate; // No buffer, population, stream or generation mutation.
+}
 CudaBackend::~CudaBackend() = default;
 CudaBackend::CudaBackend(CudaBackend&&) noexcept = default;
 CudaBackend& CudaBackend::operator=(CudaBackend&&) noexcept = default;
@@ -194,8 +234,11 @@ void CudaBackend::step() {
     try {
         DeviceSelection selected(state.device);
         check(cudaMemsetAsync(state.population.data, 0, sizeof(unsigned long long), state.stream.value), "population clear");
-        evolve<<<state.blocks, blockSize, 0, state.stream.value>>>(state.current.data, state.next.data,
-                state.width, state.cells, state.stride, state.population.data);
+        const auto& launch = state.launch;
+        const dim3 grid(static_cast<unsigned>(launch.gridX), static_cast<unsigned>(launch.gridY));
+        const dim3 block(launch.block.x, launch.block.y);
+        evolve<<<grid, block, 0, state.stream.value>>>(state.current.data, state.next.data,
+                state.width, state.height, state.stride, state.population.data);
         check(cudaGetLastError(), "evolve kernel launch");
         check(cudaStreamSynchronize(state.stream.value), "evolve kernel execution");
         std::swap(state.current.data, state.next.data);

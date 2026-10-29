@@ -5,6 +5,7 @@
 #include "app/ftxui_app.hpp"
 #include "app/pattern_catalog.hpp"
 #include "app/simulation.hpp"
+#include "app/cuda_info.hpp"
 #include "app/thread_config.hpp"
 #include "core/game.hpp"
 #include "core/engines/openmp.hpp"
@@ -44,6 +45,10 @@ struct AppState {
     conway::Engine engine{conway::Engine::Sequential};
     int requestedOpenMPThreads{defaultOpenMPThreadCount()};
     int mpiProcesses{1};
+    core::CudaBlockSize cudaBlock{core::kDefaultCudaBlock};
+    CudaUiInfo cudaInfo;
+    std::unique_ptr<SimulationSession> normal;
+
 };
 
 struct PathRequest {
@@ -58,6 +63,7 @@ enum class MenuAction {
     Select,
     Benchmark,
     Didactic,
+    Normal,
     SelectEngine,     // abre el submenu de seleccion de motor
     ConfigureThreads,
     ChangeInput,
@@ -131,6 +137,7 @@ const std::vector<ui::MenuItem>& engineMenuItems() {
         {"S", "Secuencial"},
         {"O", "OpenMP"},
         {"M", "MPI"},
+        {"G", "CUDA"},
         {"X", "Volver"}
     };
 
@@ -156,7 +163,37 @@ ui::ActiveInputInfo makeInputInfo(const AppState& state) {
 }
 
 const char* engineName(conway::Engine e) {
-    return e == conway::Engine::Sequential ? "Secuencial" : e == conway::Engine::OpenMP ? "OpenMP" : "MPI";
+    return e == conway::Engine::Sequential ? "Secuencial" : e == conway::Engine::OpenMP ? "OpenMP" : e==Engine::CUDA ? "CUDA" : "MPI";
+}
+
+bool applyNormalEngine(AppState& state,Engine engine,core::CudaBlockSize block,std::string& message) {
+    if(state.normal)state.normal->pause();
+    std::optional<CudaUiInfo> candidateInfo;
+    if(engine==Engine::CUDA) {
+        auto info=inspectCuda(state.input?state.input->width:1,state.input?state.input->height:1,block);
+        if(!info.available) {message="Error: "+info.diagnostic;return false;}
+        candidateInfo=std::move(info);
+    }
+    try {
+        if(state.normal)state.normal->configure(engine,state.mpiProcesses,block);
+        state.engine=engine;state.cudaBlock=block;
+        if(candidateInfo)state.cudaInfo=std::move(*candidateInfo);
+        return true;
+    } catch(const std::exception& e) {message="Error al configurar: "+std::string(e.what());return false;}
+}
+bool configureCudaUI(AppState& state,std::string& message) {
+    if(state.normal)state.normal->pause();
+    while(true) {
+        std::cout<<"BLOQUE CUDA · actual "<<cudaGeometryLabel(state.cudaBlock,state.cudaInfo)
+                 <<"\n1 8x8 · 2 16x16 (predeterminado) · 3 32x8 · X cancelar\nNo indica simultaneidad ni ocupación.\n"<<message<<"\n"<<std::flush;
+        const auto line=controls::readLine("");if(!line)return false;
+        if(*line=="x"||*line=="X"||*line=="0")return true;
+        if(*line!="1"&&*line!="2"&&*line!="3")continue;
+        const core::CudaBlockSize blocks[]={core::kCudaBlock8x8,core::kCudaBlock16x16,core::kCudaBlock32x8};
+        if(applyNormalEngine(state,Engine::CUDA,blocks[(*line)[0]-'1'],message)) {
+            message="Bloque CUDA confirmado: "+cudaGeometryLabel(state.cudaBlock,state.cudaInfo);return true;
+        }
+    }
 }
 
 void renderMenu(const AppState& state, std::size_t selected, const std::string& message) {
@@ -166,8 +203,9 @@ void renderMenu(const AppState& state, std::size_t selected, const std::string& 
               << " · Motor: " << engineName(state.engine);
     if(state.engine==Engine::MPI)std::cout<<" · Procesos MPI: "<<state.mpiProcesses;
     else if(state.engine==Engine::OpenMP)std::cout<<" · Hilos OpenMP: "<<state.requestedOpenMPThreads;
+    if(state.engine==Engine::CUDA)std::cout<<" · "<<cudaGeometryLabel(state.cudaBlock,state.cudaInfo)<<" · "<<state.cudaInfo.diagnostic;
     std::cout<<"\n";
-    std::cout << "MODOS PRINCIPALES\n  D Visualización didáctica\n  B Benchmark\n"
+    std::cout << "MODOS PRINCIPALES\n  V Simulación normal\n  D Visualización didáctica\n  B Benchmark\n"
               << "EXPLORAR PATRONES\n  C Catálogo de patrones\nCONFIGURACIÓN\n  M Seleccionar motor\n  R Configurar recursos\n"
               << "------------------\n  Q Salir\n" << message << "\n";
     std::cout << std::flush;
@@ -288,7 +326,7 @@ void renderEngineMenu(const AppState& state, std::size_t selected) {
         selected,
         currentLayoutConfig()
     );
-    std::cout << std::flush;
+    std::cout << "\n" << state.cudaInfo.diagnostic << std::flush;
 }
 
 PathRequest askPath() {
@@ -335,90 +373,34 @@ bool changeInput(AppState& state,std::string& message) {return browseCatalog(sta
 // normalmente (Volver o EOF), false si no (no se usa en la practica
 // porque el submenu siempre vuelve). El mensaje se rellena con la
 // confirmacion del motor elegido cuando hay cambio.
-bool selectEngineUI(AppState& state, std::string& message) {
-    const bool interactive = controls::isInteractive();
-    constexpr std::size_t kOptionCount = 4;
-    std::size_t selected = 0;
-    auto lastSize = controls::terminalSize();
-    auto mpiChoice = [&](bool) {state.engine=Engine::MPI;message="Motor seleccionado: MPI";};
-
-    while (true) {
-        renderEngineMenu(state, selected);
-
-        bool resized = false;
-        std::optional<controls::KeyPress> action;
-        if (interactive) {
-            action = readKeyWithResize(lastSize, resized);
-            if (resized) {
-                continue;
-            }
-            if (!action) {
-                return true;
-            }
+bool selectEngineUI(AppState& state,std::string& message) {
+    if(state.normal)state.normal->pause();
+    auto info=inspectCuda(state.input?state.input->width:1,state.input?state.input->height:1,state.cudaBlock);
+    if(!info.available && state.normal) {info.gpu=state.cudaInfo.gpu;info.geometry=state.cudaInfo.geometry;}
+    state.cudaInfo=std::move(info);
+    std::size_t selected=0;
+    auto lastSize=controls::terminalSize();
+    while(true) {
+        renderEngineMenu(state,selected);
+        if(!message.empty())std::cout<<"\n"<<message<<"\n"<<std::flush;
+        std::string key;
+        if(controls::isInteractive()) {
+            bool resized=false;auto action=readKeyWithResize(lastSize,resized);if(resized)continue;if(!action)return true;
+            if(action->type==controls::Key::Up) {selected=(selected+4)%5;continue;}
+            if(action->type==controls::Key::Down) {selected=(selected+1)%5;continue;}
+            if(action->type==controls::Key::Enter)key=selected==0?"S":selected==1?"O":selected==2?"M":selected==3?"G":"X";
+            else key=std::string(1,action->value);
+        } else {auto line=controls::readLine("");if(!line)return true;key=*line;}
+        if(key=="x"||key=="X"||key=="0"||key==std::string(1,27))return true;
+        Engine chosen;
+        if(key=="s"||key=="S")chosen=Engine::Sequential;
+        else if(key=="o"||key=="O")chosen=Engine::OpenMP;
+        else if(key=="m"||key=="M")chosen=Engine::MPI;
+        else if(key=="g"||key=="G")chosen=Engine::CUDA;
+        else continue;
+        if(applyNormalEngine(state,chosen,state.cudaBlock,message)) {
+            message="Motor seleccionado: "+std::string(engineName(state.engine));return true;
         }
-
-        if (action) {
-            switch (action->type) {
-                case controls::Key::Up:
-                    selected = (selected + kOptionCount - 1) % kOptionCount;
-                    continue;
-                case controls::Key::Down:
-                    selected = (selected + 1) % kOptionCount;
-                    continue;
-                case controls::Key::Enter:
-                    if (selected == 0) {
-                        state.engine = conway::Engine::Sequential;
-                        message = "Motor seleccionado: Secuencial";
-                        return true;
-                    } else if (selected == 1) {
-                        state.engine = conway::Engine::OpenMP;
-                        message = "Motor seleccionado: OpenMP";
-                        return true;
-                    } else if (selected == 2) {
-                        mpiChoice(false); return true;
-                    } else {
-                        return true;  // Volver
-                    }
-                case controls::Key::Char:
-                    break;
-            }
-            switch (action->value) {
-                case 's': case 'S':
-                    state.engine = conway::Engine::Sequential;
-                    message = "Motor seleccionado: Secuencial";
-                    return true;
-                case 'o': case 'O':
-                    state.engine = conway::Engine::OpenMP;
-                    message = "Motor seleccionado: OpenMP";
-                    return true;
-                case 'm': case 'M': mpiChoice(false); return true;
-                case 'x': case 'X': case 27:  // 27 = Esc
-                    return true;
-                default:
-                    continue;
-            }
-        }
-
-        // Modo no interactivo: leer una linea y mapear.
-        auto line = controls::readLine("");
-        if (!line) {
-            return true;  // EOF
-        }
-        if (*line == "s" || *line == "S") {
-            state.engine = conway::Engine::Sequential;
-            message = "Motor seleccionado: Secuencial";
-            return true;
-        }
-        if (*line == "o" || *line == "O") {
-            state.engine = conway::Engine::OpenMP;
-            message = "Motor seleccionado: OpenMP";
-            return true;
-        }
-        if (*line == "m" || *line == "M") { mpiChoice(false); return true; }
-        if (*line == "x" || *line == "X" || *line == "0") {
-            return true;
-        }
-        // Cualquier otra entrada: ignorar y redibujar.
     }
 }
 
@@ -453,6 +435,7 @@ void renderCatalogPlayback(
                     : " | efectivos observados: " +
                         std::to_string(core::last_openmp_team_size()))
             : state.engine == Engine::MPI ? "MPI | procesos: " + std::to_string(state.mpiProcesses) + " | U recuperar, Q abandonar, X menú"
+            : state.engine==Engine::CUDA ? "CUDA | GPU: "+state.cudaInfo.gpu+" | "+cudaGeometryLabel(state.cudaBlock,state.cudaInfo)
             : "Motor: Secuencial";
 
         const std::size_t frameWidth = std::max<std::size_t>(1, terminal.columns);
@@ -494,7 +477,7 @@ void renderCatalogPlayback(
         ui::BoardPanelData current{"CURRENT", ui::renderBoardLines(game, boardOptions)};
         ui::BoardPanelData next = session.preview()
             ? ui::BoardPanelData{"NEXT", ui::renderBoardLines(*session.preview(), boardOptions)}
-            : ui::BoardPanelData{"MPI · snapshot confirmado", {session.busy() ? "Operación pendiente" : "Sin vista previa especulativa", session.error()}};
+            : ui::BoardPanelData{"Snapshot confirmado", {session.busy() ? "Operación pendiente" : "Sin vista previa especulativa", session.error()}};
         const ui::SimulationLayoutConfig layout{
             frameWidth,
             std::max(current.lines.size(), next.lines.size()),
@@ -531,12 +514,53 @@ bool browseCatalog(AppState& state,std::string& message) {
                 if(preview.isRunning() && ::poll(&input,1,150)==0) {preview.advanceIfRunning();continue;}
                 const auto command=controls::readLine("");if(!command)return false;
                 if(*command=="x"||*command=="X")break;
-                if(*command=="u"||*command=="U") {state.input=initial;state.path=path;message="Patrón confirmado: "+path+" · entrada inicial";return true;}
+                if(*command=="u"||*command=="U") {state.normal.reset();state.input=initial;state.path=path;
+                    if(state.engine==Engine::CUDA)state.cudaInfo=inspectCuda(initial.width,initial.height,state.cudaBlock);
+                    message="Patrón confirmado: "+path+" · entrada inicial";
+                    if(state.engine==Engine::CUDA && !state.cudaInfo.available)message+=" · "+state.cudaInfo.diagnostic;
+                    return true;}
                 if(*command=="r"||*command=="R")preview.reset();
                 else if(*command=="n"||*command=="N") {if(!preview.isRunning())preview.step();}
                 else if(command->empty()||*command=="p"||*command=="P")preview.toggleRunning();
             }
         } catch(const std::exception& error) {std::cout<<"Error al cargar: "<<error.what()<<" · se conserva el patrón confirmado\n";}
+    }
+}
+
+bool runNormalUI(AppState& state,std::string& message) {
+    if(!ensureInput(state,message))return false;
+    if(!state.input)return true;
+    if(state.engine==Engine::CUDA && !state.normal) {
+        state.cudaInfo=inspectCuda(state.input->width,state.input->height,state.cudaBlock);
+        if(!state.cudaInfo.available) {message="Error: "+state.cudaInfo.diagnostic;return true;}
+    }
+    if(!state.normal)state.normal=std::make_unique<SimulationSession>(*state.input,state.engine,
+        defaultMPIOptions(state.mpiProcesses),std::function<void()>{},false,state.cudaBlock);
+    auto& session=*state.normal;session.pause();
+    while(true) {
+        session.poll();renderCatalogPlayback(state,session,controls::terminalSize());
+        std::cout<<"\nSIMULACIÓN NORMAL · Motor: "<<engineName(session.engine())
+                 <<" · Generación "<<session.game().generation()<<" · Vivas "<<session.game().aliveCount()<<"\n";
+        if(state.engine==Engine::CUDA)std::cout<<"GPU: "<<state.cudaInfo.gpu<<" · "<<cudaGeometryLabel(state.cudaBlock,state.cudaInfo)<<"\n";
+        std::cout<<session.error()<<"\nN paso · P pausa/reproduce · R reinicia · M motor · B recursos · U recuperar · X menú\n"<<std::flush;
+        pollfd input{STDIN_FILENO,POLLIN,0};
+        if((session.isRunning()||session.busy()) && ::poll(&input,1,150)==0) {session.poll();session.advanceIfRunning();continue;}
+        const auto command=controls::readLine("");if(!command)return false;
+        if(*command=="x"||*command=="X") {session.pause();return true;}
+        if(*command=="n"||*command=="N") {if(!session.isRunning())session.step();}
+        if(*command=="p"||*command=="P"||command->empty())session.toggleRunning();
+        if(*command=="r"||*command=="R")session.reset();
+        if(*command=="u"||*command=="U")session.recover();
+        if(*command=="m"||*command=="M") {if(!selectEngineUI(state,message))return false;}
+        if(*command=="b"||*command=="B") {
+            session.pause();
+            if(state.engine==Engine::CUDA) {if(!configureCudaUI(state,message))return false;}
+            else if(state.engine==Engine::OpenMP) {if(!configureThreadsUI(state,message))return false;}
+            else if(state.engine==Engine::MPI) {
+                const auto text=controls::readLine("Procesos MPI (1..1024): ");if(!text)return false;
+                if(auto count=parseMPIProcesses(*text)) {session.configure(Engine::MPI,*count,state.cudaBlock);state.mpiProcesses=*count;}
+            }
+        }
     }
 }
 
@@ -646,6 +670,7 @@ bool runBenchmarkUI(AppState& state, std::string& message) {
 std::optional<MenuAction> pollMenuAction(bool,controls::TerminalSize&) {
     const auto line=controls::readLine("");if(!line)return {};
     if(*line=="b"||*line=="B"||*line=="1")return MenuAction::Benchmark;
+    if(*line=="v"||*line=="V")return MenuAction::Normal;
     if(*line=="d"||*line=="D")return MenuAction::Didactic;
     if(*line=="c"||*line=="C")return MenuAction::ChangeInput;
     if(*line=="m"||*line=="M"||*line=="3")return MenuAction::SelectEngine;
@@ -691,16 +716,20 @@ int runLoop() {
                     return 0;
                 }
                 break;
+            case MenuAction::Normal:
+                if(!runNormalUI(state,message))return 0;break;
             case MenuAction::Didactic:
                 message="Didáctico requiere una terminal interactiva con FTXUI.";break;
             case MenuAction::SelectEngine:
                 if (!selectEngineUI(state, message)) return 0;
                 break;
             case MenuAction::ConfigureThreads:
+                if(state.normal)state.normal->pause();
+                if(state.engine==Engine::CUDA) {if(!configureCudaUI(state,message))return 0;break;}
                 if(state.engine==Engine::Sequential) {message="1 hilo de cálculo; sin recursos configurables.";break;}
                 if(state.engine==Engine::MPI) {
                     auto value=controls::readLine("Procesos MPI (1..1024): ");if(!value)return 0;
-                    auto count=parseMPIProcesses(*value);if(count) {state.mpiProcesses=*count;message="Procesos MPI: "+std::to_string(*count);}
+                    auto count=parseMPIProcesses(*value);if(count) {if(state.normal)state.normal->configure(Engine::MPI,*count,state.cudaBlock);state.mpiProcesses=*count;message="Procesos MPI: "+std::to_string(*count);}
                     else message="P debe estar entre 1 y 1024.";
                     break;
                 }
