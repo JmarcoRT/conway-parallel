@@ -19,5 +19,5 @@ bool comparisonSamplesArePaired(const std::vector<ExperimentSample>& samples);
 ComparisonBars comparisonBars(const ExperimentSummary& summary, int columns);
 std::vector<ftxui::Element> comparisonRows(const ExperimentResult& result,
     const std::string& patternName, ComparisonTab tab, int columns,
-    ftxui::Color accent, ftxui::Color positive);
+    ftxui::Color accent, ftxui::Color positive, bool sampleDetails = false, bool methodDetails = false);
 } // namespace conway::app

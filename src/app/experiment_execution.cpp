@@ -67,12 +67,12 @@ StoredExperiment execute(const ExecutionRequest& request, const ExperimentExecut
     auto context = captureExperimentContext(options); // In the same worker, immediately before the executor.
     phase(ExecutionPhase::Running);
     if (d.scaling) {
-        auto result = generated ? runScalingStudy(*generated, d.config.scaling)
-                                : runScalingStudy(*request.loaded, d.config.scaling);
+        auto result = generated ? runScalingStudy(*generated, d.config.scaling,request.progress)
+                                : runScalingStudy(*request.loaded, d.config.scaling,request.progress);
         return {d, std::move(context), std::move(result)};
     }
-    auto result = generated ? runExperiment(*generated, d.config.comparison)
-                            : runExperiment(*request.loaded, d.config.comparison);
+    auto result = generated ? runExperiment(*generated, d.config.comparison,request.progress)
+                            : runExperiment(*request.loaded, d.config.comparison,request.progress);
     return {d, std::move(context), std::move(result)};
 }
 } // namespace
@@ -104,6 +104,8 @@ bool ExperimentExecution::start(bool scaling, ExperimentFormConfig config, const
         description.height = loaded->height;
     }
     state_.description = description;
+    state_.completedWork=state_.totalWork=0;
+    lastProgressNotice_={};
     state_.error.clear();
     try {
         if (!description.width || !description.height) throw std::invalid_argument("No hay una entrada seleccionada.");
@@ -125,6 +127,21 @@ bool ExperimentExecution::publishPhase(std::uint64_t id, ExecutionPhase phase) {
     state_.phase = phase;
     return true;
 }
+bool ExperimentExecution::publishProgress(std::uint64_t id,std::size_t completed,std::size_t total) {
+    std::lock_guard lock(mutex_);
+    if(state_.description.id!=id || !state_.active() || !total || completed>total ||
+       (state_.totalWork && state_.totalWork!=total) || completed<state_.completedWork) return false;
+    const auto percent=[](std::size_t done,std::size_t count) {
+        return count?static_cast<int>(static_cast<long double>(done)*100/count):0;
+    };
+    const auto previous=percent(state_.completedWork,state_.totalWork);
+    state_.completedWork=completed;state_.totalWork=total;
+    const auto now=std::chrono::steady_clock::now();
+    // Store every completion, but limit redraw requests to ten per second.
+    if(percent(completed,total)==previous || now-lastProgressNotice_<std::chrono::milliseconds(100)) return false;
+    lastProgressNotice_=now;
+    return true;
+}
 void ExperimentExecution::loop() {
     for (;;) {
         ExecutionRequest request;
@@ -139,6 +156,9 @@ void ExperimentExecution::loop() {
         std::shared_ptr<const StoredExperiment> result;
         std::string error;
         try {
+            request.progress=[this,id](std::size_t completed,std::size_t total) {
+                if(publishProgress(id,completed,total)) notify_();
+            };
             result = std::make_shared<StoredExperiment>(backend_(request, [this, id](ExecutionPhase phase) {
                 if (publishPhase(id, phase)) notify_();
             }));
@@ -159,6 +179,7 @@ void ExperimentExecution::loop() {
                 if (result) {
                     state_.latest = std::move(result); state_.error=std::move(error);
                     state_.phase = state_.error.empty()?ExecutionPhase::Finished:ExecutionPhase::Error;
+                    if(state_.phase==ExecutionPhase::Finished) state_.completedWork=state_.totalWork;
                 }
                 else { state_.error = std::move(error); state_.phase = ExecutionPhase::Error; }
             }

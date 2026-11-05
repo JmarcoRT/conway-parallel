@@ -27,6 +27,8 @@ int main() {
     wait(real);
     auto first = real.snapshot();
     check(first.phase == ExecutionPhase::Finished && first.latest, "real result published");
+    check(first.totalWork==6 && first.completedWork==first.totalWork,
+          "comparison progress counts oracle, four measurements and final summary");
     const auto& comparison = std::get<ExperimentResult>(first.latest->result);
     check(comparison.study && comparison.study->complete && comparison.study->summaries[1].valid && comparison.study->samples.size()==4,
           "real comparison equivalence and measured samples");
@@ -41,6 +43,8 @@ int main() {
     check(real.start(true, loadedConfig, &loaded, "blinker.txt", loaded.cells.capacity()), "loaded scaling launch");
     wait(real);
     auto second = real.snapshot();
+    check(second.totalWork==8 && second.completedWork==second.totalWork,
+          "scaling progress resets and counts its six measurements");
     const auto& scaling = std::get<ScalingResult>(second.latest->result);
     check(scaling.summary.equivalent && scaling.summary.points.size() == 2 && scaling.samples.size() == 6,
           "real scaling execution");
@@ -49,6 +53,7 @@ int main() {
     tooLarge.generated = conway::input::GenerationConfig{8000,8000,3000,1};
     check(real.start(false, tooLarge, nullptr, "", 128u*1024u*1024u), "preflight processed");
     auto failed = real.snapshot();
+    check(failed.totalWork==0 && failed.completedWork==0,"preflight failure does not retain completed progress");
     check(failed.phase == ExecutionPhase::Error && !failed.error.empty() && failed.latest == second.latest,
           "memory budget includes snapshots and preserves earlier result");
 

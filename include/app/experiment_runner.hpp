@@ -1,4 +1,5 @@
 #pragma once
+#include "app/benchmark_progress.hpp"
 
 #include "app/benchmark.hpp"
 #include "app/experimental_study.hpp"
@@ -82,7 +83,7 @@ struct ExperimentResult {
 
 // Both overloads borrow the same input throughout; no regeneration or board copy.
 // Validate parameters before any Game execution. OpenMP ICVs restored on all exits.
-ExperimentResult runExperiment(const InputData& input, const ExperimentConfig& config);
-ExperimentResult runExperiment(const input::GeneratedInput& input, const ExperimentConfig& config);
+ExperimentResult runExperiment(const InputData& input, const ExperimentConfig& config, const BenchmarkProgressCallback& progress = {});
+ExperimentResult runExperiment(const input::GeneratedInput& input, const ExperimentConfig& config, const BenchmarkProgressCallback& progress = {});
 
 } // namespace conway::app

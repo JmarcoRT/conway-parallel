@@ -2,6 +2,7 @@
 #include "app/experiment_form.hpp"
 #include "app/experiment_metadata.hpp"
 #include <condition_variable>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,7 @@ struct ExecutionDescription {
 struct ExecutionRequest {
     ExecutionDescription description;
     std::optional<InputData> loaded; // Owned snapshot; generated inputs are prepared by the worker.
+    BenchmarkProgressCallback progress;
 };
 struct StoredExperiment {
     ExecutionDescription description;
@@ -31,6 +33,7 @@ struct ExecutionSnapshot {
     ExecutionDescription description;
     std::string error;
     std::shared_ptr<const StoredExperiment> latest; // Last delivery, including partial experimental failure evidence.
+    std::size_t completedWork{}, totalWork{};
     bool active() const { return phase == ExecutionPhase::Preparing || phase == ExecutionPhase::Running; }
 };
 class ExperimentExecution {
@@ -50,12 +53,14 @@ public:
     bool publishPhase(std::uint64_t id, ExecutionPhase phase);
     void shutdown(); // Joins only on shutdown, never while navigating/polling/launching.
 private:
+    bool publishProgress(std::uint64_t id,std::size_t completed,std::size_t total);
     void loop();
     std::function<void()> notify_;
     Backend backend_;
     mutable std::mutex mutex_;
     std::condition_variable wake_;
     ExecutionSnapshot state_;
+    std::chrono::steady_clock::time_point lastProgressNotice_{};
     std::optional<ExecutionRequest> pending_;
     bool stopping_{false};
     std::thread worker_;
