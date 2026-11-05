@@ -2232,14 +2232,21 @@ private:
         return panel("DIDÁCTICA MPI",ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex}));
     }
 
+    std::string didacticThreadSummary(const DidacticFrame& frame) const {
+        const auto working=std::count_if(frame.workers.begin(),frame.workers.end(),
+            [](const auto& worker) { return worker.cells_processed>0; });
+        return "Hilos: "+std::to_string(frame.requested_threads)+" solicitados · "+
+            std::to_string(frame.effective_threads)+" creados · "+std::to_string(working)+" con trabajo";
+    }
+
     Element renderCompactDidactic(std::shared_ptr<const DidacticFrame> snapshot) {
         const auto& frame = *snapshot;
         std::vector<Element> rows;
         rows.push_back(ftxui::paragraph("REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo") | ftxui::color(ftxui::Color::Cyan));
         rows.push_back(ftxui::paragraph("Generación actual " + std::to_string(frame.current_generation) +
             " · " + std::to_string(frame.current_alive) + " vivas · NEXT " + std::to_string(frame.next_alive)));
-        rows.push_back(ftxui::paragraph(frame.engine_name + " · solicitados " + std::to_string(frame.requested_threads) +
-            " · efectivos " + std::to_string(frame.effective_threads)));
+        rows.push_back(ftxui::paragraph(frame.engine_name +
+            (frame.engine_name == "OpenMP" ? " · " + didacticThreadSummary(frame) : std::string{})));
         rows.push_back(ftxui::paragraph("Velocidad: " + speedLabel(frame.speed) + " · " + (frame.playing ? "Reproduciendo" : "En pausa")));
         Element body = didacticWorkers_ ? allWorkers(frame) : didacticBoards(snapshot, false);
         return panel("MODO DIDÁCTICO", ftxui::vbox({ftxui::vbox(std::move(rows)), std::move(body) | ftxui::flex}));
@@ -2332,17 +2339,13 @@ private:
         // Asi no compite con los boards por el espacio vertical.
         Element workersPanel = didacticWorkers_ ? ftxui::text("") : renderDidacticWorkers(frame, colors);
 
-        std::string statusLine = "Motor: " + frame.engine_name +
-            "  ·  Generación actual " +
+        const std::string generationLine = "Generación actual " +
             std::to_string(frame.current_generation) + " → siguiente " +
             std::to_string(frame.next_generation);
+        std::string statusLine = "Motor: " + frame.engine_name;
         if (frame.engine_name == "OpenMP") {
-            statusLine += "  ·  hilos solicitados " +
-                std::to_string(frame.requested_threads) +
-                "  ·  efectivos " + std::to_string(frame.effective_threads);
+            statusLine += " · " + didacticThreadSummary(frame);
         }
-        statusLine += "  ·  procesadores lógicos " +
-            std::to_string(frame.logical_processors);
 
         const std::string warning =
             "REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo";
@@ -2358,7 +2361,8 @@ private:
         return ftxui::vbox({
             ftxui::text(warning) | ftxui::bold | ftxui::color(ftxui::Color::Cyan),
             heading("MODO DIDÁCTICO · " + state_.path),
-            ftxui::text(statusLine) | ftxui::dim,
+            ftxui::paragraph(statusLine) | ftxui::dim,
+            ftxui::text(generationLine) | ftxui::dim,
             ftxui::text(" "),
             std::move(boards) | ftxui::flex,
             ftxui::text(" "),
