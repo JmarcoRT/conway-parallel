@@ -1,5 +1,7 @@
 #pragma once
+#include "app/benchmark_progress.hpp"
 #include "app/benchmark.hpp"
+#include "app/cuda_benchmark.hpp"
 #include "mpi/client.hpp"
 #include <string>
 
@@ -9,6 +11,7 @@ struct ExecutionConfiguration {
     Engine engine{Engine::Sequential};
     std::optional<int> requestedThreads;
     std::optional<int> requestedProcesses;
+    std::optional<core::CudaBlockSize> cudaBlock;
     bool operator==(const ExecutionConfiguration&) const = default;
 };
 struct StudySample {
@@ -20,6 +23,7 @@ struct StudySample {
     std::optional<std::size_t> sessionIndex;
     std::optional<double> loadMs, snapshotMs, requestMs;
     bool equivalent{}, valid{};
+    std::optional<CudaMeasurement> cuda;
 };
 struct StudySession {
     std::size_t configurationIndex{};
@@ -47,6 +51,7 @@ struct ExperimentalStudy {
     std::size_t completedWarmupRuns{}, completedLocalWarmups{}, estimatedPeakBytes{}, maxMemoryBytes{};
     mpi::ClientOptions mpiOptions;
     std::string diagnostic;
+    std::size_t estimatedDeviceBytes{}, width{}, height{};
 };
 // Empty launcher/worker resolved from the configured runtime and sibling worker.
 mpi::ClientOptions experimentalMPIOptions();
@@ -54,7 +59,7 @@ mpi::ClientOptions experimentalMPIOptions();
 // Invalid input/configuration throws before starting processes. Never retries.
 ExperimentalStudy runExperimentalStudy(const InputData&, std::vector<ExecutionConfiguration>,
     int generations, int warmups, int repetitions, bool rotateRight,
-    mpi::ClientOptions options={}, std::size_t maxMemoryBytes=256u*1024u*1024u);
+    mpi::ClientOptions options={}, std::size_t maxMemoryBytes=256u*1024u*1024u, const BenchmarkProgressCallback& progress = {});
 std::vector<StudySummary> summarizeStudy(const ExperimentalStudy&);
 void validateStudy(const ExperimentalStudy&);
 std::string configurationName(const ExecutionConfiguration&);

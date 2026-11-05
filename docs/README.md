@@ -24,6 +24,10 @@
 - [Cliente y supervisión MPI local](MPI_SESSION.md)
 - [Infraestructura experimental MPI y alcance temporal](MPI_EXPERIMENTS.md)
 
+- [Benchmark CUDA: medición residente y estudio de bloques](CUDA_BENCHMARK.md)
+- [Backend CUDA residente opcional, compilación y pruebas](CUDA.md)
+- [Checkpoint CUDA: estado, reproducción y siguiente etapa](CUDA_CHECKPOINT.md)
+
 ## Registros históricos
 
 - [Pruebas Semana 4](TESTING_EVIDENCE.md)

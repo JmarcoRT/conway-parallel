@@ -15,18 +15,19 @@ struct Grid {
     // Presentation border: 0 own/message, 1 halo, 2 fixed global edge.
     std::vector<std::uint8_t> rowKinds;
 };
-struct Block {std::string text;std::optional<Grid> grid;};
+struct Block {std::string text;std::optional<Grid> grid;bool heading=false;};
 using Blocks=std::vector<Block>;
 inline void text(Blocks& out,std::string value) {out.push_back({std::move(value),{}});}
+inline void heading(Blocks& out,std::string value) {out.push_back({std::move(value),{},true});}
 inline void grid(Blocks& out,std::string title,Grid value) {out.push_back({std::move(title),std::move(value)});}
 inline std::string stage(DidacticStage s) {
     switch(s) {
-    case DidacticStage::MPIState:return "Reparto actual";
-    case DidacticStage::MPIExchangeFirst:return "Intercambio 1";
-    case DidacticStage::MPIExchangeSecond:return "Intercambio 2";
-    case DidacticStage::MPICell:return "Célula y vecinos";
-    case DidacticStage::MPIBuffers:return "Cambio de buffers";
-    case DidacticStage::GenerationResult:return "Resultado";
+    case DidacticStage::MPIState:return "Ver reparto de filas";
+    case DidacticStage::MPIExchangeFirst:return "Intercambiar bordes · 1/2";
+    case DidacticStage::MPIExchangeSecond:return "Intercambiar bordes · 2/2";
+    case DidacticStage::MPICell:return "Calcular una celda";
+    case DidacticStage::MPIBuffers:return "Actualizar el tablero";
+    case DidacticStage::GenerationResult:return "Ver resultado";
     default:return "Trabajo local";
     }
 }
@@ -44,7 +45,7 @@ inline void highlight(Grid& g,std::size_t row,std::size_t column) {
             g.emphasis[y*g.width+x]=dy==0&&dx==0?2:1;
     }
 }
-inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s) {
+inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s,bool technical=true) {
     Blocks out;const bool result=s==DidacticStage::GenerationResult;
     auto g=blank(t.width,t.height);
     for(const auto& r:t.ranks) {
@@ -58,16 +59,20 @@ inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s) {
         }
     }
     if(s==DidacticStage::MPICell)highlight(g,t.selection.row,t.selection.column);
-    grid(out,"GLOBAL G"+std::to_string(result?t.generationAfter:t.generationBefore)+" · captura reconstruida",std::move(g));
+    grid(out,(technical?"GLOBAL G":"Tablero completo · G")+std::to_string(result?t.generationAfter:t.generationBefore)+(technical?" · captura reconstruida":""),std::move(g));
+    if(!technical) {
+        text(out,"");text(out,"Células vivas: "+std::to_string(result?t.aliveAfter:t.aliveBefore));
+        return out;
+    }
     text(out,"Reparto actual; vista reunida para el usuario, no memoria compartida.");
     for(const auto& r:t.ranks)text(out,"R"+std::to_string(r.partition.rank)+" · filas ["+std::to_string(r.partition.firstRow)+","+std::to_string(r.partition.endRow())+")"+(r.partition.rank==0?" · también calcula":"")+(r.partition.empty()?" · vacío":""));
     text(out,"Población global: "+std::to_string(result?t.aliveAfter:t.aliveBefore));
     return out;
 }
-inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s) {
+inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s,bool technical=true) {
     const auto& r=t.ranks.at(rank);const auto& p=r.partition;Blocks out;
-    text(out,"R"+std::to_string(rank)+" · memoria privada · cálculo secuencial local");
-    if(p.empty()) {text(out,"Sin filas propias; sin cálculo local ni Sendrecv. Participa en colectivas.");return out;}
+    if(technical)text(out,"R"+std::to_string(rank)+" · memoria privada · cálculo secuencial local");
+    if(p.empty()) {text(out,technical?"Sin filas propias; sin cálculo local ni Sendrecv. Participa en colectivas.":"Sin filas propias; participa en el resultado global.");return out;}
     const bool result=s==DidacticStage::GenerationResult;
     auto g=blank(t.width,p.rowCount+2,static_cast<int>(rank));
     g.rowKinds.front()=p.firstRow==0?2:1;
@@ -93,11 +98,13 @@ inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s)
     for(std::size_t y=0;y<p.rowCount;++y)g.labels.push_back("R"+std::to_string(rank)+" g"+std::to_string(p.firstRow+y));
     g.labels.push_back(bottom);
     if(s==DidacticStage::MPICell && r.cell && r.cell->captured)highlight(g,r.cell->row,r.cell->column-1);
-    grid(out,std::string(result?"CURRENT nuevo G":"CURRENT G")+std::to_string(result?t.generationAfter:t.generationBefore)+(s==DidacticStage::MPIExchangeFirst?" · composición didáctica":" · captura real"),std::move(g));
-    text(out,s==DidacticStage::MPIExchangeFirst?"Composición didáctica: snapshot previo + primer mensaje recibido; no es un snapshot intermedio.":
+    grid(out,std::string(!technical?(result?"Tablero actualizado G":s==DidacticStage::MPIBuffers?"Generación anterior G":"Generación actual G"):(result?"CURRENT nuevo G":"CURRENT G"))+std::to_string(result?t.generationAfter:t.generationBefore)+(technical?(s==DidacticStage::MPIExchangeFirst?" · composición didáctica":" · captura real"):""),std::move(g));
+    if(technical) {
+        text(out,s==DidacticStage::MPIExchangeFirst?"Composición didáctica: snapshot previo + primer mensaje recibido; no es un snapshot intermedio.":
         result?"Snapshot real tras swap. Halos no vigentes para esta generación.":
         exchangesVisible(s)==2?"Valores de CURRENT con halos de la captura real; bordes laterales fijos a 0.":"Snapshot previo real; halos antiguos ocultos. Bordes laterales fijos a 0.");
-    out.back().text+=" Bordes: continuo propias; discontinuo halo; punteado borde global.";
+        out.back().text+=" Bordes: continuo propias; discontinuo halo; punteado borde global.";
+    }
 
     if(s==DidacticStage::MPICell || s==DidacticStage::MPIBuffers) {
         auto next=blank(t.width,p.rowCount,static_cast<int>(rank));
@@ -109,16 +116,55 @@ inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s)
                 next.known[i]=s==DidacticStage::MPIBuffers || (r.cell && r.cell->captured && r.cell->row==y+1 && r.cell->column==x+1);
             }
         }
-        grid(out,s==DidacticStage::MPICell?"NEXT · solo célula evaluada":"NEXT calculado G"+std::to_string(t.generationAfter),std::move(next));
+        if(!technical)text(out,"");
+        grid(out,technical?(s==DidacticStage::MPICell?"NEXT · solo célula evaluada":"NEXT calculado G"+std::to_string(t.generationAfter)):
+            (s==DidacticStage::MPICell?"Resultado de la celda seleccionada":"Nueva generación G"+std::to_string(t.generationAfter)),std::move(next));
     }
-    if(s==DidacticStage::MPIBuffers || result)text(out,"Swap capturado: "+std::string(r.buffersSwapped?"sí":"no")+" · NEXT calculado pasa a CURRENT; CURRENT anterior se reutiliza como NEXT.");
+    if(technical && (s==DidacticStage::MPIBuffers || result))text(out,"Swap capturado: "+std::string(r.buffersSwapped?"sí":"no")+" · NEXT calculado pasa a CURRENT; CURRENT anterior se reutiliza como NEXT.");
     if(result)text(out,"Población propia: "+std::to_string(r.aliveAfter));
+    return out;
+}
+inline Blocks summary(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s) {
+    Blocks out;const auto& r=t.ranks.at(rank);const auto& p=r.partition;
+    heading(out,stage(s));text(out,"");
+    text(out,"Proceso: R"+std::to_string(rank));
+    if(!p.empty())text(out,"Filas: "+std::to_string(p.firstRow)+" a "+std::to_string(p.endRow()-1)+" · índices desde cero");
+    text(out,"");
+    if(p.empty())text(out,"Sin filas propias; participa en el resultado global.");
+    else switch(s) {
+    case DidacticStage::MPIState:
+        text(out,"Cada proceso trabaja con su parte del tablero.");break;
+    case DidacticStage::MPIExchangeFirst:
+    case DidacticStage::MPIExchangeSecond: {
+        const auto& e=r.exchanges.at(s==DidacticStage::MPIExchangeFirst?0:1);
+        text(out,s==DidacticStage::MPIExchangeFirst?"Intercambio del borde superior.":"Intercambio del borde inferior.");
+        text(out,e.sendTo==mpi::noPeer?"Envío: borde del tablero; no hay vecino.":"Envía a: R"+std::to_string(e.sendTo));
+        text(out,e.receivedFrom==mpi::noPeer?"Recepción: borde del tablero; valores cero.":"Recibe de: R"+std::to_string(e.receivedFrom));
+        text(out,"Las filas recibidas permiten consultar vecinos de otro proceso.");break;
+    }
+    case DidacticStage::MPICell:
+        if(r.cell && r.cell->captured) {
+            const auto& e=r.cell->evaluation;
+            text(out,"Celda: fila "+std::to_string(t.selection.row)+", columna "+std::to_string(t.selection.column));
+            text(out,std::string("Estado actual: ")+(e.before?"viva":"muerta"));
+            text(out,"Vecinos vivos: "+std::to_string(e.neighborCount));
+            text(out,std::string("Siguiente estado: ")+(e.after?"viva":"muerta"));
+        } else text(out,"La celda seleccionada pertenece a otro proceso; cambia con [ / ].");
+        break;
+    case DidacticStage::MPIBuffers:
+        text(out,"La generación calculada G"+std::to_string(t.generationAfter)+" pasa a ser el tablero actual.");break;
+    case DidacticStage::GenerationResult:
+        text(out,"Generación "+std::to_string(t.generationAfter)+" completada.");
+        text(out,"Células vivas en total: "+std::to_string(t.aliveAfter));break;
+    default:break;
+    }
+    text(out,"");text(out,"D: ver explicación técnica");text(out,"");
     return out;
 }
 inline Blocks explanation(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s) {
     Blocks out;const auto& r=t.ranks.at(rank);
-    text(out,"EXPLICACIÓN · "+stage(s));
-    text(out,"Progreso de la explicación; no porcentaje de ejecución observado.");
+    heading(out,"EXPLICACIÓN · "+stage(s));text(out,"");
+    text(out,"Progreso de la explicación; no porcentaje de ejecución observado.");text(out,"");
     if(s==DidacticStage::MPIState) {
         text(out,"Cada rank conserva su franja en memoria privada. R0 también calcula. Reparto actual es contexto, sin Scatterv en cada generación.");
         return out;
@@ -134,6 +180,7 @@ inline Blocks explanation(const mpi::MpiStepTrace& t,std::size_t rank,DidacticSt
             if(e.sendTo==mpi::noPeer) {text(out,"R"+std::to_string(sender.partition.rank)+" · envío a borde MPI_PROC_NULL: sin mensaje.");continue;}
             auto strip=blank(t.width,1,sender.partition.rank);strip.values=e.sent;std::fill(strip.known.begin(),strip.known.end(),1);
             strip.labels={"fila g"+std::to_string(*e.sentGlobalRow)};
+            text(out,"");
             grid(out,"ENVÍA R"+std::to_string(sender.partition.rank)+" -> R"+std::to_string(e.sendTo)+" · tag "+std::to_string(e.tag),std::move(strip));
         }
         if(r.partition.empty())text(out,"R"+std::to_string(rank)+": sin filas ni llamadas Sendrecv.");

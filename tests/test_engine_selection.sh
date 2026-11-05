@@ -64,15 +64,16 @@ fi
 
 # ------------------------------------------------------------------
 # Test 2: persistencia real. Tras seleccionar OpenMP, verificamos el
-# motor mostrado al reabrir el submenu y despues de cambiar el patron.
+# motor mostrado al reabrir el submenu y despues de confirmar cada patron
+# con U. Entrar al catalogo o reproducir una vista previa no confirma.
 # ------------------------------------------------------------------
 status=0
-printf 'C\npatterns/blinker.txt\n3\nO\n3\n0\nC\npatterns/block.txt\n3\n0\n0\n' \
+printf 'C\nM\npatterns/blinker.txt\nU\nM\nO\nM\n0\nC\nM\npatterns/block.txt\nU\nM\n0\nQ\n' \
     | "$binary" > "$work/persistence.out" 2>&1 || status=$?
 strip_ansi < "$work/persistence.out" > "$clean"
 
-expect_pass "first_pattern_reloaded" "Entrada cargada: patterns/blinker.txt" "$clean"
-expect_pass "second_pattern_reloaded" "Entrada cargada: patterns/block.txt" "$clean"
+expect_pass "first_pattern_reloaded" "Patrón confirmado: patterns/blinker.txt" "$clean"
+expect_pass "second_pattern_reloaded" "Patrón confirmado: patterns/block.txt" "$clean"
 openmp_current_count=$(grep -cF "Motor actual: OpenMP" "$clean" || true)
 if [[ "$status" -eq 0 && "$openmp_current_count" -ge 2 ]]; then
     echo "PASS: engine_persists_across_pattern_changes ($openmp_current_count vistas como OpenMP)"

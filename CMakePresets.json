@@ -17,12 +17,33 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "BUILD_TESTING": true
       }
+    },
+    {
+      "name": "experimental-cuda-release",
+      "displayName": "Experimental CUDA Release (G++ 12, CUDA 12.5, WSL/Linux)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-cuda-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++-12",
+        "CMAKE_CUDA_COMPILER": "/usr/local/cuda-12.5/bin/nvcc",
+        "CMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-12",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "BUILD_TESTING": true,
+        "CONWAY_ENABLE_CUDA": true,
+        "CONWAY_CUDA_ARCHITECTURES": "86"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "experimental-release",
       "configurePreset": "experimental-release",
+      "jobs": 2
+    },
+    {
+      "name": "experimental-cuda-release",
+      "configurePreset": "experimental-cuda-release",
       "jobs": 2
     }
   ],
@@ -32,6 +53,17 @@
       "configurePreset": "experimental-release",
       "environment": {
         "NO_COLOR": ""
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "experimental-cuda-release",
+      "configurePreset": "experimental-cuda-release",
+      "environment": {
+        "TERM": "xterm-256color",
+        "COLORTERM": ""
       },
       "output": {
         "outputOnFailure": true

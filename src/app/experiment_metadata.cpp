@@ -2,6 +2,7 @@
 #include "experiment_export_detail.hpp"
 
 #include <omp.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <set>
@@ -165,7 +166,7 @@ ExperimentContext captureExperimentContext(const MetadataOptions& options) {
     add(fields,"openmp.context_thread_limit",integer(omp_get_thread_limit()),MetadataSource::RuntimeObserved);
     for (const char* name : {"OMP_NUM_THREADS","OMP_DYNAMIC","OMP_THREAD_LIMIT","OMP_PROC_BIND","OMP_PLACES",
                             "OMP_SCHEDULE","OMP_WAIT_POLICY","OMP_MAX_ACTIVE_LEVELS","OMP_STACKSIZE","OMP_DISPLAY_ENV",
-                            "GOMP_CPU_AFFINITY","KMP_AFFINITY"}) {
+                            "GOMP_CPU_AFFINITY","KMP_AFFINITY","CUDA_VISIBLE_DEVICES","CUDA_LAUNCH_BLOCKING"}) {
         if (const char* value=std::getenv(name)) add(fields,std::string("environment.")+name,value,MetadataSource::RuntimeObserved);
         else unavailable(fields,std::string("environment.")+name,"Environment variable is unset");
     }
@@ -180,12 +181,34 @@ ExperimentContext captureExperimentContext(const MetadataOptions& options) {
 namespace {
 void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,const ExperimentInputIdentity& input) {
     validateStudy(study);
+    const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
     for(auto& field:metadata.fields) {
-        if(field.key=="csv.schema_version") field.value="2";
-        if(field.key=="protocol.version") field.value="conway-experimental-v2";
+        if(field.key=="csv.schema_version") field.value=hasCUDA?"3":"2";
+        if(field.key=="protocol.version") field.value=hasCUDA?"conway-experimental-v3":"conway-experimental-v2";
     }
     auto& f=metadata.fields;
     auto put=[&](std::string key,std::string value) {add(f,std::move(key),std::move(value),MetadataSource::Result);};
+    if(hasCUDA) {
+        put("timing.cuda_scope","host steady_clock resident batch including enqueue/events/final stream synchronization; excludes setup, snapshot, equivalence and presentation");
+        put("timing.cuda_device_scope","events on the backend stream around the batch, including population clears and possible enqueue gaps; not pure kernel time or occupancy");
+        put("timing.cuda_auxiliary_scope","prepare, final snapshot, total operation through checked cleanup; total is measured, not a sum; hardware queries and equivalence excluded");
+        put("cuda.warmup_policy","fresh generation-zero backend per local warmup/sample; no snapshots per generation");
+        put("memory.estimated_device_payload_bytes",integer(study.estimatedDeviceBytes));
+#ifdef CONWAY_CAPTURED_BUILD_INFO
+        if(!build_info::command_cuda.empty())add(f,"build.command.cuda",std::string(build_info::command_cuda),MetadataSource::BuildCaptured,"Controlled CMake build-step snapshot");
+        else unavailable(f,"build.command.cuda","No CUDA compile command in controlled snapshot");
+#else
+        unavailable(f,"build.command.cuda","No controlled CMake build snapshot");
+#endif
+        for(std::size_t i=0;i<study.samples.size();++i)if(study.samples[i].cuda) {
+            const auto& m=*study.samples[i].cuda;const auto prefix="cuda.sample."+integer(i)+".";
+            put(prefix+"device_name",m.deviceName);put(prefix+"device_index",integer(m.device));
+            put(prefix+"compute_capability",integer(m.major)+"."+integer(m.minor));
+            put(prefix+"total_memory_bytes",integer(m.totalMemoryBytes));
+            put(prefix+"runtime_version",integer(m.runtimeVersion));put(prefix+"driver_api_version",integer(m.driverApiVersion));
+            put(prefix+"nvcc_version",m.nvccVersion);
+        }
+    }
     put("execution.order_policy",study.rotateRight?"rotate_right":"rotate_left");
     put("execution.generations",integer(study.generations));
     put("execution.warmups",integer(study.warmups));
@@ -213,6 +236,10 @@ void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,con
     for(std::size_t i=0;i<study.configurations.size();++i) {
         const auto& c=study.configurations[i]; auto prefix="configuration."+integer(i)+".";
         put(prefix+"id",configurationName(c));
+        if(c.engine==Engine::CUDA) {
+            put(prefix+"block_x",integer(c.cudaBlock->x));put(prefix+"block_y",integer(c.cudaBlock->y));
+            put(prefix+"efficiency","not_applicable_cuda");
+        }
         if(c.engine==Engine::MPI) {
             put(prefix+"processes",integer(*c.requestedProcesses));
             put(prefix+"empty_ranks",integer(*c.requestedProcesses>input.height?*c.requestedProcesses-input.height:0));

@@ -1,6 +1,7 @@
 #include "app/experiment_execution.hpp"
 #include "experiment_input_detail.hpp"
 #include <limits>
+#include <algorithm>
 #include <stdexcept>
 
 namespace conway::app {
@@ -21,6 +22,7 @@ std::size_t retained(const StoredExperiment& stored) {
             value=checkedAdd(value,checkedMultiply(study.sessions.capacity(),sizeof(StudySession)));
             value=checkedAdd(value,checkedMultiply(study.configurations.capacity(),sizeof(ExecutionConfiguration)));
             value=checkedAdd(value,checkedMultiply(study.summaries.capacity(),sizeof(StudySummary)));
+            for(const auto& sample:study.samples)if(sample.cuda)value=checkedAdd(value,sample.cuda->deviceName.capacity()+sample.cuda->nvccVersion.capacity());
             for(const auto& session:study.sessions)
                 value=checkedAdd(value,checkedAdd(session.runtime.capacity()+session.diagnostic.capacity(),checkedMultiply(session.workerPids.capacity(),sizeof(int))));
         }
@@ -35,11 +37,14 @@ void preflight(const ExecutionDescription& d, std::size_t uiBytes, const StoredE
     const auto padded = checkedMultiply(checkedAdd(d.width, 2), checkedAdd(d.height, 2));
     auto bytes = checkedAdd(uiBytes, checkedMultiply(d.width, d.height)); // Worker input, in addition to UI.
     bytes = checkedAdd(bytes, checkedMultiply(4, padded)); // Oracle and current Game.
+    const bool hasCUDA=d.scaling?d.config.scaling.parallelEngine==Engine::CUDA:
+        std::any_of(d.config.comparison.participants.begin(),d.config.comparison.participants.end(),[](const auto& c){return c.engine==Engine::CUDA;});
+    if(hasCUDA)bytes=checkedAdd(bytes,checkedMultiply(2,padded));
     if (previous) bytes = checkedAdd(bytes, retained(*previous));
     const auto repetitions = static_cast<std::size_t>(d.scaling ? d.config.scaling.repetitions : d.config.comparison.repetitions);
-    const bool generalized=d.scaling?d.config.scaling.parallelEngine==Engine::MPI:!d.config.comparison.participants.empty();
+    const bool generalized=d.scaling?d.config.scaling.parallelEngine!=Engine::OpenMP:!d.config.comparison.participants.empty();
     const auto threads = d.scaling ? (d.config.scaling.parallelEngine==Engine::MPI?
-        d.config.scaling.requestedProcesses.size():d.config.scaling.requestedThreads.size()) :
+        d.config.scaling.requestedProcesses.size():d.config.scaling.parallelEngine==Engine::CUDA?d.config.scaling.cudaBlocks.size():d.config.scaling.requestedThreads.size()) :
         (generalized?d.config.comparison.participants.size()-1:1);
     const auto samples = checkedMultiply(checkedAdd(threads, 1), repetitions);
     if(generalized) {
@@ -62,12 +67,12 @@ StoredExperiment execute(const ExecutionRequest& request, const ExperimentExecut
     auto context = captureExperimentContext(options); // In the same worker, immediately before the executor.
     phase(ExecutionPhase::Running);
     if (d.scaling) {
-        auto result = generated ? runScalingStudy(*generated, d.config.scaling)
-                                : runScalingStudy(*request.loaded, d.config.scaling);
+        auto result = generated ? runScalingStudy(*generated, d.config.scaling,request.progress)
+                                : runScalingStudy(*request.loaded, d.config.scaling,request.progress);
         return {d, std::move(context), std::move(result)};
     }
-    auto result = generated ? runExperiment(*generated, d.config.comparison)
-                            : runExperiment(*request.loaded, d.config.comparison);
+    auto result = generated ? runExperiment(*generated, d.config.comparison,request.progress)
+                            : runExperiment(*request.loaded, d.config.comparison,request.progress);
     return {d, std::move(context), std::move(result)};
 }
 } // namespace
@@ -87,7 +92,7 @@ bool ExperimentExecution::start(bool scaling, ExperimentFormConfig config, const
             return result.study && !result.study->cleanupConfirmed;
         },state_.latest->result)) {
         state_.phase=ExecutionPhase::Error;
-        state_.error="Previous MPI cleanup is unconfirmed; no new measurement was started.";
+        state_.error="Previous experimental cleanup is unconfirmed; no new measurement was started.";
         return true;
     }
     ExecutionDescription description{state_.description.id + 1, scaling, std::move(config), std::move(name)};
@@ -99,6 +104,8 @@ bool ExperimentExecution::start(bool scaling, ExperimentFormConfig config, const
         description.height = loaded->height;
     }
     state_.description = description;
+    state_.completedWork=state_.totalWork=0;
+    lastProgressNotice_={};
     state_.error.clear();
     try {
         if (!description.width || !description.height) throw std::invalid_argument("No hay una entrada seleccionada.");
@@ -120,6 +127,21 @@ bool ExperimentExecution::publishPhase(std::uint64_t id, ExecutionPhase phase) {
     state_.phase = phase;
     return true;
 }
+bool ExperimentExecution::publishProgress(std::uint64_t id,std::size_t completed,std::size_t total) {
+    std::lock_guard lock(mutex_);
+    if(state_.description.id!=id || !state_.active() || !total || completed>total ||
+       (state_.totalWork && state_.totalWork!=total) || completed<state_.completedWork) return false;
+    const auto percent=[](std::size_t done,std::size_t count) {
+        return count?static_cast<int>(static_cast<long double>(done)*100/count):0;
+    };
+    const auto previous=percent(state_.completedWork,state_.totalWork);
+    state_.completedWork=completed;state_.totalWork=total;
+    const auto now=std::chrono::steady_clock::now();
+    // Store every completion, but limit redraw requests to ten per second.
+    if(percent(completed,total)==previous || now-lastProgressNotice_<std::chrono::milliseconds(100)) return false;
+    lastProgressNotice_=now;
+    return true;
+}
 void ExperimentExecution::loop() {
     for (;;) {
         ExecutionRequest request;
@@ -134,6 +156,9 @@ void ExperimentExecution::loop() {
         std::shared_ptr<const StoredExperiment> result;
         std::string error;
         try {
+            request.progress=[this,id](std::size_t completed,std::size_t total) {
+                if(publishProgress(id,completed,total)) notify_();
+            };
             result = std::make_shared<StoredExperiment>(backend_(request, [this, id](ExecutionPhase phase) {
                 if (publishPhase(id, phase)) notify_();
             }));
@@ -141,7 +166,7 @@ void ExperimentExecution::loop() {
                 if(!data.study) return std::string{};
                 if(!data.study->diagnostic.empty()) return data.study->diagnostic;
                 if(!data.study->complete || !data.study->cleanupConfirmed)
-                    return std::string("Experimental study is incomplete or MPI cleanup is unconfirmed.");
+                    return std::string("Experimental study is incomplete or resource cleanup is unconfirmed.");
                 return std::string{};
             },result->result);
         } catch (const std::exception& failure) { error = failure.what(); }
@@ -154,6 +179,7 @@ void ExperimentExecution::loop() {
                 if (result) {
                     state_.latest = std::move(result); state_.error=std::move(error);
                     state_.phase = state_.error.empty()?ExecutionPhase::Finished:ExecutionPhase::Error;
+                    if(state_.phase==ExecutionPhase::Finished) state_.completedWork=state_.totalWork;
                 }
                 else { state_.error = std::move(error); state_.phase = ExecutionPhase::Error; }
             }

@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Pure launch geometry remains usable in CPU-only builds, without CUDA headers.
+add_library(conway_cuda_launch STATIC src/core/cuda_launch.cpp)
+target_include_directories(conway_cuda_launch PUBLIC include)
+
 include(FetchContent)
 
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -33,6 +37,7 @@ target_include_directories(conway_generated_input PUBLIC include)
 add_library(conway_experiments STATIC
     src/app/scaling_study.cpp
     src/app/experimental_study.cpp
+    src/app/cuda_benchmark.cpp
     src/app/experiment_runner.cpp
     src/app/benchmark.cpp
     src/core/game.cpp
@@ -127,7 +132,7 @@ target_link_libraries(conway_mpi_client PUBLIC conway_mpi_protocol)
 target_include_directories(conway_mpi_client PUBLIC include)
 add_library(conway_simulation STATIC src/app/simulation.cpp)
 target_include_directories(conway_simulation PUBLIC include)
-target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_CXX)
+target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_CXX conway_cuda_ui)
 target_compile_definitions(conway_simulation PRIVATE CONWAY_MPI_LAUNCHER="${MPIEXEC_EXECUTABLE}")
 target_link_libraries(conway PRIVATE conway_simulation)
 
@@ -143,9 +148,26 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
 
 include(CTest)
+include(cmake/CudaBackend.cmake)
+
+add_library(conway_cuda_ui STATIC src/app/cuda_info.cpp)
+target_include_directories(conway_cuda_ui PUBLIC include)
+target_link_libraries(conway_cuda_ui PUBLIC conway_cuda_launch)
+if(CONWAY_ENABLE_CUDA)
+    target_link_libraries(conway_cuda_ui PRIVATE conway_cuda)
+endif()
+if(TARGET cuda_failure_tests)
+    target_link_libraries(cuda_failure_tests PRIVATE conway_simulation)
+    add_dependencies(cuda_failure_tests conway_mpi_worker)
+endif()
 
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    add_test(NAME mpi_error_message_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpi_error_message.py"
+        $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mpi_error_message_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
 
     add_executable(experimental_review_tests tests/experimental_review_tests.cpp src/app/experiment_execution.cpp)
     target_link_libraries(experimental_review_tests PRIVATE conway_experiment_export conway_generated_input)
@@ -485,7 +507,7 @@ add_executable(didactic_layout_tests tests/didactic_layout_tests.cpp ${didactic_
 target_include_directories(didactic_layout_tests PRIVATE include)
 target_link_libraries(didactic_layout_tests PRIVATE conway_experiment_export conway_generated_input OpenMP::OpenMP_CXX MPI::MPI_CXX
     ftxui::component ftxui::dom ftxui::screen)
-add_test(NAME didactic_layout COMMAND didactic_layout_tests)
+add_test(NAME didactic_layout COMMAND didactic_layout_tests "${CMAKE_CURRENT_SOURCE_DIR}")
 add_executable(ftxui_execution_fixture tests/ftxui_execution_fixture.cpp ${didactic_layout_sources})
 target_include_directories(ftxui_execution_fixture PRIVATE include)
 target_link_libraries(ftxui_execution_fixture PRIVATE conway_experiment_export conway_generated_input
@@ -587,3 +609,139 @@ foreach(session_target IN ITEMS app_runtime_tests didactic_layout_tests ftxui_ex
     endif()
 endforeach()
 add_dependencies(conway conway_mpi_worker)
+
+if(BUILD_TESTING)
+    add_executable(cuda_launch_tests tests/cuda_launch_tests.cpp)
+    target_link_libraries(cuda_launch_tests PRIVATE conway_cuda_launch)
+    add_test(NAME cuda_launch_geometry COMMAND cuda_launch_tests)
+    add_executable(game_cuda_tests tests/game_cuda_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_include_directories(game_cuda_tests PRIVATE include)
+    target_link_libraries(game_cuda_tests PRIVATE OpenMP::OpenMP_CXX)
+    add_test(NAME game_cuda_contract COMMAND game_cuda_tests)
+    set_tests_properties(game_cuda_contract PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME game_cuda_unavailable COMMAND game_cuda_tests --unavailable)
+    set_tests_properties(game_cuda_unavailable PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(cuda_ui_session_tests tests/cuda_ui_session_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp
+        src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(cuda_ui_session_tests PRIVATE conway_simulation)
+    add_test(NAME cuda_ui_session COMMAND cuda_ui_session_tests)
+    set_tests_properties(cuda_ui_session PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30 ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_ui_unavailable COMMAND cuda_ui_session_tests --unavailable)
+    set_tests_properties(cuda_ui_unavailable PROPERTIES TIMEOUT 30 ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
+    add_test(NAME cuda_ui_flows COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_ui.py" $<TARGET_FILE:conway>
+        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cuda_ui_flows PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    if(CONWAY_ENABLE_CUDA)
+        add_test(NAME cuda_ui_absent_flows COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_ui.py" $<TARGET_FILE:conway>
+            $<TARGET_FILE:cuda_ui_session_tests> HIDDEN "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(cuda_ui_absent_flows PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE
+            ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
+    endif()
+endif()
+
+add_library(conway_cuda_didactic STATIC src/app/cuda_didactic_session.cpp)
+target_include_directories(conway_cuda_didactic PUBLIC include)
+target_link_libraries(conway_cuda_didactic PUBLIC conway_simulation)
+add_library(conway_board_renderer STATIC src/ui/board_renderer.cpp)
+target_include_directories(conway_board_renderer PUBLIC include)
+target_link_libraries(conway_board_renderer PUBLIC ftxui::dom ftxui::screen)
+add_library(conway_cuda_didactic_view STATIC src/ui/cuda_didactic_view.cpp)
+target_include_directories(conway_cuda_didactic_view PUBLIC include)
+target_link_libraries(conway_cuda_didactic_view PUBLIC conway_cuda_didactic conway_board_renderer)
+foreach(cuda_didactic_ui IN ITEMS conway ftxui_execution_fixture ftxui_didactic_fixture didactic_layout_tests)
+    if(TARGET ${cuda_didactic_ui})
+        target_link_libraries(${cuda_didactic_ui} PRIVATE conway_cuda_didactic_view)
+    endif()
+endforeach()
+if(TARGET cuda_failure_tests)
+    target_link_libraries(cuda_failure_tests PRIVATE conway_cuda_didactic_view)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(cuda_didactic_model_tests tests/cuda_didactic_model_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(cuda_didactic_model_tests PRIVATE conway_cuda_didactic)
+    add_test(NAME cuda_didactic_model COMMAND cuda_didactic_model_tests)
+    add_executable(cuda_didactic_integration_tests tests/cuda_didactic_integration_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(cuda_didactic_integration_tests PRIVATE conway_cuda_didactic_view)
+    add_test(NAME cuda_didactic_integration COMMAND cuda_didactic_integration_tests)
+    set_tests_properties(cuda_didactic_integration PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+        RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_didactic_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_didactic.py" $<TARGET_FILE:conway>
+        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cuda_didactic_pty PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    if(CONWAY_ENABLE_CUDA)
+        add_test(NAME cuda_didactic_absent_pty COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_didactic.py" $<TARGET_FILE:conway>
+            $<TARGET_FILE:cuda_ui_session_tests> HIDDEN "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(cuda_didactic_absent_pty PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE
+            ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
+    endif()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(board_renderer_tests tests/board_renderer_tests.cpp
+        src/core/game.cpp src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+    target_link_libraries(board_renderer_tests PRIVATE conway_cuda_didactic_view)
+    add_test(NAME board_renderer_layout COMMAND board_renderer_tests)
+    add_test(NAME cuda_board_visual_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_board_visual.py" $<TARGET_FILE:conway>
+        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cuda_board_visual_pty PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(cuda_experiment_tests tests/cuda_experiment_tests.cpp src/app/experiment_form.cpp)
+    target_link_libraries(cuda_experiment_tests PRIVATE conway_experiment_export conway_cuda_ui)
+    add_dependencies(cuda_experiment_tests conway_mpi_worker)
+    add_test(NAME cuda_experimental_study COMMAND cuda_experiment_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(cuda_experimental_study PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_benchmark_ui_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_benchmark_ui.py" $<TARGET_FILE:conway>
+        $<TARGET_FILE:cuda_ui_session_tests> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cuda_benchmark_ui_pty PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_experimental_csv COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_benchmark_csv.py" $<TARGET_FILE:cuda_experiment_tests>
+        "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(cuda_experimental_csv PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_experimental_unavailable COMMAND cuda_experiment_tests --unavailable)
+    set_tests_properties(cuda_experimental_unavailable PROPERTIES TIMEOUT 30 ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
+    if(CONWAY_ENABLE_CUDA)
+        add_executable(cuda_batch_tests tests/cuda_batch_tests.cpp src/core/game.cpp
+            src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+        target_link_libraries(cuda_batch_tests PRIVATE conway_cuda OpenMP::OpenMP_CXX CUDA::cudart)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(cuda_batch_tests PRIVATE CONWAY_CUDA_BATCH_WRAP=1)
+            foreach(api IN ITEMS cudaMalloc cudaMemcpyAsync cudaEventRecord cudaEventDestroy)
+                target_link_options(cuda_batch_tests PRIVATE "LINKER:--wrap=${api}")
+            endforeach()
+        endif()
+        add_test(NAME cuda_resident_batch COMMAND cuda_batch_tests)
+        set_tests_properties(cuda_resident_batch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE)
+    endif()
+endif()
+
+# Every target compiling Game uses the same common geometry and optional backend.
+get_property(game_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(game_target IN LISTS game_targets)
+    get_target_property(game_sources ${game_target} SOURCES)
+    if("src/core/game.cpp" IN_LIST game_sources)
+        target_link_libraries(${game_target} PRIVATE conway_cuda_launch)
+        if(CONWAY_ENABLE_CUDA)
+            target_link_libraries(${game_target} PRIVATE conway_cuda)
+        endif()
+    endif()
+endforeach()

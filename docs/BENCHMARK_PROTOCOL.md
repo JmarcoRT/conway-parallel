@@ -168,3 +168,10 @@ funcionales no son campañas certificadas. `scripts/measure_openmp.sh` y
 `tests/openmp_timing.cpp` son herramientas exploratorias con compilación y método
 propios; no mezclar sus datos con este protocolo. Las evidencias anteriores están
 clasificadas en el [índice](README.md).
+
+## Extensión CUDA
+
+Los estudios con CUDA usan el protocolo v3, con evolución residente y transferencia
+final separada. El contrato, costes auxiliares, métricas y perfil Release con G++ 12
+están en [CUDA_BENCHMARK.md](CUDA_BENCHMARK.md). El contrato histórico anterior se
+conserva para sus consumidores existentes.

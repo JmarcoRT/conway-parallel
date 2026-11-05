@@ -21,7 +21,7 @@ Engine engineAt(MeasurementOrder order, int round, int position) {
 }
 
 ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
-                         const input::GenerationMetadata* generated) {
+                         const input::GenerationMetadata* generated, const BenchmarkProgressCallback& progress) {
     if (config.generations <= 0 || config.warmups < 0 || config.repetitions <= 0
         || (config.participants.empty() && config.requestedThreads <= 0))
         throw std::invalid_argument("Invalid experiment generations, warmups, repetitions or threads");
@@ -38,7 +38,7 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
         ExperimentResult result{config,std::move(identity),0,{},{}};
         result.study=runExperimentalStudy(input,config.participants,config.generations,
             config.warmups,config.repetitions,
-            config.rotateRight,config.mpiOptions,config.maxMemoryBytes);
+            config.rotateRight,config.mpiOptions,config.maxMemoryBytes,progress);
         result.completedWarmupRuns=result.study->completedWarmupRuns;
         return result;
     }
@@ -54,7 +54,9 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
 
     detail::OpenMPSettingsGuard settings;
     omp_set_dynamic(0);
+    detail::BenchmarkProgressCounter work(checkedAdd(2,checkedAdd(warmupCount,sampleCount)),progress);
     const auto reference = detail::runOnce(input, Engine::Sequential, 1, config.generations);
+    work.advance();
     for (int round = 0; round < config.warmups; ++round) {
         for (int position = 0; position < 2; ++position) {
             const auto warmed=detail::runOnce(input, engineAt(config.order, round, position),
@@ -62,6 +64,7 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
             if(!detail::sameState(warmed.finalGame,reference.finalGame))
                 throw std::runtime_error("Warmup differs from sequential oracle");
             ++result.completedWarmupRuns;
+            work.advance();
         }
     }
     std::size_t executionIndex = 1 + result.completedWarmupRuns;
@@ -75,9 +78,11 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
                  engine == Engine::OpenMP ? std::optional<int>{config.requestedThreads} : std::nullopt,
                  run.minEffectiveThreads, run.maxEffectiveThreads, equivalent},
                 round, position, executionIndex++});
+            work.advance();
         }
     }
     result.summary = summarizeExperimentSamples(result.samples);
+    work.advance();
     return result;
 }
 } // namespace
@@ -142,10 +147,10 @@ ExperimentSummary summarizeExperimentSamples(std::span<const ExperimentSample> s
     return summary;
 }
 
-ExperimentResult runExperiment(const InputData& input, const ExperimentConfig& config) {
-    return execute(input, config, nullptr);
+ExperimentResult runExperiment(const InputData& input, const ExperimentConfig& config, const BenchmarkProgressCallback& progress) {
+    return execute(input, config, nullptr,progress);
 }
-ExperimentResult runExperiment(const input::GeneratedInput& input, const ExperimentConfig& config) {
-    return execute(input.input, config, &input.metadata);
+ExperimentResult runExperiment(const input::GeneratedInput& input, const ExperimentConfig& config, const BenchmarkProgressCallback& progress) {
+    return execute(input.input, config, &input.metadata,progress);
 }
 } // namespace conway::app

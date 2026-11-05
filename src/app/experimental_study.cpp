@@ -20,6 +20,8 @@ std::size_t at(bool right,std::size_t round,std::size_t position,std::size_t cou
     return right?(position+count-round%count)%count:(position+round)%count;
 }
 void validateConfiguration(const ExecutionConfiguration& c) {
+    if(c.engine!=Engine::CUDA && c.cudaBlock)throw std::invalid_argument("CUDA block supplied to another engine");
+    if(c.engine==Engine::CUDA && c.cudaBlock && !c.requestedThreads && !c.requestedProcesses) {core::validateCudaBlock(*c.cudaBlock);return;}
     if(c.engine==Engine::Sequential && !c.requestedThreads && !c.requestedProcesses) return;
     if(c.engine==Engine::OpenMP && c.requestedThreads && *c.requestedThreads>0 && !c.requestedProcesses) return;
     if(c.engine==Engine::MPI && !c.requestedThreads && c.requestedProcesses &&
@@ -34,8 +36,20 @@ bool equivalent(const mpi::RemoteSnapshot& snapshot,const Game& reference) {
             if(snapshot.input.cells[r*reference.width()+c]!=reference.isAlive(r,c)) return false;
     return true;
 }
-bool validSample(const StudySample& s,const ExecutionConfiguration& c) {
+bool validSample(const StudySample& s,const ExecutionConfiguration& c,std::size_t width=0,std::size_t height=0) {
     if(!s.equivalent || !timeValid(s.elapsedMs)) return false;
+    if(c.engine==Engine::CUDA) {
+        if(!s.cuda || s.minEffectiveThreads || s.maxEffectiveThreads || s.observedProcesses || s.sessionIndex || s.loadMs || s.snapshotMs || s.requestMs)return false;
+        if(!width || !height)return false;
+        const auto geometry=core::planCudaLaunch(width,height,*c.cudaBlock);
+        const auto& m=*s.cuda;
+        return m.cleanupConfirmed && timeValid(m.deviceMs) && timeValid(m.prepareMs) && timeValid(m.snapshotMs) && timeValid(m.totalMs) &&
+            m.totalMs>=s.elapsedMs && m.totalMs>=m.prepareMs && m.totalMs>=m.snapshotMs &&
+            !m.deviceName.empty() && !m.nvccVersion.empty() && m.runtimeVersion>0 && m.driverApiVersion>0 && m.device==0 &&
+            m.totalMemoryBytes>0 && m.major>0 && m.minor>=0 && m.gridX==geometry.gridX && m.gridY==geometry.gridY &&
+            m.outsidePositions==geometry.outsidePositions && m.threadsPerBlock==geometry.threadsPerBlock;
+    }
+    if(s.cuda)return false;
     if(c.engine==Engine::MPI) return !s.minEffectiveThreads && !s.maxEffectiveThreads &&
         s.observedProcesses==c.requestedProcesses && s.sessionIndex && s.loadMs && s.snapshotMs && s.requestMs &&
         timeValid(*s.loadMs) && timeValid(*s.snapshotMs) && timeValid(*s.requestMs);
@@ -67,20 +81,22 @@ mpi::ClientOptions experimentalMPIOptions() {
 }
 std::string configurationName(const ExecutionConfiguration& c) {
     validateConfiguration(c);
+    if(c.engine==Engine::CUDA)return "cuda:"+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y);
     if(c.engine==Engine::Sequential) return "sequential";
     return c.engine==Engine::OpenMP?"openmp:"+std::to_string(*c.requestedThreads):"mpi:"+std::to_string(*c.requestedProcesses);
 }
 ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<ExecutionConfiguration> configurations,
-        int generations,int warmups,int repetitions,bool right,mpi::ClientOptions options,std::size_t budget) {
+        int generations,int warmups,int repetitions,bool right,mpi::ClientOptions options,std::size_t budget,const BenchmarkProgressCallback& progress) {
     (void)detail::validateInput(input);
     if(configurations.size()<2 || generations<1 || warmups<0 || repetitions<1)
         throw std::invalid_argument("Invalid experimental study dimensions/counts");
     std::set<std::string> names;
-    bool hasMPI=false;
+    bool hasMPI=false,hasCUDA=false;
     std::size_t maximumProcesses=0;
     for(const auto& c:configurations) {
         if(!names.insert(configurationName(c)).second) throw std::invalid_argument("Duplicate experimental configuration");
-        hasMPI=hasMPI || c.engine==Engine::MPI;
+        hasMPI=hasMPI || c.engine==Engine::MPI;hasCUDA=hasCUDA || c.engine==Engine::CUDA;
+        if(c.engine==Engine::CUDA)validateCudaBenchmark(input.width,input.height,*c.cudaBlock);
         if(c.engine==Engine::MPI) maximumProcesses=std::max(maximumProcesses,static_cast<std::size_t>(*c.requestedProcesses));
     }
     if(hasMPI && (generations>100000 || mpi::checked_cell_count(input.width,input.height)>mpi::wire::maxPayload-32))
@@ -104,40 +120,66 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
         bytes=detail::checkedAdd(bytes,workerBuffers);
         bytes=detail::checkedAdd(bytes,detail::checkedMultiply(2,input.cells.size()));
     }
+    const auto deviceBytes=hasCUDA?detail::checkedAdd(detail::checkedMultiply(2,padded),sizeof(unsigned long long)):0;
+    if(deviceBytes>budget)throw std::length_error("CUDA device payload exceeds experimental budget");
+    // CUDA final snapshot, metadata strings and staging allocations are bounded
+    // separately from the two resident device boards.
+    if(hasCUDA)bytes=detail::checkedAdd(bytes,detail::checkedMultiply(2,padded));
     bytes=detail::checkedAdd(bytes,128u*1024u); // Bounded failure diagnostics and duplicate context.
     if(bytes>budget) throw std::length_error("Experimental study exceeds payload budget");
     ExperimentalStudy study;
     study.configurations=std::move(configurations); study.generations=generations; study.warmups=warmups;
     study.repetitions=repetitions; study.rotateRight=right; study.mpiOptions=options;
+    study.estimatedDeviceBytes=deviceBytes;study.width=input.width;study.height=input.height;
     study.estimatedPeakBytes=bytes; study.maxMemoryBytes=budget;
     study.samples.reserve(count); study.sessions.reserve(count);
     detail::OpenMPSettingsGuard settings; omp_set_dynamic(0);
+    const auto mpiConfigurations=static_cast<std::size_t>(std::count_if(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::MPI;}));
+    const auto localWarmups=detail::checkedMultiply(study.configurations.size()-mpiConfigurations,static_cast<std::size_t>(warmups));
+    const auto mpiWarmups=detail::checkedMultiply(detail::checkedMultiply(mpiConfigurations,static_cast<std::size_t>(repetitions)),static_cast<std::size_t>(warmups));
+    detail::BenchmarkProgressCounter work(detail::checkedAdd(2,detail::checkedAdd(count,detail::checkedAdd(localWarmups,mpiWarmups))),progress);
     auto reference=detail::runOnce(input,Engine::Sequential,1,generations);
+    work.advance();
     std::size_t execution=1;
     try {
+    auto cudaEquivalent=[&](const core::GameState& state) {
+        if(state.width!=reference.finalGame.width() || state.height!=reference.finalGame.height() ||
+            state.generation!=reference.finalGame.generation() || state.aliveCount!=reference.finalGame.aliveCount())return false;
+        for(std::size_t r=0;r<state.height;++r)for(std::size_t col=0;col<state.width;++col)
+            if(bool(state.current[(r+1)*state.stride+col+1])!=reference.finalGame.isAlive(r,col))return false;
+        return true;
+    };
     // Local warmups are per configuration, MPI warmups per freshly created session.
     for(std::size_t round=0;round<static_cast<std::size_t>(warmups);++round)
         for(std::size_t pos=0;pos<study.configurations.size();++pos) {
             const auto& c=study.configurations[at(right,round,pos,study.configurations.size())];
             if(c.engine==Engine::MPI) continue;
-            auto run=detail::runOnce(input,c.engine,c.requestedThreads.value_or(1),generations);
+            bool same;
+            if(c.engine==Engine::CUDA) {auto run=runCudaBenchmark(input,generations,*c.cudaBlock);same=cudaEquivalent(run.finalState);}
+            else {auto run=detail::runOnce(input,c.engine,c.requestedThreads.value_or(1),generations);same=detail::sameState(run.finalGame,reference.finalGame);}
             ++study.completedWarmupRuns; ++study.completedLocalWarmups; ++execution;
-            if(!detail::sameState(run.finalGame,reference.finalGame)) {
+            if(!same) {
                 study.diagnostic="Local warmup is not equivalent to sequential oracle";
                 study.summaries=summarizeStudy(study); return study;
             }
+            work.advance();
         }
     for(int round=0;round<repetitions;++round) {
         for(std::size_t pos=0;pos<study.configurations.size();++pos) {
             const auto index=at(right,round,pos,study.configurations.size());
             const auto& c=study.configurations[index];
             StudySample sample; sample.configurationIndex=index; sample.round=round; sample.position=static_cast<int>(pos);
-            if(c.engine!=Engine::MPI) {
+            if(c.engine==Engine::CUDA) {
+                auto run=runCudaBenchmark(input,generations,*c.cudaBlock);
+                sample.executionIndex=execution++;sample.elapsedMs=run.elapsedMs;
+                sample.equivalent=cudaEquivalent(run.finalState);sample.cuda=std::move(run.observed);
+                sample.valid=validSample(sample,c,input.width,input.height);study.samples.push_back(std::move(sample));
+            } else if(c.engine!=Engine::MPI) {
                 auto run=detail::runOnce(input,c.engine,c.requestedThreads.value_or(1),generations);
                 sample.executionIndex=execution++; sample.elapsedMs=run.elapsedMs;
                 sample.minEffectiveThreads=run.minEffectiveThreads; sample.maxEffectiveThreads=run.maxEffectiveThreads;
                 sample.equivalent=detail::sameState(run.finalGame,reference.finalGame);
-                sample.valid=validSample(sample,c); study.samples.push_back(sample);
+                sample.valid=validSample(sample,c,input.width,input.height); study.samples.push_back(sample);
             } else {
                 const auto sessionIndex=study.sessions.size();
                 study.sessions.emplace_back(); auto& session=study.sessions.back();
@@ -157,11 +199,12 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                         if(attempt<static_cast<std::size_t>(warmups)) {
                             ++session.completedWarmups; ++study.completedWarmupRuns; ++execution;
                             if(!same) throw std::runtime_error("MPI warmup is not equivalent to sequential oracle");
+                            work.advance();
                         } else {
                             sample.executionIndex=execution++; sample.completedWarmups=session.completedWarmups;
                             sample.elapsedMs=batch.maximumMs; sample.observedProcesses=batch.processes;
                             sample.sessionIndex=sessionIndex; sample.loadMs=load; sample.requestMs=request; sample.snapshotMs=snapshotTime;
-                            sample.equivalent=same; sample.valid=validSample(sample,c); study.samples.push_back(sample);
+                            sample.equivalent=same; sample.valid=validSample(sample,c,input.width,input.height); study.samples.push_back(sample);
                         }
                     }
                     start=Clock::now(); client->close(); session.closeMs=elapsed(start);
@@ -180,13 +223,15 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                     study.summaries=summarizeStudy(study); return study; // No retries or later participants.
                 }
             }
+            work.advance();
         }
     }
     } catch(const std::exception& error) {
+        if(const auto* cuda=dynamic_cast<const CudaBenchmarkError*>(&error))study.cleanupConfirmed=cuda->cleanupConfirmed;
         study.diagnostic="Local experimental execution: "+std::string(error.what());
         study.summaries=summarizeStudy(study); return study;
     }
-    study.complete=true; study.summaries=summarizeStudy(study); return study;
+    study.complete=true; study.summaries=summarizeStudy(study); work.advance(); return study;
 }
 std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
     std::vector<StudySummary> summaries;
@@ -200,7 +245,7 @@ std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
         if(c.engine==Engine::Sequential) sequential=index;
         for(const auto& s:study.samples) if(s.configurationIndex==index) {
             ++summary.sampleCount; summary.equivalent=summary.equivalent && s.equivalent;
-            summary.valid=summary.valid && s.valid && validSample(s,c);
+            summary.valid=summary.valid && s.valid && validSample(s,c,study.width,study.height);
             if(c.engine==Engine::MPI) summary.valid=summary.valid && validSession(study,s);
             validTimes=validTimes && timeValid(s.elapsedMs); times.push_back(s.elapsedMs);
             const auto minimum=c.engine==Engine::MPI?s.observedProcesses:s.minEffectiveThreads;
@@ -220,7 +265,7 @@ std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
             if(summary.valid && ref.statistics && summary.statistics && ref.statistics->medianMs>0 && summary.statistics->medianMs>0) {
                 const double speedup=ref.statistics->medianMs/summary.statistics->medianMs;
                 if(std::isfinite(speedup) && speedup>0) summary.speedup=speedup;
-                if(summary.speedup && summary.minimumResources && summary.minimumResources==summary.maximumResources) {
+                if(study.configurations[summary.configurationIndex].engine!=Engine::CUDA && summary.speedup && summary.minimumResources && summary.minimumResources==summary.maximumResources) {
                     const double efficiency=speedup / *summary.minimumResources;
                     if(std::isfinite(efficiency) && efficiency>0) summary.efficiency=efficiency;
                 }
@@ -233,6 +278,13 @@ void validateStudy(const ExperimentalStudy& study) {
     if(study.configurations.size()<2 || study.repetitions<1 || study.generations<1 || study.warmups<0)
         throw std::invalid_argument("Malformed study");
     if(!study.complete && study.diagnostic.empty()) throw std::invalid_argument("Incomplete study has no diagnostic");
+    const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
+    if(hasCUDA) {
+        (void)core::planCudaLaunch(study.width,study.height);
+        const auto padded=detail::checkedMultiply(detail::checkedAdd(study.width,2),detail::checkedAdd(study.height,2));
+        const auto expected=detail::checkedAdd(detail::checkedMultiply(2,padded),sizeof(unsigned long long));
+        if(study.estimatedDeviceBytes!=expected || expected>study.maxMemoryBytes)throw std::invalid_argument("CUDA payload audit is inconsistent");
+    }
     std::set<std::string> names;
     for(const auto& c:study.configurations) if(!names.insert(configurationName(c)).second)
         throw std::invalid_argument("Duplicate study configuration");
@@ -248,7 +300,7 @@ void validateStudy(const ExperimentalStudy& study) {
         const auto round=i/study.configurations.size(),position=i%study.configurations.size();
         if(sample.round!=static_cast<int>(round) || sample.position!=static_cast<int>(position) ||
            round>=static_cast<std::size_t>(study.repetitions) || sample.configurationIndex!=at(study.rotateRight,round,position,study.configurations.size()) ||
-           sample.executionIndex<=previous || sample.valid!=validSample(sample,study.configurations[sample.configurationIndex]))
+           sample.executionIndex<=previous || sample.valid!=validSample(sample,study.configurations[sample.configurationIndex],study.width,study.height))
             throw std::invalid_argument("Study acquisition audit is inconsistent");
         const bool mpi=study.configurations[sample.configurationIndex].engine==Engine::MPI;
         if(mpi!=sample.sessionIndex.has_value())

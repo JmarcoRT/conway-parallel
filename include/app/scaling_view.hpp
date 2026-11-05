@@ -9,5 +9,5 @@ struct ScalingPlotPoint { int requestedThreads; double speedup; };
 std::vector<ScalingPlotPoint> scalingPlotPoints(const ScalingResult& result);
 std::vector<ftxui::Element> scalingRows(const ScalingResult& result,
     const std::string& patternName, ScalingTab tab, int columns,
-    ftxui::Color accent, ftxui::Color positive);
+    ftxui::Color accent, ftxui::Color positive, bool sampleDetails = false, bool methodDetails = false);
 }

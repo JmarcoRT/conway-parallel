@@ -7,13 +7,13 @@
 
 namespace conway::app {
 enum class ExperimentField : std::size_t {
-    Width, Height, Density, Seed, Generations, Warmups, Repetitions, Threads, Source, Processes, Participants, Count
+    Width, Height, Density, Seed, Generations, Warmups, Repetitions, Threads, Source, Processes, Participants, CudaBlocks, Count
 };
 inline constexpr auto kExperimentFieldCount = static_cast<std::size_t>(ExperimentField::Count);
 
 struct ExperimentFormDraft {
-    bool sequential{true}, openmp{false}, mpi{false};
-    int parallelEngine{0}; // 0 OpenMP, 1 MPI.
+    bool sequential{true}, openmp{false}, mpi{false}, cuda{false};
+    int parallelEngine{0}; // 0 OpenMP, 1 MPI, 2 CUDA blocks.
     int source{1}; // 0: current loaded pattern; 1: generated board.
     std::array<std::string, kExperimentFieldCount> values;
 };

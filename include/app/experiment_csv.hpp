@@ -12,7 +12,7 @@ struct CsvExportPaths {
     std::filesystem::path metadata;
 };
 
-// CSV v1 for legacy local results; v2 for result.study. UTF-8, comma separator,
+// CSV v1 for legacy local results; v2 for CPU/MPI studies; v3 with CUDA. UTF-8, comma separator,
 // CRLF records and round-trip double precision.
 // Context is combined with the supplied result; no experiment/statistics rerun.
 void writeExperimentCsv(const ExperimentResult& result, const ExperimentContext& context,
