@@ -49,7 +49,36 @@ int main() {
         ScalingResult scaling;scaling.config.parallelEngine=Engine::MPI;scaling.study=study;
         auto points=scalingPlotPoints(scaling);check(points.size()==1 && points[0].requestedThreads==2,"MPI plot resources");
         auto text=render(scalingRows(scaling,"blinker",ScalingTab::Summary,80,ftxui::Color::Cyan,ftxui::Color::Green),80);
-        check(text.find("Procesos →")!=text.npos && text.find("X: procesos")!=text.npos,"MPI axis mislabeled");
+        check(text.find("Procesos solicitados")!=text.npos && text.find("ACELERACIÓN SEGÚN LOS PROCESOS")!=text.npos,"MPI axis mislabeled");
+        // Synthetic presentation coverage for every scaling engine and tab.
+        for(auto engine:{Engine::OpenMP,Engine::MPI,Engine::CUDA}) {
+            auto all=study;
+            all.configurations.push_back({Engine::CUDA,{},{},core::kCudaBlock8x8});
+            all.configurations.push_back({Engine::CUDA,{},{},core::kCudaBlock16x16});
+            for(std::size_t i=3;i<5;++i) {
+                auto summary=all.summaries.front();summary.configurationIndex=i;
+                summary.speedup=3;summary.efficiency.reset();all.summaries.push_back(summary);
+            }
+            ScalingResult every;every.config.parallelEngine=engine;every.study=all;
+            for(int width:{50,80,140}) {
+                for(auto tab:{ScalingTab::Summary,ScalingTab::Samples,ScalingTab::Method}) {
+                    const auto output=render(scalingRows(every,"blinker",tab,width,ftxui::Color::Cyan,ftxui::Color::Green),width);
+                    check(output.find("GRÁFICO DE SPEEDUP")==output.npos,"obsolete scaling renderer still used");
+                    if(tab==ScalingTab::Summary) check(output.find("Aceleración")!=output.npos && output.find("●")!=output.npos,"compact summary or measured plot missing");
+                    if(tab==ScalingTab::Samples) {
+                        check(output.find("ESTADÍSTICAS POR CONFIGURACIÓN")!=output.npos,"scaling statistics missing");
+                        if(engine==Engine::CUDA) check(output.find("bloque 8×8")!=output.npos && output.find("bloque 16×16")!=output.npos,"CUDA block statistics indistinguishable");
+                    }
+                    if(tab==ScalingTab::Method) check(output.find("CÓMO LEER LA GRÁFICA")!=output.npos,"scaling graph method missing");
+                }
+            }
+            if(engine==Engine::CUDA) {
+                auto plot=scalingPlotPoints(every);
+                check(plot.size()==2 && plot[0].label=="8x8" && plot[1].label=="16x16","CUDA categories missing");
+            }
+            every.study->complete=false;
+            check(scalingPlotPoints(every).empty(),"incomplete study plotted as valid");
+        }
         result.study->configurations.erase(result.study->configurations.begin());result.study->summaries.clear();result.study->samples.clear();result.study->sessions.clear();
         text=render(comparisonRows(result,"blinker",ComparisonTab::Summary,80,ftxui::Color::Cyan,ftxui::Color::Green),80);
         check(text.find("Sin participante Secuencial")!=text.npos,"missing baseline warning");

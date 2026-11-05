@@ -126,10 +126,10 @@ std::vector<ftxui::Element> comparisonRows(const ExperimentResult& result,
         const auto input=(result.input.generated?std::string("Tablero generado"):patternName)+
             " de "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height);
         if(tab==ComparisonTab::Summary)
-            return comparisonStudySummaryRows(*result.study,input,columns,accent,positive);
+            return studySummaryRows(*result.study,input,columns,accent,positive);
         if(tab==ComparisonTab::Samples)
-            return comparisonStudySampleRows(*result.study,columns,accent,positive,sampleDetails);
-        return comparisonStudyMethodRows(*result.study,columns,accent,positive,methodDetails);
+            return studySampleRows(*result.study,columns,accent,positive,sampleDetails);
+        return studyMethodRows(*result.study,columns,accent,positive,methodDetails);
     }
 
     const auto& s = result.summary;

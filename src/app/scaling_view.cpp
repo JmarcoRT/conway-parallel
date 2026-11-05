@@ -160,11 +160,13 @@ std::string rounded(double value,int precision) {
     if((value>0 && value<0.001) || value>=1e6) return number(value);
     std::ostringstream out;out<<std::fixed<<std::setprecision(precision)<<value;return out.str();
 }
-void openMPGraph(Elements& rows,const ScalingResult& result,int columns,Color accent,Color positive,
-    const ScalingPoint* fastest) {
+void scalingGraph(Elements& rows,const ScalingResult& result,int columns,Color accent,Color positive,
+    std::optional<int> fastest) {
     const auto points=scalingPlotPoints(result);
     const auto muted=Color::RGB(150,160,170);
-    rows.push_back(text("ACELERACIÓN SEGÚN LOS HILOS")|bold|color(accent));
+    const bool cuda=result.config.parallelEngine==Engine::CUDA;
+    const bool mpi=result.config.parallelEngine==Engine::MPI;
+    rows.push_back(text(cuda?"ACELERACIÓN SEGÚN EL BLOQUE":mpi?"ACELERACIÓN SEGÚN LOS PROCESOS":"ACELERACIÓN SEGÚN LOS HILOS")|bold|color(accent));
     rows.push_back(text(" "));
     if(points.empty()) {rows.push_back(paragraph("Gráfico N/D: no hay aceleraciones válidas.")|color(muted));return;}
     long double maximum=1,minimum=1;
@@ -204,7 +206,12 @@ void openMPGraph(Elements& rows,const ScalingResult& result,int columns,Color ac
     }
     const int width=std::clamp(columns-tickWidth-2,12,72);
     const auto y=[&](long double v){return std::clamp(static_cast<int>(std::round(transform(v)/top*height)),0,height);};
-    const auto x=[&](int requested){return std::clamp(static_cast<int>(std::round(static_cast<long double>(requested)/maxRequest*(width-1))),0,width-1);};
+    const auto x=[&](int requested){
+        const auto category=std::find_if(points.begin(),points.end(),[&](const auto& point){return point.requestedThreads==requested;});
+        const auto position=cuda?(points.size()==1?0.5L:static_cast<long double>(std::distance(points.begin(),category))/(points.size()-1)):
+            static_cast<long double>(requested)/maxRequest;
+        return std::clamp(static_cast<int>(std::round(position*(width-1))),0,width-1);
+    };
     const int baseline=y(1);
     if(logarithmic) rows.push_back(paragraph("Escala vertical log1p(S) por amplitud de valores.")|color(muted));
     bool collision=false;
@@ -215,7 +222,7 @@ void openMPGraph(Elements& rows,const ScalingResult& result,int columns,Color ac
         for(int col=0;col<width;++col) {
             int hits=0;bool best=false;
             for(const auto& point:points) if(x(point.requestedThreads)==col && y(point.speedup)==level) {
-                ++hits;best=best || (fastest && point.requestedThreads==fastest->requestedThreads);
+                ++hits;best=best || (fastest && point.requestedThreads==*fastest);
             }
             collision=collision || hits>1;
             line.push_back(text(hits>1?"◆":hits?"●":level==baseline?"┄":" ")|
@@ -228,7 +235,7 @@ void openMPGraph(Elements& rows,const ScalingResult& result,int columns,Color ac
     // Stagger crowded labels so every requested count remains visible.
     std::vector<std::string> labels;
     for(const auto& point:points) {
-        const auto label=std::to_string(point.requestedThreads);
+        const auto label=point.label.empty()?std::to_string(point.requestedThreads):point.label;
         const int begin=std::clamp(x(point.requestedThreads)-static_cast<int>(label.size())/2,0,width-static_cast<int>(label.size()));
         std::size_t row=0;
         for(;row<labels.size();++row) {
@@ -242,11 +249,12 @@ void openMPGraph(Elements& rows,const ScalingResult& result,int columns,Color ac
     }
     for(const auto& label:labels) rows.push_back(text(std::string(tickWidth+1,' ')+label)|color(muted));
     rows.push_back(text(" "));
-    rows.push_back(paragraph("Hilos solicitados (escala proporcional)")|color(muted));
+    rows.push_back(paragraph(cuda?"Bloques CUDA (categorías en una GPU)":mpi?"Procesos solicitados (escala proporcional)":"Hilos solicitados (escala proporcional)")|color(muted));
     rows.push_back(paragraph("● Medición    1× Igual tiempo que Secuencial")|color(muted));
     rows.push_back(paragraph("Verde: configuración con menor tiempo observado.")|color(muted));
     if(collision) rows.push_back(paragraph("◆ Mediciones en la misma celda; valores exactos en la tabla.")|color(muted));
-    if(points.size()<result.summary.points.size()) rows.push_back(paragraph("Se omiten las configuraciones sin aceleración válida; no equivalen a cero.")|color(muted));
+    const auto configurationCount=result.study?static_cast<std::size_t>(std::count_if(result.study->configurations.begin(),result.study->configurations.end(),[&](const auto& c){return c.engine==result.config.parallelEngine;})):result.summary.points.size();
+    if(points.size()<configurationCount) rows.push_back(paragraph("Se omiten las configuraciones sin aceleración válida; no equivalen a cero.")|color(muted));
 }
 Elements openMPSummary(const ScalingResult& result,const std::string& patternName,int columns,Color accent,Color positive) {
     const auto muted=Color::RGB(150,160,170);
@@ -330,7 +338,7 @@ Elements openMPSummary(const ScalingResult& result,const std::string& patternNam
             tableRows.push_back(paragraph(std::to_string(point->requestedThreads)+" solicitados: se observaron "+threads(s)+" hilos. Eficiencia basada en los observados.")|color(caution));
     }
     Elements chartRows;
-    openMPGraph(chartRows,result,beside?columns-tableWidth-4:columns,accent,positive,fastest);
+    scalingGraph(chartRows,result,beside?columns-tableWidth-4:columns,accent,positive,fastest?std::optional<int>(fastest->requestedThreads):std::nullopt);
     if(beside) {
         // Keep each line a scroll target, including in wide, short terminals.
         const auto count=std::max(tableRows.size(),chartRows.size());
@@ -352,75 +360,66 @@ Elements openMPSummary(const ScalingResult& result,const std::string& patternNam
     } else rows.push_back(paragraph("Sin mediciones válidas para identificar el menor tiempo.")|color(caution));
     return rows;
 }
-void graph(Elements& rows,const ScalingResult& result,int columns,Color accent,bool compact=false) {
-    const auto points=scalingPlotPoints(result);
-    const std::string resource=result.config.parallelEngine==Engine::MPI?"procesos":"hilos";
-    if (points.empty()) { rows.push_back(text("Gráfico N/D: no hay speedups válidos.")); return; }
-    long double maximum=1, minimum=1;
-    for (const auto& p : points) { maximum=std::max(maximum,static_cast<long double>(p.speedup)); minimum=std::min(minimum,static_cast<long double>(p.speedup)); }
-    const bool logarithmic=maximum/minimum>1000;
-    auto transform=[&](long double v) { return logarithmic ? std::log1p(v) : v; };
-    const auto top=transform(maximum);
-    constexpr int height=6;
-    int slot=3;
-    for (const auto& p : points) slot=std::max(slot,static_cast<int>(std::to_string(p.requestedThreads).size())+2);
-    const int capacity=std::max(1,(columns-16)/slot);
-    rows.push_back(paragraph(std::string("Eje Y: speedup · X: "+resource+" · escala ")+(logarithmic ? "log1p(S)" : "lineal")+(compact ? "" : ". Referencia 1.00×: igual tiempo que el secuencial.")) | dim);
-    // Discrete categories, labelled with the actual request. Split horizontally
-    // into groups rather than clipping labels; every group uses the same Y scale.
-    for (std::size_t start=0;start<points.size();start+=capacity) {
-        const auto count=std::min<std::size_t>(capacity,points.size()-start);
-        const int width=static_cast<int>(count)*slot;
-        const auto level=[&](long double v) { return std::clamp(static_cast<int>(std::round(transform(v)/top*height)),0,height); };
-        const int reference=level(1);
-        for (int y=height;y>=0;--y) {
-            long double tick=top*y/height;
-            if (logarithmic) tick=std::expm1(tick);
-            std::string line(static_cast<std::size_t>(width),y==reference ? '-' : ' ');
-            for (std::size_t i=0;i<count;++i)
-                if (level(points[start+i].speedup)==y) line[i*slot+slot/2]='*';
-            rows.push_back(hbox({text(number(tick)) | size(WIDTH,EQUAL,14),text("│"),text(line) | color(accent)}));
-        }
-        std::string labels;
-        for (std::size_t i=0;i<count;++i) {
-            auto value=std::to_string(points[start+i].requestedThreads);
-            const auto pad=(slot-static_cast<int>(value.size()))/2;
-            labels+=std::string(pad,' ')+value+std::string(slot-pad-value.size(),' ');
-        }
-        rows.push_back(hbox({text(result.config.parallelEngine==Engine::MPI?"Procesos →":"Hilos →") | size(WIDTH,EQUAL,15),text(labels)}));
-    }
-    rows.push_back(paragraph(compact ? "*: medido · --: 1.00× (celda cercana). X: "+resource+" solicitados, categorías ordenadas." : "*: speedup válido observado; --: referencia 1.00× (celda más cercana). Eje X: "+resource+" solicitados como categorías ordenadas; sin interpolación ni línea ideal. N/D se omite, nunca se dibuja como cero.") | dim);
-}
+
 }
 std::vector<ScalingPlotPoint> scalingPlotPoints(const ScalingResult& result) {
     std::vector<ScalingPlotPoint> points;
     if(result.study) {
-        for(const auto& summary:result.study->summaries) {
-            const auto& c=result.study->configurations[summary.configurationIndex];
-            if(c.engine==Engine::MPI && summary.valid && summary.speedup && std::isfinite(*summary.speedup) && *summary.speedup>0)
-                points.push_back({*c.requestedProcesses,*summary.speedup});
+        if(!result.study->complete || !result.study->cleanupConfirmed) return points;
+        int category=0;
+        for(std::size_t index=0;index<result.study->configurations.size();++index) {
+            const auto& c=result.study->configurations[index];
+            if(c.engine!=result.config.parallelEngine) continue;
+            ++category;
+            const auto summary=std::find_if(result.study->summaries.begin(),result.study->summaries.end(),[&](const auto& s){return s.configurationIndex==index;});
+            if(summary==result.study->summaries.end() || !summary->valid || !summary->equivalent ||
+               !summary->speedup || !std::isfinite(*summary->speedup) || *summary->speedup<=0) continue;
+            if(c.engine==Engine::CUDA && c.cudaBlock) points.push_back({category,*summary->speedup,std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y)});
+            else if(c.engine==Engine::MPI && c.requestedProcesses) points.push_back({*c.requestedProcesses,*summary->speedup,{}});
+            else if(c.engine==Engine::OpenMP && c.requestedThreads) points.push_back({*c.requestedThreads,*summary->speedup,{}});
         }
         std::stable_sort(points.begin(),points.end(),[](const auto& a,const auto& b){return a.requestedThreads<b.requestedThreads;});
         return points;
     }
-    for (const auto* p : sorted(result)) if (validSpeedup(p->summary)) points.push_back({p->requestedThreads,*p->summary.speedup});
+    for (const auto* p : sorted(result)) if (validSpeedup(p->summary)) points.push_back({p->requestedThreads,*p->summary.speedup,{}});
     return points;
 }
 std::vector<Element> scalingRows(const ScalingResult& result,const std::string& patternName,
     ScalingTab tab,int columns,Color accent,Color positive,bool sampleDetails,bool methodDetails) {
     if(result.study) {
-        auto rows=experimentalStudyRows(*result.study,(result.input.generated?std::string("Tablero generado"):patternName)+" · "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height),static_cast<int>(tab),columns,accent,positive);
-        if(tab==ScalingTab::Summary) {
-            rows.push_back(paragraph("Referencia secuencial compartida por ronda."));
-            rows.push_back(text("GRÁFICO DE SPEEDUP")|bold|color(accent));
-            if(result.config.parallelEngine==Engine::CUDA) {
-                rows.push_back(paragraph("Configuraciones de bloque en una GPU; no escalabilidad por número de núcleos.")|dim);
-                for(const auto& point:result.study->summaries) {
-                    const auto& c=result.study->configurations[point.configurationIndex];
-                    if(c.engine==Engine::CUDA)rows.push_back(text(std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y)+": "+(point.speedup?number(*point.speedup)+"×":"N/D")));
-                }
-            } else graph(rows,result,columns,accent);
+        const auto& study=*result.study;
+        const auto engine=result.config.parallelEngine;
+        if(tab==ScalingTab::Samples) return studySampleRows(study,columns,accent,positive,sampleDetails,engine);
+        if(tab==ScalingTab::Method) return studyMethodRows(study,columns,accent,positive,methodDetails,engine);
+        const auto input=(result.input.generated?std::string("Tablero generado"):patternName)+" de "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height);
+        auto rows=studySummaryRows(study,input,columns,accent,positive,engine);
+        rows.push_back(text(" "));
+        const StudySummary* fastest=nullptr;
+        std::optional<int> bestCoordinate;
+        int category=0;
+        for(std::size_t index=0;index<study.configurations.size();++index) {
+            const auto& c=study.configurations[index];
+            if(c.engine!=engine) continue;
+            ++category;
+            const auto point=std::find_if(study.summaries.begin(),study.summaries.end(),[&](const auto& s){return s.configurationIndex==index;});
+            if(!study.complete || !study.cleanupConfirmed || point==study.summaries.end() || !point->valid || !point->equivalent ||
+               !point->statistics || !std::isfinite(point->statistics->medianMs) || point->statistics->medianMs<0 ||
+               !point->speedup || !std::isfinite(*point->speedup) || *point->speedup<=0) continue;
+            if(!fastest || point->statistics->medianMs<fastest->statistics->medianMs) {
+                fastest=&*point;
+                bestCoordinate=engine==Engine::CUDA?std::optional<int>(category):engine==Engine::MPI?c.requestedProcesses:c.requestedThreads;
+            }
         }
+        scalingGraph(rows,result,columns,accent,positive,bestCoordinate);
+        rows.push_back(text(" "));
+        if(engine==Engine::CUDA) rows.push_back(paragraph("Se comparan bloques en una misma GPU. La eficiencia no aplica.")|dim);
+        if(fastest) {
+            const auto& c=study.configurations[fastest->configurationIndex];
+            const std::string configuration=engine==Engine::CUDA?"bloque "+std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y):
+                std::to_string(bestCoordinate.value_or(0))+(engine==Engine::MPI?(bestCoordinate==1?" proceso solicitado":" procesos solicitados"):(bestCoordinate==1?" hilo solicitado":" hilos solicitados"));
+            rows.push_back(paragraph("Menor tiempo observado: "+configuration)|bold|color(positive));
+            rows.push_back(paragraph(number(fastest->statistics->medianMs)+" ms. Aceleración de "+rounded(*fastest->speedup,2)+"× frente a Secuencial."));
+        } else rows.push_back(paragraph("Sin mediciones válidas para identificar el menor tiempo.")|color(Color::RGB(224,185,112)));
         return rows;
     }
 

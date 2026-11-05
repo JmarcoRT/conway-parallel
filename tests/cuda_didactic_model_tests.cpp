@@ -43,6 +43,11 @@ int main() {
                 require(f.column==bx*16+tx && f.row==by*16+ty && f.cell.valid==(f.column<35 && f.row<19),"Coordinate mapping");
             }
         }
+        for(int i=0;i<20;++i) model.increaseSpeed();
+        require(model.speed()==8,"CUDA playback speed upper limit");
+        for(int i=0;i<20;++i) model.decreaseSpeed();
+        require(model.speed()==.25,"CUDA playback speed lower limit");
+        model.increaseSpeed();require(model.speed()==.5,"CUDA speed sequence");
         const auto revision=model.revision();const auto* frame=&model.frame();
         for(int i=0;i<100;++i)require(&model.frame()==frame && model.revision()==revision,"Render getter recomputed cache");
         require(detail::sameGameBuffers(game,saved),"Exploration mutated buffers/counters");

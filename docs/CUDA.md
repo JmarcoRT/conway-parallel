@@ -425,19 +425,22 @@ no se ejecutó en GTX 1650. No se probó pérdida real de GPU ni agotamiento rea
 VRAM. No hay mediciones de rendimiento ni CUDA didáctico/benchmark. Resultados,
 alcance y comandos CTest en [CUDA_CHECKPOINT.md](CUDA_CHECKPOINT.md).
 
-## Didáctico CUDA manual (2026-10-29)
+## Didáctico CUDA: exploración y reproducción
 
 Con CUDA seleccionado (M → G), D abre el didáctico; también D desde la simulación
 normal. Se reutiliza su misma SimulationSession/Game: no se duplica el propietario
 GPU ni se captura una generación anticipada. La reproducción normal se pausa y
-se descartan sus ticks pendientes al entrar. No hay reproducción automática de
-la selección ni controles de velocidad en esta versión.
+se descartan sus ticks pendientes al entrar. Espacio/P activa o pausa el avance
+de generaciones CUDA reales; +/- selecciona 0.25x, 0.5x, 1x, 2x, 4x u 8x. La
+selección de hilos sigue siendo manual. Se confirma una generación por tick, sin
+acumular pasos pendientes cuando el cálculo tarda más que el intervalo elegido.
 
-El aviso «Exploración conceptual; no representa el orden de ejecución GPU» queda
-visible en tablero y detalle, también al reducir la terminal. El tablero usa las
+El encabezado identifica la vista como conceptual, también al reducir la terminal.
+V explica que no representa el orden de ejecución de los hilos GPU y muestra
+el modelo de la GPU. Reproducción, pausa y velocidad se muestran en el encabezado. El tablero usa las
 primitivas existentes de célula/borde, con divisiones entre bloques, contorno del
 bloque seleccionado, borde doble de la célula y borde grueso de vecinos. Las
-posiciones exteriores usan ×. Las divisiones no son fronteras muertas: vecinos
+posiciones exteriores se explican sin dibujarlas como células del tablero. Las divisiones no son fronteras muertas: vecinos
 válidos de otros bloques participan normalmente en B3/S23.
 
 | Control en el didáctico CUDA | Acción |
@@ -445,7 +448,9 @@ válidos de otros bloques participan normalmente en B3/S23.
 | [ / ] | Bloque anterior/siguiente, conservando el hilo; sin wrap en extremos |
 | H/J/K/L | Hilo izquierda/abajo/arriba/derecha dentro del bloque |
 | N | Siguiente hilo del mismo bloque; se detiene al final |
-| G | Una generación CUDA real, no un paso de exploración |
+| Espacio/P | Reproducir o pausar generaciones CUDA reales |
+| + / - | Aumentar o reducir velocidad, de 0.25x a 8x |
+| G | Pausar y avanzar una generación CUDA real |
 | B | Preset 1=8×8, 2=16×16 predeterminado, 3=32×8; Enter/atajo confirma, Esc cancela |
 | Flechas | Viewport; la siguiente selección vuelve a seguir el cursor |
 | V | Alternar tablero y detalle ampliado |
@@ -577,3 +582,24 @@ actual y siguiente, separados en secciones con espacio. El siguiente estado es
 una predicción de la regla; G calcula la generación completa en CUDA. V abre
 la explicación con fórmulas, vecinos, reglas y controles; PgUp/PgDn desplazan
 esa ayuda y V vuelve al tablero. A añade un resumen acotado de cobertura.
+
+### Reparto por bloques y cálculo visible por hilo
+
+El tablero conserva dos caracteres interiores por celda. Las celdas muertas
+usan un fondo suave por bloque; las vivas conservan el verde. Los contornos y
+las marcas de la tabla usan la misma paleta. El bloque seleccionado conserva su
+contorno cian y la celda seleccionada y sus vecinos conservan los bordes amarillo
+y azul. Los colores identifican reparto, no orden ni finalización de bloques.
+
+La tabla muestra hilos lanzados y celdas válidas por bloque, con anchuras naturales
+sin expansión. Para 17x17 y bloques 16x16, las celdas válidas son 256, 16, 16 y 1;
+los cuatro bloques lanzan 256 hilos cada uno. Las listas largas muestran una
+página que sigue la selección de bloque; no se recorre el lanzamiento completo
+al redibujar.
+
+El panel del hilo muestra los ocho vecinos en una matriz 3x3, su suma, la regla
+B3/S23 aplicable y el siguiente estado previsto. Usa la evaluación CPU compartida
+ya capturada para la celda; G y la reproducción confirman generaciones CUDA
+reales. Los vecinos exteriores se identifican con un guion y aportan cero. Un
+hilo exterior no se dibuja como otra celda ni recibe una evaluación inventada.
+PgUp/PgDn desplaza el panel si no cabe; V reúne la explicación y los controles.

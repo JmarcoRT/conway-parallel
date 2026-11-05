@@ -254,5 +254,41 @@ Comparación de motores ofrece CUDA con un bloque 8x8, 16x16 o 32x8. Escalabilid
 ofrece CUDA como estudio de bloques en una GPU, con una lista sin duplicados.
 Resultados de la sesión conserva resumen, muestras y método. El tiempo principal
 es evolución residente; preparación, descarga y operación completa aparecen
-separados en las muestras. Eficiencia CUDA es N/D. Sin disponibilidad CUDA se
+separados en las muestras. La eficiencia CUDA no aplica (se representa con un guion). Sin disponibilidad CUDA se
 muestra el diagnóstico y no se sustituye por CPU. Véase [CUDA_BENCHMARK.md](CUDA_BENCHMARK.md).
+
+### Cobertura de las vistas de benchmark
+
+| Estudio | Motores/configuraciones | Resumen | Muestras | Método |
+|---|---|---|---|---|
+| Comparación de motores | Secuencial, OpenMP, MPI y CUDA | Tabla compacta | Tablas por motor y ronda | Explicación breve |
+| Escalabilidad OpenMP | Hilos solicitados y observados | Tabla y gráfica proporcional | Tablas por configuración y ronda | Procedimiento y gráfica |
+| Escalabilidad MPI | Procesos solicitados y observados | Tabla y gráfica proporcional | Tablas por configuración y ronda | Procedimiento, comunicación y gráfica |
+| Bloques CUDA | Bloques 8x8, 16x16 y 32x8 en una GPU | Tabla y gráfica categórica | Estadísticas por bloque y mediciones | Tiempo residente y comparación de bloques |
+
+D muestra u oculta los detalles técnicos en Muestras y Método de todos estos
+estudios. Las gráficas comparten el mismo formato y no dibujan valores N/D como
+cero. En CUDA, cambiar bloques no equivale a aumentar recursos físicos; la
+aceleración usa la referencia secuencial y la eficiencia no aplica. Los estados
+incompletos, resultados distintos y fallos de limpieza permanecen visibles.
+
+### Presentación y reproducción didáctica MPI/CUDA
+
+MPI muestra generación, estado de reproducción, velocidad y paso actual, con el
+paso en cian, reproducción en verde suave y pausa en ámbar. Las filas usan texto
+RGB claro sobre fondo oscuro y una marca del color del proceso. Sus celdas tienen
+dos caracteres interiores, igual que CUDA; el ancho sobrante no estira el tablero.
+La captura técnica y la leyenda completa se consultan con D.
+
+CUDA tiene un panel propio separado del contexto del patrón. Espacio/P reproduce
+o pausa generaciones reales y +/- cambia entre 0.25x, 0.5x, 1x, 2x, 4x y 8x.
+G pausa y avanza una generación; N y HJKL exploran hilos sin calcular generaciones.
+Cada tick confirma como máximo una generación y refresca la evaluación de la
+celda seleccionada. Salir, abrir ajustes de bloque, reiniciar o recuperar detiene
+la reproducción. V conserva la explicación conceptual y los controles completos.
+
+La didáctica CUDA muestra el reparto por bloques con tintes suaves y una tabla
+compacta de hilos/celdas válidas. El hilo seleccionado presenta una matriz 3x3,
+la suma de sus vecinos y la regla B3/S23 concreta, identificada como predicción
+CPU para la próxima generación. La tabla sigue el bloque seleccionado y no
+ensancha las celdas ni cambia el tablero al activar la cobertura A.

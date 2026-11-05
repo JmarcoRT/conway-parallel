@@ -41,7 +41,7 @@ void CudaDidacticController::refresh(const Game& game) {
 }
 void CudaDidacticController::enter(SimulationSession& session) {
     if(session.engine()!=Engine::CUDA)throw std::logic_error("Didáctico CUDA requiere una sesión CUDA");
-    session.pause();refresh(session.game());
+    session.pause();elapsed_={};refresh(session.game());
 }
 void CudaDidacticController::selectBlock(std::size_t x,std::size_t y,const Game& game) {
     if(!initialized_ || x>=frame_.geometry.gridX || y>=frame_.geometry.gridY)
@@ -73,8 +73,26 @@ void CudaDidacticController::nextThread(const Game& game) {
     const auto next=std::min(index+1,frame_.geometry.threadsPerBlock-1);
     selectThread(next%frame_.geometry.block.x,next/frame_.geometry.block.x,game);
 }
+void CudaDidacticController::increaseSpeed() {
+    for(double value:{.25,.5,1.,2.,4.,8.}) if(value>speed_+1e-9) {speed_=value;elapsed_={};return;}
+}
+void CudaDidacticController::decreaseSpeed() {
+    for(double value:{8.,4.,2.,1.,.5,.25}) if(value<speed_-1e-9) {speed_=value;elapsed_={};return;}
+}
+bool CudaDidacticController::tick(SimulationSession& session,std::chrono::nanoseconds elapsed) {
+    if(!initialized_ || session.engine()!=Engine::CUDA || session.game().engine()!=Engine::CUDA || !session.isRunning() || session.busy() ||
+       session.closed() || !session.error().empty()) {elapsed_={};return false;}
+    if(elapsed.count()>0) elapsed_+=static_cast<long double>(elapsed.count());
+    if(elapsed_*speed_<1000000000.L) return false;
+    elapsed_={};
+    const auto generation=session.game().generation();
+    session.advanceIfRunning();
+    if(!session.error().empty()) {session.pause();return false;}
+    if(session.game().generation()==generation) return false;
+    refresh(session.game());return true;
+}
 bool CudaDidacticController::advance(SimulationSession& session) {
-    session.pause();
+    session.pause();elapsed_={};
     if(session.engine()!=Engine::CUDA || session.game().engine()!=Engine::CUDA || session.busy() || session.closed() || !session.error().empty())return false;
     session.step();
     if(!session.error().empty())return false;
@@ -82,12 +100,12 @@ bool CudaDidacticController::advance(SimulationSession& session) {
 }
 bool CudaDidacticController::reset(SimulationSession& session) {
     if(session.engine()!=Engine::CUDA)return false;
-    session.pause();session.reset();if(!session.error().empty() || session.busy())return false;
+    session.pause();elapsed_={};session.reset();if(!session.error().empty() || session.busy())return false;
     initialized_=false;refresh(session.game());return true;
 }
 bool CudaDidacticController::recover(SimulationSession& session) {
     if(session.engine()!=Engine::CUDA)return false;
-    session.pause();session.recover();if(!session.error().empty() || session.busy())return false;
+    session.pause();elapsed_={};session.recover();if(!session.error().empty() || session.busy())return false;
     refresh(session.game());return true;
 }
 }
