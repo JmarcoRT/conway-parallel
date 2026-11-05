@@ -237,3 +237,13 @@ Se conserva al volver al menú y entrar de nuevo. El aviso conceptual queda visi
 la predicción es CPU con B3/S23 compartida y se distingue del avance G real.
 A 40×18 se prioriza tablero y detalle esencial, sin consultar CUDA, copiar el
 estado completo ni reconstruir mapas al renderizar.
+
+### Explicación MPI por etapas
+
+Las seis etapas muestran el reparto, los dos intercambios de bordes, el cálculo
+de una celda, la actualización del tablero y el resultado. El resumen del proceso
+seleccionado usa títulos discretos y bloques separados; conserva las capturas
+reales y muestra únicamente los tableros correspondientes a la etapa actual.
+D abre la ayuda técnica y vuelve a la vista anterior sin avanzar la generación.
+V conserva la navegación entre vista global, local y ayuda. Flechas y Home/End
+desplazan el contenido; [ y ] cambian el proceso seleccionado.
