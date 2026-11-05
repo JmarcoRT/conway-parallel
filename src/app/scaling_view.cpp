@@ -123,7 +123,13 @@ std::vector<Element> scalingRows(const ScalingResult& result,const std::string& 
         if(tab==ScalingTab::Summary) {
             rows.push_back(paragraph("Referencia secuencial compartida por ronda."));
             rows.push_back(text("GRÁFICO DE SPEEDUP")|bold|color(accent));
-            graph(rows,result,columns,accent);
+            if(result.config.parallelEngine==Engine::CUDA) {
+                rows.push_back(paragraph("Configuraciones de bloque en una GPU; no escalabilidad por número de núcleos.")|dim);
+                for(const auto& point:result.study->summaries) {
+                    const auto& c=result.study->configurations[point.configurationIndex];
+                    if(c.engine==Engine::CUDA)rows.push_back(text(std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y)+": "+(point.speedup?number(*point.speedup)+"×":"N/D")));
+                }
+            } else graph(rows,result,columns,accent);
         }
         return rows;
     }

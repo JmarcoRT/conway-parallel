@@ -1956,6 +1956,10 @@ private:
         auto gameBytes = [&](const Game& game) {
             return checkedMultiply(2, checkedMultiply(checkedAdd(game.width(), 2), checkedAdd(game.height(), 2)));
         };
+        if(normalSession_) {
+            bytes=checkedAdd(bytes,checkedAdd(normalSession_->retainedInputBytes(),gameBytes(normalSession_->game())));
+            if(normalSession_->preview())bytes=checkedAdd(bytes,gameBytes(*normalSession_->preview()));
+        }
         if(catalogPreview_.initial())bytes=checkedAdd(bytes,catalogPreview_.initial()->cells.capacity());
         if(catalogPreview_.session())bytes=checkedAdd(bytes,gameBytes(catalogPreview_.session()->game()));
         if (state_.didactic) {
@@ -1977,6 +1981,12 @@ private:
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
         if (state_.benchmarkRunning || (state_.didactic && state_.didactic->busy()))
             return "Espera a que termine la preparación o medición activa.";
+        if(normalSession_) {
+            normalSession_->pause();playbackTimer_.request_stop();
+            if(normalSession_->busy())return "Espera al cierre o cálculo de la simulación normal.";
+            if(normalSession_->engine()==Engine::MPI && !normalSession_->closed()) {normalSession_->close();return "Espera al cierre de la simulación MPI antes de medir.";}
+            if(!normalSession_->releaseCudaResources())return "No se pudo confirmar la liberación de recursos CUDA; reinicia la aplicación antes de medir.";
+        }
         try {
             const auto bytes = retainedUiPayload();
             if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
@@ -2040,7 +2050,7 @@ private:
         rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
         rows.push_back(ftxui::paragraph("Contexto conservado: " + stored.context.studyId) | ftxui::dim);
         return panel(session ? "RESULTADOS DE LA SESIÓN" :
-            std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP",
+            std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::CUDA?"BLOQUES CUDA":std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP",
             resultViewport(std::move(rows), std::move(tabs)));
     }
 
@@ -2089,7 +2099,7 @@ private:
                 ? ftxui::Color::RGB(98, 232, 137) : identityCyan()));
         if (d.id) {
             rows.push_back(ftxui::text("Ejecución #" + std::to_string(d.id) + " · " +
-                (d.scaling ? (d.config.scaling.parallelEngine==Engine::MPI?"Escalabilidad MPI":"Escalabilidad OpenMP") : "Comparación de motores")));
+                (d.scaling ? (d.config.scaling.parallelEngine==Engine::CUDA?"Bloques CUDA":d.config.scaling.parallelEngine==Engine::MPI?"Escalabilidad MPI":"Escalabilidad OpenMP") : "Comparación de motores")));
             rows.push_back(ftxui::paragraph("Entrada: " + (d.config.generated ? std::string("Tablero generado") : d.patternName) +
                 " · " + std::to_string(d.width) + " × " + std::to_string(d.height) + " (ancho × alto)"));
             const auto& c = d.config.comparison;
@@ -2099,8 +2109,12 @@ private:
                 " · Repeticiones: " + std::to_string(d.scaling ? sc.repetitions : c.repetitions)));
             std::string resources;
             if(d.scaling) {
+                if(sc.parallelEngine==Engine::CUDA) {
+                    resources="Bloques CUDA: ";for(auto block:sc.cudaBlocks)resources+=std::to_string(block.x)+"x"+std::to_string(block.y)+" ";
+                } else {
                 resources=sc.parallelEngine==Engine::MPI?"Procesos solicitados: ":"Hilos solicitados: ";
                 for(auto p:sc.parallelEngine==Engine::MPI?sc.requestedProcesses:sc.requestedThreads) resources+=std::to_string(p)+" ";
+                }
             } else {
                 resources="Participantes: ";
                 for(const auto& participant:c.participants) resources+=configurationName(participant)+" ";
@@ -2139,9 +2153,9 @@ private:
 
     Element renderBenchmarkMenu() {
         static const std::array<const char*, 3> descriptions{
-            "Selecciona participantes entre Secuencial, OpenMP y MPI.",
-            "Configura escalabilidad OpenMP (hilos) o MPI (procesos).",
-            "Consulta la ejecución activa y el último resultado conservado.",
+            "Compara los motores con la misma entrada.",
+            "Varía hilos, procesos o tamaños de bloque CUDA.",
+            "Consulta el estado y el último resultado.",
         };
         return panel("BENCHMARK", ftxui::vbox({
             benchmarkMenu_->Render(),

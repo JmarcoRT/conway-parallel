@@ -1,6 +1,7 @@
 #include "app/experiment_execution.hpp"
 #include "experiment_input_detail.hpp"
 #include <limits>
+#include <algorithm>
 #include <stdexcept>
 
 namespace conway::app {
@@ -21,6 +22,7 @@ std::size_t retained(const StoredExperiment& stored) {
             value=checkedAdd(value,checkedMultiply(study.sessions.capacity(),sizeof(StudySession)));
             value=checkedAdd(value,checkedMultiply(study.configurations.capacity(),sizeof(ExecutionConfiguration)));
             value=checkedAdd(value,checkedMultiply(study.summaries.capacity(),sizeof(StudySummary)));
+            for(const auto& sample:study.samples)if(sample.cuda)value=checkedAdd(value,sample.cuda->deviceName.capacity()+sample.cuda->nvccVersion.capacity());
             for(const auto& session:study.sessions)
                 value=checkedAdd(value,checkedAdd(session.runtime.capacity()+session.diagnostic.capacity(),checkedMultiply(session.workerPids.capacity(),sizeof(int))));
         }
@@ -35,11 +37,14 @@ void preflight(const ExecutionDescription& d, std::size_t uiBytes, const StoredE
     const auto padded = checkedMultiply(checkedAdd(d.width, 2), checkedAdd(d.height, 2));
     auto bytes = checkedAdd(uiBytes, checkedMultiply(d.width, d.height)); // Worker input, in addition to UI.
     bytes = checkedAdd(bytes, checkedMultiply(4, padded)); // Oracle and current Game.
+    const bool hasCUDA=d.scaling?d.config.scaling.parallelEngine==Engine::CUDA:
+        std::any_of(d.config.comparison.participants.begin(),d.config.comparison.participants.end(),[](const auto& c){return c.engine==Engine::CUDA;});
+    if(hasCUDA)bytes=checkedAdd(bytes,checkedMultiply(2,padded));
     if (previous) bytes = checkedAdd(bytes, retained(*previous));
     const auto repetitions = static_cast<std::size_t>(d.scaling ? d.config.scaling.repetitions : d.config.comparison.repetitions);
-    const bool generalized=d.scaling?d.config.scaling.parallelEngine==Engine::MPI:!d.config.comparison.participants.empty();
+    const bool generalized=d.scaling?d.config.scaling.parallelEngine!=Engine::OpenMP:!d.config.comparison.participants.empty();
     const auto threads = d.scaling ? (d.config.scaling.parallelEngine==Engine::MPI?
-        d.config.scaling.requestedProcesses.size():d.config.scaling.requestedThreads.size()) :
+        d.config.scaling.requestedProcesses.size():d.config.scaling.parallelEngine==Engine::CUDA?d.config.scaling.cudaBlocks.size():d.config.scaling.requestedThreads.size()) :
         (generalized?d.config.comparison.participants.size()-1:1);
     const auto samples = checkedMultiply(checkedAdd(threads, 1), repetitions);
     if(generalized) {
@@ -87,7 +92,7 @@ bool ExperimentExecution::start(bool scaling, ExperimentFormConfig config, const
             return result.study && !result.study->cleanupConfirmed;
         },state_.latest->result)) {
         state_.phase=ExecutionPhase::Error;
-        state_.error="Previous MPI cleanup is unconfirmed; no new measurement was started.";
+        state_.error="Previous experimental cleanup is unconfirmed; no new measurement was started.";
         return true;
     }
     ExecutionDescription description{state_.description.id + 1, scaling, std::move(config), std::move(name)};
@@ -141,7 +146,7 @@ void ExperimentExecution::loop() {
                 if(!data.study) return std::string{};
                 if(!data.study->diagnostic.empty()) return data.study->diagnostic;
                 if(!data.study->complete || !data.study->cleanupConfirmed)
-                    return std::string("Experimental study is incomplete or MPI cleanup is unconfirmed.");
+                    return std::string("Experimental study is incomplete or resource cleanup is unconfirmed.");
                 return std::string{};
             },result->result);
         } catch (const std::exception& failure) { error = failure.what(); }

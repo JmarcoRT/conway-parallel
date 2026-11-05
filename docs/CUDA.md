@@ -3,8 +3,9 @@
 `Engine::CUDA` selecciona el motor local GPU mediante `Game::setEngine`.
 CUDA sigue siendo opcional (`CONWAY_ENABLE_CUDA=OFF`) y el motor predeterminado
 sigue siendo Sequential. Hay selección CUDA en FTXUI/textual y simulación normal
-con V. Hay modo didáctico CUDA manual; no hay benchmarks CUDA ni integración
-MPI+CUDA; MPI continúa en su trabajador CPU externo.
+con V y modo didáctico manual. El benchmark configurable admite comparación CUDA
+y estudio de bloques: [método y compilación](CUDA_BENCHMARK.md). MPI continúa en su
+trabajador CPU externo; no hay motor híbrido MPI+CUDA.
 
 ## Contrato de Game
 

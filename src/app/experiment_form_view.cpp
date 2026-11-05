@@ -1,6 +1,7 @@
 #include "app/experiment_form_view.hpp"
 #include "app/experiment_form.hpp"
 #include "app/controls.hpp"
+#include "app/cuda_info.hpp"
 #include <ftxui/component/component_options.hpp>
 #include <ftxui/dom/elements.hpp>
 
@@ -32,7 +33,8 @@ public:
         sequential_=Checkbox("Secuencial",&draft_.sequential,check);
         openmp_=Checkbox("OpenMP",&draft_.openmp,check);
         mpi_=Checkbox("MPI",&draft_.mpi,check);
-        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_});
+        cuda_=Checkbox("CUDA",&draft_.cuda,check);
+        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_,cuda_});
         const std::array<std::string,8> labels{"Ancho","Alto","Densidad (%)","Semilla","Generaciones","Calentamientos","Repeticiones","Hilos OpenMP"};
         Components generated,measurement;
         for(std::size_t i=0;i<8;++i) {
@@ -41,8 +43,10 @@ public:
             else if(i<7) measurement.push_back(fields_[i]);
         }
         fields_[idx(ExperimentField::Processes)]=makeField(idx(ExperimentField::Processes),"Procesos MPI");
-        measurement.push_back(Maybe(fields_[7],[this]{return scaling_ || draft_.openmp;}));
+        measurement.push_back(Maybe(fields_[7],[this]{return (scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp);}));
         measurement.push_back(Maybe(fields_[idx(ExperimentField::Processes)],[this]{return !scaling_ && draft_.mpi;}));
+        fields_[idx(ExperimentField::CudaBlocks)]=makeField(idx(ExperimentField::CudaBlocks),scaling_?"Bloques CUDA":"Bloque CUDA");
+        measurement.push_back(Maybe(fields_[idx(ExperimentField::CudaBlocks)],[this]{return scaling_?draft_.parallelEngine==2:draft_.cuda;}));
         generated_=Maybe(Container::Vertical(generated),[this]{return draft_.source==1;});
         measurement_=Container::Vertical(measurement);
         ButtonOption buttons=ButtonOption::Simple();
@@ -51,12 +55,13 @@ public:
         };
         restore_=Button("Restaurar valores estándar",[this]{restore();},buttons);
         execute_=Button("Ejecutar experimento",[this] {
+            if((scaling_?draft_.parallelEngine==2:draft_.cuda) && !cudaInfo_.available) {message_=cudaInfo_.diagnostic;return;}
             auto validation=validateExperimentForm(draft_,scaling_,input_());errors_=validation.errors;
             message_=validation.config?submit_(scaling_,*validation.config):"Revisa los campos señalados.";
             if(!validation.config) {
                 if(!errors_[idx(ExperimentField::Source)].empty()) source_->TakeFocus();
                 else if(!errors_[idx(ExperimentField::Participants)].empty()) (scaling_?parallel_:sequential_)->TakeFocus();
-                else for(auto i:{0u,1u,2u,3u,4u,5u,6u,7u,9u}) if(!errors_[i].empty()) {fields_[i]->TakeFocus();break;}
+                else for(auto i:{0u,1u,2u,3u,4u,5u,6u,7u,9u,11u}) if(!errors_[i].empty()) {fields_[i]->TakeFocus();break;}
             }
         },buttons);
         root_=Container::Vertical({source_,generated_,participants_,measurement_,restore_,execute_});Add(root_);
@@ -66,9 +71,10 @@ public:
             Components order{source_};
             if(draft_.source==1) for(std::size_t i=0;i<4;++i) order.push_back(fields_[i]);
             if(scaling_) order.push_back(parallel_);
-            else {order.push_back(sequential_);order.push_back(openmp_);order.push_back(mpi_);}
+            else {order.push_back(sequential_);order.push_back(openmp_);order.push_back(mpi_);order.push_back(cuda_);}
             for(std::size_t i=4;i<7;++i) order.push_back(fields_[i]);
-            if(scaling_ || draft_.openmp) order.push_back(fields_[7]);
+            if((scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp)) order.push_back(fields_[7]);
+            if(scaling_?draft_.parallelEngine==2:draft_.cuda)order.push_back(fields_[idx(ExperimentField::CudaBlocks)]);
             if(!scaling_ && draft_.mpi) order.push_back(fields_[idx(ExperimentField::Processes)]);
             order.push_back(restore_);order.push_back(execute_);
             std::size_t position=0;
@@ -100,6 +106,11 @@ public:
         Elements measure{text(scaling_?"MOTOR PARALELO":"PARTICIPANTES · Espacio selecciona")|bold,participants_->Render()};
         if(!errors_[idx(ExperimentField::Participants)].empty()) measure.push_back(paragraph(errors_[idx(ExperimentField::Participants)])|color(Color::Red));
         if(!scaling_ && !draft_.sequential) measure.push_back(paragraph("Sin Secuencial: speedup y eficiencia respecto de él serán N/D.")|dim);
+        if(scaling_?draft_.parallelEngine==2:draft_.cuda) {
+            measure.push_back(paragraph(cudaInfo_.diagnostic)|dim);
+            measure.push_back(paragraph(scaling_?"Comparación de bloques en una GPU; no añade GPU ni núcleos.":"Bloque: 8x8, 16x16 o 32x8.")|dim);
+        }
+        measure.push_back(text(" "));
         measure.push_back(text("MEDICIÓN")|bold);measure.push_back(measurement_->Render());
         if((scaling_ && draft_.parallelEngine==1) || (!scaling_ && draft_.mpi))
             measure.push_back(paragraph("MPI: calentamientos por sesión nueva antes de cada muestra; sin sobresuscripción.")|dim);
@@ -123,15 +134,17 @@ private:
             return vbox(std::move(rows));
         });
     }
-    void restore() {draft_=standardExperimentForm(scaling_,threads_(),input_()!=nullptr);errors_={};message_.clear();}
+    void restore() {cudaInfo_=inspectCuda(1,1);draft_=standardExperimentForm(scaling_,threads_(),input_()!=nullptr);errors_={};message_.clear();}
     bool scaling_,initialized_{false};
     std::function<const InputData*()> input_;std::function<std::string()> name_;std::function<int()> threads_;
     std::function<Element(Element)> style_;std::function<std::string(bool,ExperimentFormConfig)> submit_;
     const InputData* previousInput_{nullptr};std::size_t previousWidth_{},previousHeight_{};
     std::string previousName_,message_;
     ExperimentFormDraft draft_;std::array<std::string,kExperimentFieldCount> errors_;
-    std::vector<std::string> sources_{"Patrón cargado","Tablero generado"},engines_{"OpenMP","MPI"};
+    std::vector<std::string> sources_{"Patrón cargado","Tablero generado"},engines_{"OpenMP","MPI","CUDA · bloques"};
     std::array<Component,kExperimentFieldCount> fields_;
+    CudaUiInfo cudaInfo_;
+    Component cuda_;
     Component source_,parallel_,sequential_,openmp_,mpi_,participants_,generated_,measurement_,restore_,execute_,root_;
 };
 }

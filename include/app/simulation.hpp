@@ -42,6 +42,11 @@ public:
                    core::CudaBlockSize block=core::kDefaultCudaBlock);
     void recover();
     void close();
+    bool releaseCudaResources() noexcept {
+        pause();if(busy_)return false;
+        cudaCleanupConfirmed_=game_.releaseCudaResources() && cudaCleanupConfirmed_;return cudaCleanupConfirmed_;
+    }
+    std::size_t retainedInputBytes() const noexcept {return initialInput_.cells.capacity();}
 private:
     enum class Action { Configure, Step, Reset, Close };
     struct Worker;
@@ -57,6 +62,7 @@ private:
     std::unique_ptr<Worker> worker_;
     std::optional<Action> pending_;
     bool backgroundLocal_{false};
+    bool cudaCleanupConfirmed_{true};
     std::uint64_t epoch_{0};
     bool running_{false},busy_{false},closed_{false};
     std::string error_;

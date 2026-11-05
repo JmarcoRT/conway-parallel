@@ -195,6 +195,14 @@ void Game::setEngine(Engine engine) noexcept {
     engine_ = engine;
 }
 
+bool Game::releaseCudaResources() noexcept {
+#ifdef CONWAY_HAS_CUDA
+    const bool clean=!gpu_ || gpu_->backend.close();gpu_.reset();return clean;
+#else
+    return true;
+#endif
+}
+
 core::CudaBlockSize Game::cudaBlockSize() const noexcept { return cudaBlock_; }
 
 void Game::setCudaBlockSize(core::CudaBlockSize block) {

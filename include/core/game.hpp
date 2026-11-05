@@ -72,6 +72,7 @@ public:
     void setEngine(Engine engine) noexcept;
     Engine engine() const noexcept;
 
+    bool releaseCudaResources() noexcept; // CPU state/configuration remain confirmed.
     core::CudaBlockSize cudaBlockSize() const noexcept;
     // Requires compiled CUDA and a visible device, even before the first step.
     // Failure preserves configuration, cache and confirmed CPU state.
