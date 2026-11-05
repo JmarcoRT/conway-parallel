@@ -538,8 +538,11 @@ Resultados, comandos y límites detallados en CUDA_CHECKPOINT.md.
 El didáctico CUDA reutiliza el renderer de rejilla y geometría adaptable de los
 paneles didácticos existentes, con decoraciones opcionales. Sin decoraciones se
 conserva la salida original (pruebas de raster contra capturas previas, con y sin
-color). @1/@0 distingue selección viva/muerta; :1/:0 distingue vecinos. Ambos
-caben en células de 2 a 8 caracteres sin cambiar sus dimensiones. Contorno cian
+color). Los interiores permanecen sin texto: verde/inversa indica una célula
+viva. La selección usa borde doble amarillo y los vecinos borde grueso azul;
+sin color se conserva la diferencia entre bordes. La vista CUDA limita las
+células a 2 caracteres de ancho, sin ensancharlas al ampliar la terminal.
+Los demás paneles conservan su geometría anterior. Contorno cian
 para bloque seleccionado, invertido sin color; los interiores conservan el estilo
 original salvo los nueve marcadores posibles. Límites reales gruesos, borde de
 tablero parcial fino y recorte de viewport discontinuo; un recorte coincidente
@@ -565,3 +568,11 @@ Cargar patrón con C → M → ruta → Enter → U; M → G selecciona CUDA; D 
 el didáctico. HJKL selecciona hilo, [/] bloque, B cambia preset, A cobertura,
 V detalle, G avanza, R reinicia, Esc vuelve. Para revisar sin color, añadir
 `NO_COLOR=1` al entorno de ejecución (sin `-u NO_COLOR`).
+
+### Resumen de la selección
+
+El panel lateral muestra bloque e hilo, la celda correspondiente y sus estados
+actual y siguiente, separados en secciones con espacio. El siguiente estado es
+una predicción de la regla; G calcula la generación completa en CUDA. V abre
+la explicación con fórmulas, vecinos, reglas y controles; PgUp/PgDn desplazan
+esa ayuda y V vuelve al tablero. A añade un resumen acotado de cobertura.

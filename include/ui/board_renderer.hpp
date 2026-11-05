@@ -10,7 +10,8 @@ struct BoardGeometry {
     std::size_t board_chars=0,board_lines=0;
     bool full_board_shown=false;
 };
-BoardGeometry computeBoardGeometry(std::size_t width,std::size_t height,std::size_t columns,std::size_t rows);
+BoardGeometry computeBoardGeometry(std::size_t width,std::size_t height,std::size_t columns,std::size_t rows,
+    std::size_t maxCellChars=8);
 enum class BoardCellMark {None,Selected,Neighbor};
 struct BoardBoundary {
     bool realBlock=false,boardEdge=false,viewportCut=false;

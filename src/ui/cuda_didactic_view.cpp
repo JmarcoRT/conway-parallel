@@ -24,9 +24,13 @@ bool near(std::size_t a,std::size_t b) {return a>b?a-b<=1:b-a<=1;}
 Element board(const Game& game,const app::CudaDidacticFrame& f,BoardViewport& viewport,
               int width,int height,bool follow,const CudaDidacticPrimitives& primitives) {
     if(width<5 || height<3)return text("Amplía la terminal o V detalle");
-    auto geometry=computeBoardGeometry(width,height,game.width(),game.height());
+    // A terminal character is usually about twice as tall as it is wide.
+    // Two content columns keep cells compact, as in the didactic worker views.
+    // Keep spare horizontal space around the board rather than widening cells.
+    constexpr std::size_t maxCellChars=2;
+    auto geometry=computeBoardGeometry(width,height,game.width(),game.height(),maxCellChars);
     const bool label=!geometry.full_board_shown && height>=6;
-    if(label)geometry=computeBoardGeometry(width,height-1,game.width(),game.height());
+    if(label)geometry=computeBoardGeometry(width,height-1,game.width(),game.height(),maxCellChars);
     // An exterior thread is not a cell: don't move the real-board camera to it.
     if(follow && f.cell.valid && geometry.visible_rows && geometry.visible_cols) {
         if(f.row<viewport.row)viewport.row=f.row;
@@ -51,8 +55,8 @@ Element board(const Game& game,const app::CudaDidacticFrame& f,BoardViewport& vi
 }
 Element legend(const app::CudaDidacticFrame& f,int width,bool colors,bool coverage) {
     Elements items{
-        markedBoardCell(true,2,BoardCellMark::Selected,colors),text("/"),markedBoardCell(false,2,BoardCellMark::Selected,colors),text(width<64?" sel ":" selección  "),
-        markedBoardCell(true,2,BoardCellMark::Neighbor,colors),text("/"),markedBoardCell(false,2,BoardCellMark::Neighbor,colors),text(width<64?" vec ":" vecinos  "),
+        text("║")|bold,text(width<64?" sel ":" selección  "),
+        text("┃")|bold,text(width<64?" vec ":" vecinos  "),
         (colors?text("━")|bold|color(Color::RGB(83,191,208)):text("━")|bold|inverted),text(width<64?"B ":" bloque  "),
         text("─"),text(width<64?"T ":" fin tablero  "),text("┄"),text(width<64?"V":" recorte vista")};
     if(coverage)items.push_back(text(width<64?" A:+"+std::to_string(f.geometry.outsidePositions):
@@ -60,8 +64,48 @@ Element legend(const app::CudaDidacticFrame& f,int width,bool colors,bool covera
         std::to_string(f.geometry.gridY*f.geometry.block.y)+" +"+std::to_string(f.geometry.outsidePositions)));
     return hbox(std::move(items))|size(HEIGHT,EQUAL,1);
 }
-Elements details(const app::CudaDidacticFrame& f,const std::string& error,int width,bool coverage) {
+void heading(Elements& out,const std::string& value,int width,bool colors) {
+    const auto first=out.size();append(out,value,width);
+    for(auto i=first;i<out.size();++i) {
+        out[i]=out[i]|bold;
+        if(colors)out[i]=out[i]|color(Color::RGB(83,191,208));
+    }
+}
+Elements selectionSummary(const app::CudaDidacticFrame& f,const std::string& error,int width,bool colors,bool coverage) {
+    Elements out{text(" ")};
+    if(!error.empty()) {
+        heading(out,"Captura detenida",width,colors);
+        append(out,error,width);out.push_back(text(" "));
+    }
+    heading(out,"HILO SELECCIONADO",width,colors);
+    append(out,"Bloque: "+pair(f.blockX,f.blockY)+" · Hilo: "+pair(f.threadX,f.threadY),width);
+    append(out,"Celda: fila "+std::to_string(f.row)+", columna "+std::to_string(f.column),width);
+    append(out,"Índices desde cero",width);out.back()=out.back()|dim;
+    out.push_back(text(" "));
+    heading(out,"ESTADO DE LA CELDA",width,colors);
+    if(f.cell.valid) {
+        const auto& e=f.cell.evaluation;
+        append(out,std::string("Estado actual: ")+(e.before?"viva":"muerta"),width);
+        append(out,"Vecinos vivos: "+std::to_string(e.neighborCount),width);
+        append(out,std::string("Siguiente estado: ")+(e.after?"viva":"muerta"),width);
+        append(out,"Predicción de la regla para G"+std::to_string(f.generation+1),width);
+        out.back()=out.back()|dim;
+    } else append(out,"Posición exterior: este hilo no procesa una celda.",width);
+    if(f.selectionAdjusted) {out.push_back(text(" "));append(out,"Selección ajustada a la nueva cobertura.",width);}
+    if(coverage) {
+        out.push_back(text(" "));heading(out,"Cobertura A",width,colors);
+        append(out,"Tablero: "+std::to_string(f.width)+"x"+std::to_string(f.height)+
+            " · grid: "+std::to_string(f.geometry.gridX)+"x"+std::to_string(f.geometry.gridY),width);
+        append(out,"Posiciones exteriores: "+std::to_string(f.geometry.outsidePositions),width);
+    }
+    out.push_back(text(" "));
+    append(out,"G: calcular la siguiente generación",width);
+    append(out,"V: ver explicación y controles",width);
+    return out;
+}
+Elements details(const app::CudaDidacticFrame& f,const std::string& error,int width,bool coverage,bool colors) {
     Elements out;
+    heading(out,"CÓMO SE ASIGNA UNA CELDA",width,colors);out.push_back(text(" "));
     if(!error.empty())append(out,error,width);
     if(coverage) {
         append(out,"Cobertura A (esquema, no células): real "+std::to_string(f.width)+"x"+std::to_string(f.height)+
@@ -80,10 +124,14 @@ Elements details(const app::CudaDidacticFrame& f,const std::string& error,int wi
             }
         }
     }
+    out.push_back(text(" "));
     append(out,"Las divisiones entre bloques no son fronteras muertas: los vecinos pueden cruzarlas.",width);
     append(out,"blockIdx="+pair(f.blockX,f.blockY)+" threadIdx="+pair(f.threadX,f.threadY)+" (base cero)",width);
     append(out,"columna = "+std::to_string(f.blockX)+" * "+std::to_string(f.geometry.block.x)+" + "+std::to_string(f.threadX)+" = "+std::to_string(f.column),width);
     append(out,"fila = "+std::to_string(f.blockY)+" * "+std::to_string(f.geometry.block.y)+" + "+std::to_string(f.threadY)+" = "+std::to_string(f.row),width);
+    out.push_back(text(" "));
+    heading(out,"CÁLCULO DE LA SIGUIENTE GENERACIÓN",width,colors);
+    out.push_back(text(" "));
     if(f.cell.valid) {
         const auto& e=f.cell.evaluation;
         append(out,"Predicción CPU con regla compartida B3/S23 sobre G"+std::to_string(f.generation)+
@@ -97,8 +145,10 @@ Elements details(const app::CudaDidacticFrame& f,const std::string& error,int wi
         append(out,"Posición exterior: este hilo no procesa una célula. Sin lecturas de células ni evaluación B3/S23.",width);
         append(out,"En el kernel aporta cero a la reducción y participa en todas las barreras del bloque; no retorna antes de ellas.",width);
     }
+    out.push_back(text(" "));
+    heading(out,"CONTROLES Y LEYENDA",width,colors);out.push_back(text(" "));
     append(out,"G avanza una generación CUDA real; la predicción CPU no escribe NEXT ni avanza el tablero.",width);
-    append(out,"@1/@0: selección viva/muerta; :1/:0: vecinos. Contorno cian: bloque seleccionado, sin rellenar sus células.",width);
+    append(out,"Borde doble amarillo: celda del hilo seleccionado; borde grueso azul: vecinos. Viva: verde/inversa. Contorno cian: bloque seleccionado.",width);
     append(out,"Línea gruesa: límite real de bloque; fina: fin del tablero que corta bloque; discontinua: recorte del viewport, incluso si coincide con límite de bloque.",width);
     append(out,"A muestra cobertura en esquema compacto sin ampliar ni desplazar el tablero real. Si el hilo es exterior no se marca otra célula como sustituta.",width);
     if(f.selectionAdjusted)append(out,"Selección ajustada: la posición anterior no está en la nueva cobertura.",width);
@@ -117,20 +167,22 @@ Element renderCudaDidactic(const Game& game,const app::CudaDidacticFrame& f,cons
     const int remaining=std::max(1,height-static_cast<int>(header.size()));
     Element body;
     if(detailOnly) {
-        auto all=details(f,error,width,coverage);Elements visible;
-        const auto start=std::min(detailOffset,all.empty()?0:all.size()-1);
-        for(std::size_t i=start;i<all.size() && visible.size()<static_cast<std::size_t>(remaining);++i)visible.push_back(all[i]);
-        body=vbox(std::move(visible));
-    } else if(width>=110 && remaining>=12) {
+        auto all=details(f,error,width,coverage,primitives.colors);Elements visible;
+        const int visibleRows=std::max(1,remaining-1);
+        const auto start=std::min(detailOffset,all.size()>static_cast<std::size_t>(visibleRows)?all.size()-visibleRows:0);
+        for(std::size_t i=start;i<all.size() && visible.size()<static_cast<std::size_t>(visibleRows);++i)visible.push_back(all[i]);
+        body=vbox({vbox(std::move(visible))|flex,
+            text("V: volver al tablero · PgUp/PgDn: desplazar")|dim});
+    } else if(width>=110 && remaining>=(coverage?26:22)) {
         const int left=width*2/3;
-        auto info=details(f,error,width-left-1,coverage);
+        auto info=selectionSummary(f,error,width-left-3,primitives.colors,coverage);
         body=hbox({board(game,f,viewport,left,remaining,follow,primitives)|size(WIDTH,EQUAL,left),
-                   separator(),vbox(std::move(info))|yframe|flex});
+                   separator(),text(" "),vbox(std::move(info))|flex,text(" ")});
     } else {
         Elements summary;
         append(summary,std::string(f.selectionAdjusted?"Ajuste: ":"")+"b"+pair(f.blockX,f.blockY)+" t"+pair(f.threadX,f.threadY)+" → c"+std::to_string(f.column)+" f"+std::to_string(f.row),width);
         if(!error.empty())append(summary,"Error CUDA · V diagnóstico · U recupera",width);
-        else if(f.cell.valid)append(summary,"Pred. CPU B3/S23 compartida: "+std::to_string(f.cell.evaluation.before)+"/"+std::to_string(f.cell.evaluation.neighborCount)+"→"+std::to_string(f.cell.evaluation.after),width);
+        else if(f.cell.valid)append(summary,std::string(f.cell.evaluation.before?"Viva":"Muerta")+" · vecinos "+std::to_string(f.cell.evaluation.neighborCount)+" → "+(f.cell.evaluation.after?"viva":"muerta"),width);
         else append(summary,"Exterior: sin célula · G=CUDA real",width);
         const int boardHeight=remaining-static_cast<int>(summary.size());
         summary.push_back(board(game,f,viewport,width,boardHeight,follow,primitives)|flex);

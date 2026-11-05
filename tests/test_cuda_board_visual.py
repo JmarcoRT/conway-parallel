@@ -47,15 +47,15 @@ with tempfile.TemporaryDirectory(prefix='conway-board-visual-') as directory:
                 wait(t,'build sin CUDA');t.send('\x1b');t.send('q');assert t.process.wait(timeout=5)==0
                 print('PASS CUDA OFF selection remains unavailable with diagnostic');sys.exit(0)
             t.send('d');wait(t,'Exploración conceptual');wait(t,'G0 · B16x16')
-            wait(t,'@0');capture(t,f'pty-{w}-dead-'+('mono' if mono else 'color'))
+            wait(t,'Hilo: (0,0)');capture(t,f'pty-{w}-dead-'+('mono' if mono else 'color'))
             assert '×' not in ''.join(board(t)[1]),flat(t)
-            t.send('lljj');wait(t,'@1');wait(t,':1');wait(t,':0')
+            t.send('lljj');wait(t,'Hilo: (2,2)');assert '@1' not in ''.join(board(t)[1]) and ':1' not in ''.join(board(t)[1])
             capture(t,f'pty-{w}-live-'+('mono' if mono else 'color'))
             before=board(t);t.send('a');wait(t,'Cobertura A');assert board(t)==before,'A changed board bounds/pixels'
             capture(t,f'pty-{w}-coverage-'+('mono' if mono else 'color'))
             t.send('l'*13+'j'*13)
             if w==35:t.send(']'*5)
-            wait(t,'Posición exterior');assert '@1' not in ''.join(board(t)[1]) and '@0' not in ''.join(board(t)[1])
+            wait(t,'Posición exterior');assert '║' not in ''.join(board(t)[1])
             capture(t,f'pty-{w}-exterior-'+('mono' if mono else 'color'))
             for preset,label in [('1','B8x8'),('3','B32x8'),('2','B16x16')]:
                 t.send('b');t.send(preset);wait(t,label);wait(t,'G0 · B')

@@ -2564,7 +2564,7 @@ private:
 
     std::string footerText() const {
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
-            "G CUDA · HJKL · [/] · A cobertura · V · Esc":"HJKL hilo · [/] bloque · N explora · G CUDA real · B preset · A cobertura · R · U · V detalle · PgUp/PgDn · Esc";
+            "G CUDA · HJKL · [/] · A · V ayuda · Esc":"HJKL hilo · [/] bloque · N explora · G CUDA real · B preset · A cobertura · R · U · V ayuda · PgUp/PgDn · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?

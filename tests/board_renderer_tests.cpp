@@ -31,14 +31,15 @@ int main(int argc,char** argv) {
         auto neighbor=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(1));
         Render(selected,ui::markedBoardCell(alive,width,ui::BoardCellMark::Selected,colors));
         Render(neighbor,ui::markedBoardCell(alive,width,ui::BoardCellMark::Neighbor,colors));
-        const auto left=(width-2)/2;
-        require(selected.PixelAt(left,0).character=="@" && selected.PixelAt(left+1,0).character==(alive?"1":"0"),"Selected token lost state/width");
-        require(neighbor.PixelAt(left,0).character==":" && neighbor.PixelAt(left+1,0).character==(alive?"1":"0"),"Neighbor token lost state/width");
-        require(selected.PixelAt(left,0).bold && neighbor.PixelAt(left,0).underlined,"Monochrome attributes missing");
-        if(colors)require(selected.PixelAt(left,0).background_color!=neighbor.PixelAt(left,0).background_color,"Selection/neighbor colors conflated");
-        for(std::size_t x=0;x<width;++x)if(x<left || x>=left+2)
-            require(selected.PixelAt(x,0).character==" " && neighbor.PixelAt(x,0).character==" ","Markers deform cell padding");
+        for(std::size_t x=0;x<width;++x) {
+            require(selected.PixelAt(x,0).character==" " && neighbor.PixelAt(x,0).character==" ","Cell interiors must stay blank");
+            require(selected.PixelAt(x,0).bold && selected.PixelAt(x,0).underlined && neighbor.PixelAt(x,0).underlined,"Selection attributes missing");
+            if(colors)require(selected.PixelAt(x,0).background_color==(alive?Color::RGB(98,232,137):Color::RGB(31,42,58)),"Marker changed cell state fill");
+            else require(selected.PixelAt(x,0).inverted==alive && neighbor.PixelAt(x,0).inverted==alive,"Monochrome marker changed cell state");
+        }
     }
+    require(ui::computeBoardGeometry(240,58,17,17).cell_chars==8,
+            "Default geometry changed for existing CPU/MPI views");
     auto real=ui::boardBoundary(16,35,0,35,16);
     auto edge=ui::boardBoundary(35,35,0,35,16);
     auto cut=ui::boardBoundary(5,35,5,15,16);
@@ -47,13 +48,13 @@ int main(int argc,char** argv) {
     require(edge.boardEdge && !edge.realBlock && !edge.viewportCut,"Partial board edge mistaken for block");
     require(cut.viewportCut && !cut.boardEdge && !cut.realBlock,"Viewport edge mistaken for board/block");
     require(both.viewportCut && both.realBlock,"Coincident boundaries lost provenance");
-    for(auto [w,h]:{std::pair{5u,5u},{35u,19u}})for(bool colors:{false,true}) {
+    for(auto [w,h]:{std::pair{5u,5u},{17u,17u},{35u,19u}})for(bool colors:{false,true}) {
         InputData input{w,h,std::vector<std::uint8_t>(w*h,0)};
         input.cells[2*w+2]=input.cells[w+2]=input.cells[3*w+2]=1;
         Game game(input);app::CudaDidacticController model;model.refresh(game);
         ui::CudaDidacticPrimitives style{[&](bool a,std::size_t cw){return originalCell(a,cw,colors);},[&](std::string s){return grid(std::move(s),colors);},colors};
         for(auto preset:{core::kCudaBlock8x8,core::kCudaBlock16x16,core::kCudaBlock32x8})
-        for(auto mode:{0,1,2})for(auto [width,height]:{std::pair{180,55},{120,32},{40,10}}) {
+        for(auto mode:{0,1,2})for(auto [width,height]:{std::pair{240,58},{180,55},{120,32},{40,10}}) {
             auto frame=model.frame();
             frame.geometry=core::planCudaLaunch(w,h,preset);
             frame.blockX=mode==2?frame.geometry.gridX-1:0;
@@ -67,14 +68,26 @@ int main(int argc,char** argv) {
             auto plain=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(height));
             Render(plain,ui::renderCudaDidactic(game,frame,"RTX 3050","",viewport,false,0,true,width,height,style,false));
             require(plain.ToString().find("×")==std::string::npos,"Real board expanded with exterior cells");
+            if(width>=180) {
+                const auto rendered=plain.ToString();
+                require(rendered.find("HILO SELECCIONADO")!=std::string::npos && rendered.find("ESTADO DE LA CELDA")!=std::string::npos,"Summary sections missing");
+                require(rendered.find("columna =")==std::string::npos && rendered.find("barreras")==std::string::npos,"Technical help leaked into selection summary");
+            }
             auto box=bounds(plain);auto [x0,x1,y0,y1]=box;
             require(x1>=x0 && y1>=y0,"Board vanished in minimum terminal");
+            for(int y=y0+1;y<y1;y+=2)for(int x=x0+1;x<x1;x+=3)
+                require(plain.PixelAt(x,y).character==" " && plain.PixelAt(x+1,y).character==" ","CUDA cell contains text instead of state fill");
+            if(mode==0 && width==240) {
+                require(plain.ToString().find("║")!=std::string::npos,"Selected cell border missing");
+                require(plain.ToString().find("┃")!=std::string::npos,"Neighbor border missing");
+            }
             if(mode==0 && width==180) {
                 const auto& contour=plain.PixelAt(x0+1,y0);
                 if(colors)require(contour.foreground_color==Color::RGB(83,191,208),"Base grid style hides selected contour");
                 else require(contour.inverted && contour.bold,"Selected contour missing without color");
             }
-            if(w==5 && width==120)require(x1-x0+1==46 && y1-y0+1==11,"5x5 lost original adaptive cell size");
+            if(w==5 && width==120)require(x1-x0+1==16 && y1-y0+1==11,"5x5 CUDA cell proportions");
+            if(w==17 && width==240)require(x1-x0+1==52 && y1-y0+1==35,"17x17 CUDA board stretched on a wide terminal");
             auto oldViewport=viewport;
             auto coverage=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(height));
             Render(coverage,ui::renderCudaDidactic(game,frame,"RTX 3050","",viewport,false,0,true,width,height,style,true));

@@ -38,6 +38,8 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
             t.send('\x1b');t.send('q');assert t.process.wait(timeout=5)==0
             print('PASS didactic CUDA unavailable: selection rejected with diagnosis');sys.exit(0)
         t.send('v');t.send('p');t.send('d');wait(t,warning)
+        assert 'columna =' not in flat(t) and 'barreras' not in flat(t),flat(t)
+        wait(t,'HILO SELECCIONADO');wait(t,'ESTADO DE LA CELDA');wait(t,'V: ver explicación')
         paused=generation(t);t.read();assert generation(t)==paused,'Normal autoplay survived didactic entry'
         for key in ['n','n',' ','p','+','-']:t.send(key)
         assert generation(t)==paused,'Manual exploration/disabled playback advanced generation'
@@ -53,17 +55,16 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
         t.send('b');t.send('2');wait(t,'B16x16');wait(t,'grid 3x2')
         assert generation(t)==paused+1
         t.send('x');t.send('d');wait(t,warning);assert generation(t)==paused+1
-        wait(t,'CPU con regla compartida')
+        t.send('v');wait(t,'Siguiente estado:')
         t.send('x');t.send('v');wait(t,f'Generación {paused+1}')
         t.send('d');wait(t,warning);t.send('r');wait(t,'G0 · B16x16')
-        wait(t,'blockIdx=(0,0)');wait(t,'threadIdx=(0,0)')
+        wait(t,'Bloque: (0,0)');wait(t,'Hilo: (0,0)')
         # Show board before resize, then verify warning, essential data and grid.
-        t.send('v')
         t.columns,t.rows=40,18
         t.raw=b'' # Discard the previous raster size, as in existing resize tests.
         fcntl.ioctl(t.master,termios.TIOCSWINSZ,struct.pack('HHHH',18,40,0,0))
         os.kill(t.process.pid,signal.SIGWINCH);t.read();t.assert_fits()
-        wait(t,warning);wait(t,'grid 3x2');wait(t,'CPU B3/S23')
+        wait(t,warning);wait(t,'grid 3x2');wait(t,'vecinos')
         assert any(x in flat(t) for x in ['┼','┃','║']),flat(t)
         t.send(']'*5);t.send('l'*15);t.send('j'*15)
         t.send('b');t.send('3');wait(t,'B32x8');wait(t,'Ajuste:')
