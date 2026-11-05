@@ -70,7 +70,7 @@ int main(int argc,char** argv) {
             require(plain.ToString().find("×")==std::string::npos,"Real board expanded with exterior cells");
             if(width>=180) {
                 const auto rendered=plain.ToString();
-                require(rendered.find("HILO SELECCIONADO")!=std::string::npos && rendered.find("ESTADO DE LA CELDA")!=std::string::npos,"Summary sections missing");
+                require(rendered.find("HILO SELECCIONADO")!=std::string::npos && rendered.find("LEE SU CELDA Y VECINOS")!=std::string::npos,"Thread calculation sections missing");
                 require(rendered.find("columna =")==std::string::npos && rendered.find("barreras")==std::string::npos,"Technical help leaked into selection summary");
             }
             auto box=bounds(plain);auto [x0,x1,y0,y1]=box;
@@ -101,6 +101,28 @@ int main(int argc,char** argv) {
                 std::ofstream(tag+".ansi")<<plain.ToString();std::ofstream(tag+"-coverage.ansi")<<coverage.ToString();
             }
         }
+    }
+    // Synthetic 17x17 coverage: the four 16x16 blocks own 256,16,16,1 cells.
+    {
+        InputData input{17,17,std::vector<std::uint8_t>(17*17)};
+        input.cells[1*17+2]=1;input.cells[1*17+4]=1;input.cells[3*17+3]=1;
+        Game game(input);app::CudaDidacticController model;model.refresh(game);
+        model.selectThread(3,2,game);
+        ui::CudaDidacticPrimitives style{[](bool alive,std::size_t w){return originalCell(alive,w,true);},
+            [](std::string value){return grid(std::move(value),true);},true};
+        ui::BoardViewport viewport;
+        auto screen=Screen::Create(Dimension::Fixed(180),Dimension::Fixed(60));
+        Render(screen,ui::renderCudaDidactic(game,model.frame(),"GPU test","",viewport,false,0,true,180,60,style));
+        auto rendered=screen.ToString();
+        require(rendered.find("BLOQUES CUDA")!=std::string::npos && rendered.find("Celdas")!=std::string::npos,"Block distribution table missing");
+        require(rendered.find("APLICA LA REGLA B3/S23")!=std::string::npos && rendered.find("nace.")!=std::string::npos,"Birth rule explanation missing");
+        auto [x0,x1,y0,y1]=bounds(screen);
+        require(x1-x0==17*3,"CUDA board stretched after adding block colors");
+        require(screen.PixelAt(x0+1,y0+1).background_color!=screen.PixelAt(x0+16*3+1,y0+1).background_color,"Different CUDA blocks have identical dead-cell tint");
+        require(screen.PixelAt(x0+2*3+1,y0+1*2+1).background_color==Color::RGB(98,232,137),"Block tint hid a living cell");
+        model.selectBlock(1,1,game);model.selectThread(15,15,game);
+        Render(screen,ui::renderCudaDidactic(game,model.frame(),"GPU test","",viewport,false,0,true,180,60,style));
+        require(screen.ToString().find("Este hilo no actualiza ninguna celda")!=std::string::npos,"Exterior thread shown as a valid cell");
     }
     std::cout<<"PASS common board geometry, optional marks, boundary provenance, logical extents and fixed A coverage layout\n";return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

@@ -58,7 +58,8 @@ Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_
         if(a==BoardCellMark::Neighbor || b==BoardCellMark::Neighbor)return BoardCellMark::Neighbor;
         return BoardCellMark::None;
     };
-    auto line=[&](std::string value,bool selected,bool real,BoardCellMark mark=BoardCellMark::None) {
+    auto line=[&](std::string value,bool selected,bool real,BoardCellMark mark=BoardCellMark::None,
+                 std::size_t row=0,std::size_t column=0) {
         if(mark!=BoardCellMark::None) {
             auto node=text(std::move(value))|bold;
             if(d && d->colors)node=node|color(mark==BoardCellMark::Selected?Color::RGB(255,209,102):Color::RGB(90,143,232));
@@ -68,6 +69,8 @@ Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_
         // selected segments directly so that it cannot override the contour.
         auto node=selected && d && d->colors
             ? text(std::move(value))|color(Color::RGB(83,191,208))
+            : real && d && d->colors && d->blockColor
+            ? text(std::move(value))|color(d->blockColor(std::min(row,boardHeight-1),std::min(column,boardWidth-1)))
             : p.grid(std::move(value));
         if(real)node=node|bold;
         if(selected && d && !d->colors)node=node|inverted|bold;
@@ -81,13 +84,13 @@ Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_
             return p.grid(std::move(value));
         }
         const auto edge=boardBoundary(r,boardHeight,g.row_offset,g.row_offset+g.visible_rows,d->blockHeight);
-        Elements pieces;pieces.push_back(line(left,selectedH(r,g.col_offset),edge.realBlock&&!edge.viewportCut));
+        Elements pieces;pieces.push_back(line(left,selectedH(r,g.col_offset),edge.realBlock&&!edge.viewportCut,BoardCellMark::None,r,g.col_offset));
         for(std::size_t x=0;x<g.visible_cols;++x) {
             const auto c=g.col_offset+x;const bool selected=selectedH(r,c);
             const auto mark=strongest(r?markAt(r-1,c):BoardCellMark::None,markAt(r,c));
             const char* dash=mark==BoardCellMark::Selected?"═":mark==BoardCellMark::Neighbor?"━":edge.viewportCut?"┄":edge.realBlock?"━":"─";
-            pieces.push_back(line(repeat(dash,cell),selected,edge.realBlock&&!edge.viewportCut,mark));
-            pieces.push_back(line(x+1<g.visible_cols?middle:right,selected,edge.realBlock&&!edge.viewportCut));
+            pieces.push_back(line(repeat(dash,cell),selected,edge.realBlock&&!edge.viewportCut,mark,r,c));
+            pieces.push_back(line(x+1<g.visible_cols?middle:right,selected,edge.realBlock&&!edge.viewportCut,BoardCellMark::None,r,c));
         }
         return hbox(std::move(pieces));
     };
@@ -96,7 +99,7 @@ Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_
         const auto edge=boardBoundary(c,boardWidth,g.col_offset,g.col_offset+g.visible_cols,d->blockWidth);
         const auto mark=strongest(c?markAt(r,c-1):BoardCellMark::None,markAt(r,c));
         return line(mark==BoardCellMark::Selected?"║":mark==BoardCellMark::Neighbor?"┃":edge.viewportCut?"┆":edge.realBlock?"┃":"│",
-            selectedV(r,c),edge.realBlock&&!edge.viewportCut,mark);
+            selectedV(r,c),edge.realBlock&&!edge.viewportCut,mark,r,c);
     };
     Elements rows;rows.reserve(g.visible_rows*2+2);rows.push_back(horizontal(g.row_offset,true,false));
     for(std::size_t y=0;y<g.visible_rows;++y) {

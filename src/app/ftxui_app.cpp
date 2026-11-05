@@ -38,6 +38,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <exception>
@@ -963,6 +964,12 @@ public:
                     normalSession_->advanceIfRunning();
                     if(!normalSession_->error().empty())state_.message=normalSession_->error();
                     if(normalSession_->isRunning())schedulePlaybackTick();
+                } else if(state_.page==Page::CudaDidactic && normalSession_ && normalSession_->isRunning()) {
+                    const auto now=std::chrono::steady_clock::now();
+                    cudaDidactic_.tick(*normalSession_,now-cudaPlaybackTickAt_);
+                    cudaPlaybackTickAt_=now;
+                    if(!normalSession_->error().empty()) state_.message=normalSession_->error();
+                    if(normalSession_->isRunning()) scheduleCudaPlayback();
                 } else if(state_.page==Page::Patterns && catalogPreview_.session() && catalogPreview_.session()->isRunning()) {
                     catalogPreview_.session()->advanceIfRunning();schedulePlaybackTick();
                 } else if (state_.page == Page::Didactic && state_.didactic &&
@@ -976,10 +983,9 @@ public:
         }
         if(state_.page==Page::CudaDidactic) {
             if(event==Event::Escape || (event.is_character() && (event.character()=="x"||event.character()=="X"||event.character()=="q"||event.character()=="Q"))) {
-                if(normalSession_)normalSession_->pause();playbackTimer_.request_stop();state_.page=Page::Main;return true;
+                stopCudaPlayback();state_.page=Page::Main;return true;
             }
             if(!normalSession_ || !cudaDidactic_.initialized())return true;
-            normalSession_->pause();
             if(event==Event::ArrowUp || event==Event::ArrowDown || event==Event::ArrowLeft || event==Event::ArrowRight) {
                 cudaViewport_.move(event==Event::ArrowDown?1:event==Event::ArrowUp?-1:0,
                     event==Event::ArrowRight?1:event==Event::ArrowLeft?-1:0);cudaFollow_=false;return true;
@@ -1000,14 +1006,20 @@ public:
                 else {selection=false;
                     if(k=="v"||k=="V") {cudaDetail_=!cudaDetail_;cudaDetailRow_=0;}
                     if(k=="a"||k=="A")cudaCoverage_=!cudaCoverage_;
-                    if(k=="b"||k=="B") {openResources(Page::CudaDidactic);return true;}
-                    if(k=="g"||k=="G") {cudaDidactic_.advance(*normalSession_);cudaFollow_=true;state_.message=normalSession_->error();}
-                    if(k=="u"||k=="U") {cudaDidactic_.recover(*normalSession_);state_.message=normalSession_->error();}
+                    if(k=="b"||k=="B") {stopCudaPlayback();openResources(Page::CudaDidactic);return true;}
+                    if(k=="g"||k=="G") {stopCudaPlayback();cudaDidactic_.advance(*normalSession_);cudaFollow_=true;state_.message=normalSession_->error();}
+                    if(k=="u"||k=="U") {stopCudaPlayback();cudaDidactic_.recover(*normalSession_);state_.message=normalSession_->error();}
                     if(k=="r"||k=="R") {
+                        stopCudaPlayback();
                         if(cudaDidactic_.reset(*normalSession_)) {cudaViewport_={};cudaFollow_=true;cudaDetailRow_=0;}
                         state_.message=normalSession_->error();
                     }
-                    if(k==" "||k=="p"||k=="P"||k=="+"||k=="-"||k=="=")state_.message="Exploración manual. G avanza una generación CUDA real.";
+                    if(k==" "||k=="p"||k=="P") {
+                        normalSession_->toggleRunning();restartCudaPlaybackTimer();
+                        state_.message=normalSession_->error();
+                    }
+                    if(k=="+"||k=="=") {cudaDidactic_.increaseSpeed();restartCudaPlaybackTimer();}
+                    if(k=="-") {cudaDidactic_.decreaseSpeed();restartCudaPlaybackTimer();}
                 }
                 if(selection) {cudaFollow_=true;cudaDetailRow_=0;}
                 return true;
@@ -1215,16 +1227,34 @@ private:
 
     void armDidacticTimer() {didacticTickAt_=std::chrono::steady_clock::now();schedulePlaybackTick();}
 
-    void schedulePlaybackTick() {
+    void schedulePlaybackTick(std::chrono::milliseconds delay=150ms) {
         playbackTimer_.request_stop();
-        playbackTimer_ = std::jthread([this](std::stop_token stopToken) {
+        playbackTimer_ = std::jthread([this,delay](std::stop_token stopToken) {
             std::mutex mutex;std::condition_variable_any wake;std::unique_lock lock(mutex);
-            wake.wait_for(lock,stopToken,150ms,[]{return false;});
+            wake.wait_for(lock,stopToken,delay,[]{return false;});
             if (!stopToken.stop_requested()) {
                 pendingEvents_.fetch_or(kPlaybackEvent, std::memory_order_release);
                 screen_.PostEvent(Event::Custom);
             }
         });
+    }
+
+    void stopCudaPlayback() {
+        if(normalSession_) normalSession_->pause();
+        playbackTimer_.request_stop();
+        pendingEvents_.fetch_and(~kPlaybackEvent,std::memory_order_acq_rel);
+        cudaDidactic_.restartPlaybackClock();
+    }
+    void scheduleCudaPlayback() {
+        const auto delay=std::chrono::milliseconds(static_cast<int>(std::ceil(1000./cudaDidactic_.speed())));
+        schedulePlaybackTick(delay);
+    }
+    void restartCudaPlaybackTimer() {
+        playbackTimer_.request_stop();
+        pendingEvents_.fetch_and(~kPlaybackEvent,std::memory_order_acq_rel);
+        cudaDidactic_.restartPlaybackClock();
+        cudaPlaybackTickAt_=std::chrono::steady_clock::now();
+        if(normalSession_ && normalSession_->isRunning()) scheduleCudaPlayback();
     }
 
     static ftxui::Component makeMenu(
@@ -1457,14 +1487,14 @@ private:
     }
     Element renderCudaDidactic() {
         if(!normalSession_ || !cudaDidactic_.initialized())return ftxui::text("Sin sesión confirmada. Esc menú.");
-        return ui::allocatedElement([this](int width,int height) {
+        return panel("DIDÁCTICA CUDA",ui::allocatedElement([this](int width,int height) {
             ui::CudaDidacticPrimitives primitives{
                 [](bool alive,std::size_t width){return didacticCellElement(alive,true,-1,width,colorsEnabled());},
                 [](std::string line){return gridElement(std::move(line),colorsEnabled());},colorsEnabled()};
             const auto& error=normalSession_->error().empty() && state_.message.starts_with("Error")?state_.message:normalSession_->error();
             return ui::renderCudaDidactic(normalSession_->game(),cudaDidactic_.frame(),state_.cudaInfo.gpu,error,
-                cudaViewport_,cudaDetail_,cudaDetailRow_,cudaFollow_,width,height,primitives,cudaCoverage_);
-        });
+                cudaViewport_,cudaDetail_,cudaDetailRow_,cudaFollow_,width,height,primitives,cudaCoverage_,normalSession_->isRunning(),cudaDidactic_.speed());
+        }));
     }
     Element renderNormal() {
         if(!normalSession_)return ftxui::text("Sin simulación confirmada. V para abrir.");
@@ -2042,15 +2072,11 @@ private:
     }
 
     bool showingScalingSamples() const {
-        if (!showingScaling() || static_cast<ScalingTab>(scalingTab_) != ScalingTab::Samples) return false;
-        const auto snapshot = experiment_->snapshot();
-        return !std::get<ScalingResult>(snapshot.latest->result).study;
+        return showingScaling() && static_cast<ScalingTab>(scalingTab_)==ScalingTab::Samples;
     }
 
     bool showingScalingMethod() const {
-        if (!showingScaling() || static_cast<ScalingTab>(scalingTab_) != ScalingTab::Method) return false;
-        const auto snapshot = experiment_->snapshot();
-        return !std::get<ScalingResult>(snapshot.latest->result).study;
+        return showingScaling() && static_cast<ScalingTab>(scalingTab_)==ScalingTab::Method;
     }
 
     // Resolve paragraph heights at the viewport width before yframe computes
@@ -2075,7 +2101,6 @@ private:
     Element renderScaling(const ExecutionSnapshot& snapshot, bool session) {
         const auto& stored = *snapshot.latest;
         const auto& scaling = std::get<ScalingResult>(stored.result);
-        const bool compactResults = !scaling.study;
         std::vector<Element> rows;
         if (snapshot.phase != ExecutionPhase::Finished) {
             const char* status = snapshot.phase == ExecutionPhase::Error ? "Error" :
@@ -2084,16 +2109,14 @@ private:
                 " · ejecución actual #" + std::to_string(snapshot.description.id)));
             if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
             rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
-        } else if (!compactResults) rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
-            ftxui::color(ftxui::Color::RGB(98,232,137)));
-        auto presentation = scalingRows(std::get<ScalingResult>(stored.result), stored.description.patternName,
+        }
+        auto presentation = scalingRows(scaling, stored.description.patternName,
             static_cast<ScalingTab>(scalingTab_), static_cast<int>(controls::terminalSize().columns) - 2,
             identityCyan(), ftxui::Color::RGB(98,232,137), scalingSampleDetails_, scalingMethodDetails_);
         auto tabs = presentation.front();
         rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
         rows.push_back(ftxui::text(" "));
-        rows.push_back(ftxui::paragraph(compactResults ? "Ejecución #" + std::to_string(stored.description.id) :
-            "Contexto conservado: " + stored.context.studyId) | ftxui::dim);
+        rows.push_back(ftxui::text("Ejecución #" + std::to_string(stored.description.id)) | ftxui::dim);
         return panel(session ? "RESULTADOS DE LA SESIÓN" :
             std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::CUDA?"BLOQUES CUDA":std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP",
             resultViewport(std::move(rows), std::move(tabs)));
@@ -2335,23 +2358,32 @@ private:
             const auto& g=*block.grid;
             // Same grid borders, geometry and cells as local didactic boards.
             // All physical rows remain scrollable; only columns use a viewport.
-            const int labelWidth=std::min(16,std::max(6,width/3));
-            const auto geometry=computeDidacticBoardGeometry(std::max(0,width-labelWidth),g.height*2+1,g.width,g.height);
+            int longestLabel=0;
+            for(const auto& label:g.labels) longestLabel=std::max(longestLabel,ftxui::string_width(label));
+            const int labelWidth=std::clamp(longestLabel+3,6,std::min(16,std::max(6,width/3)));
+            const auto geometry=ui::computeBoardGeometry(std::max(0,width-labelWidth),g.height*2+1,g.width,g.height,2);
             if(!geometry.visible_cols) {appendText("Sin espacio para la cuadrícula.");continue;}
             const auto count=geometry.visible_cols;
             const auto offset=std::min(static_cast<std::size_t>(mpiDidacticCol_),g.width-count);
             if(count<g.width)appendText("Columnas "+std::to_string(offset)+"-"+std::to_string(offset+count-1)+"/"+std::to_string(g.width)+" · ←→ mover");
             auto border=[&](const char* middle,const char* left,const char* right) {
-                rows.push_back(ftxui::hbox({ftxui::text(std::string(labelWidth,' ')),gridElement(gridBorder(count,middle,left,right,geometry.cell_chars),colors)}));
+                rows.push_back(ftxui::hbox({ftxui::text(std::string(labelWidth,' ')),gridElement(gridBorder(count,middle,left,right,geometry.cell_chars),colors)})|ftxui::hcenter);
             };
             border("┬","┌","┐");
             for(std::size_t y=0;y<g.height;++y) {
                 const auto label=y<g.labels.size()?g.labels[y]:std::string{};
-                // Keep full provenance above the row when it exceeds the band.
-                if(ftxui::string_width(label)>labelWidth-1)appendText(label);
-                auto band=ftxui::text(ftxui::string_width(label)>labelWidth-1?"HALO":label)|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,labelWidth);
+                // Explicit RGB text remains readable across terminal palettes.
+                const bool longLabel=ftxui::string_width(label)>labelWidth-3;
+                if(longLabel) appendText(label);
                 const int owner=g.owners[y*g.width+offset];
-                if(colors && owner>=0)band=band|ftxui::bgcolor(workerColor(owner))|ftxui::color(ftxui::Color::Black)|ftxui::bold;
+                auto stripe=ftxui::text(colors?"▌ ":"  ");
+                auto labelText=ftxui::text(longLabel?"HALO":label)|ftxui::bold;
+                if(colors) {
+                    stripe=stripe|ftxui::color(owner>=0?workerColor(owner):ftxui::Color::RGB(150,160,170));
+                    labelText=labelText|ftxui::color(ftxui::Color::RGB(238,242,248));
+                }
+                auto band=ftxui::hbox({std::move(stripe),std::move(labelText)})|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,labelWidth);
+                if(colors) band=band|ftxui::bgcolor(ftxui::Color::RGB(22,27,34));
                 auto edge=[&](std::size_t x) {
                     int emphasis=0;
                     if(x>offset)emphasis=std::max(emphasis,static_cast<int>(g.emphasis[y*g.width+x-1]));
@@ -2367,7 +2399,7 @@ private:
                     cells.push_back(didacticCellElement(g.values[i]!=0,g.known[i]!=0,static_cast<std::int8_t>(g.owners[i]),geometry.cell_chars,colors));
                     cells.push_back(edge(x+1));
                 }
-                rows.push_back(ftxui::hbox(std::move(cells)));
+                rows.push_back(ftxui::hbox(std::move(cells))|ftxui::hcenter);
                 if(y+1==g.height)border("┴","└","┘");else border("┼","├","┤");
             }
         }
@@ -2428,18 +2460,20 @@ private:
         if(!f.error_message.empty())return renderMPIError(f);
         const bool tiny=controls::terminalSize().columns<=44 || controls::terminalSize().rows<=20;
         const auto stage=f.stages.empty()?DidacticStage::MPIState:f.stages.at(f.stage_index);
-        std::vector<Element> status{
-            ftxui::paragraph(tiny?"Captura MPI · etapas didácticas":"Captura MPI real · reproducción por etapas"),
-            ftxui::paragraph("Visible G"+std::to_string(f.viewed_generation)+(tiny?std::string{}:" · capturada "+(f.captured_generation?std::to_string(*f.captured_generation):"pendiente"))+
-                " · "+(f.playing?"Reproduciendo":"En pausa")+" · "+speedLabel(f.speed)),
-            ftxui::paragraph(f.stages.empty()?"Etapa pendiente":("Etapa "+std::to_string(f.stage_index+1)+"/"+std::to_string(f.stages.size())+" · "+didactic_view::stage(stage)))};
-        if(!tiny)status.push_back(ftxui::paragraph("Verde/inversa: viva · color: proceso · subrayado: pendiente"));
-        if(f.is_preparing)status.push_back(ftxui::text("Capturando; UI y pausa disponibles."));
+        const auto playbackColor=colorsEnabled()?ftxui::Color(f.playing?ftxui::Color::RGB(98,232,137):ftxui::Color::RGB(224,185,112)):ftxui::Color(ftxui::Color::Default);
+        const auto accent=colorsEnabled()?identityCyan():ftxui::Color(ftxui::Color::Default);
+        std::vector<Element> status;
+        auto playback=ftxui::hbox({ftxui::text(f.is_preparing?"Capturando":f.playing?"Reproduciendo":"En pausa")|ftxui::bold|ftxui::color(playbackColor),
+            ftxui::text("   "),ftxui::text(speedLabel(f.speed))|ftxui::bold|ftxui::color(accent)});
+        if(tiny) {status.push_back(ftxui::text("Generación "+std::to_string(f.viewed_generation)));status.push_back(std::move(playback));}
+        else status.push_back(ftxui::hbox({ftxui::text("Generación "+std::to_string(f.viewed_generation)),ftxui::text("   "),std::move(playback)}));
+        status.push_back(ftxui::paragraph(f.stages.empty()?"Paso pendiente":
+            "Paso "+std::to_string(f.stage_index+1)+" de "+std::to_string(f.stages.size())+"    "+didactic_view::stage(stage))|ftxui::bold|ftxui::color(accent));
         Element content=ftxui::text("Sin captura disponible. R reinicia; Esc cierra.");
         {
             const auto trace=f.mpi_trace;
             if(trace)mpiDidacticRank_=std::clamp(mpiDidacticRank_,0,static_cast<int>(trace->ranks.size())-1);
-            content=ui::allocatedElement([this,trace,stage,error=f.error_message](int w,int h) {
+            content=ui::allocatedElement([this,trace,stage,error=f.error_message,visibleGeneration=f.viewed_generation,capturedGeneration=f.captured_generation](int w,int h) {
                 const bool multiple=trace && error.empty() && w>=110 && h>=14 && mpiDidacticView_!=2;
                 std::vector<didactic_view::Blocks> columns;
                 if(!trace)columns.push_back({{"Sin captura disponible; esperando al trabajador.",{}},{"R reinicia; Esc cierra.",{}}});
@@ -2457,7 +2491,10 @@ private:
                 }
                 else {
                     auto help=didactic_view::explanation(*trace,mpiDidacticRank_,stage);
-                    help.insert(help.begin(),{{"AYUDA MPI · D vuelve a la vista anterior",{},true},{"",{}}});
+                    help.insert(help.begin(),{{"AYUDA MPI · D vuelve a la vista anterior",{},true},
+                        {"Captura MPI real; reproducción por etapas, no orden individual de ejecución.",{}},
+                        {"Generación visible: "+std::to_string(visibleGeneration)+"   Capturada: "+(capturedGeneration?std::to_string(*capturedGeneration):"pendiente"),{}},
+                        {"Verde/inversa: viva. Marca de color: proceso. Subrayado: pendiente.",{}},{"",{}}});
                     auto boards=didactic_view::local(*trace,mpiDidacticRank_,stage);
                     help.push_back({"",{}});help.insert(help.end(),boards.begin(),boards.end());
                     columns.push_back(std::move(help));
@@ -2483,9 +2520,15 @@ private:
                     ftxui::text("Líneas "+std::to_string(start+1)+"-"+std::to_string(std::min(maxRows,start+visible))+"/"+std::to_string(maxRows)+" · ↑↓ Home/End")});
             });
         }
-        static constexpr const char* views[]={"Global","Local","Ayuda"};
-        status.push_back(ftxui::paragraph(std::string("Vista ")+views[mpiDidacticView_]+(tiny?" · R":" · rank R")+std::to_string(mpiDidacticRank_)+
-            (tiny?" · P":" · P sol/obs ")+std::to_string(f.requested_processes)+"/"+std::to_string(f.observed_processes)));
+        static constexpr const char* views[]={"global","local","ayuda"};
+        std::string context="Procesos "+std::to_string(f.observed_processes?f.observed_processes:f.requested_processes)+
+            (f.observed_processes?"":" solicitados")+"    Vista "+views[mpiDidacticView_];
+        if(mpiDidacticView_==1) context+="    Proceso R"+std::to_string(mpiDidacticRank_);
+        status.push_back(ftxui::paragraph(context));
+        if(f.observed_processes && f.requested_processes!=f.observed_processes)
+            status.push_back(ftxui::paragraph("Solicitados: "+std::to_string(f.requested_processes)+"   Observados: "+std::to_string(f.observed_processes))|
+                ftxui::bold|ftxui::color(colorsEnabled()?ftxui::Color::RGB(224,185,112):ftxui::Color(ftxui::Color::Default)));
+        if(!tiny) status.push_back(ftxui::text(" "));
         if(tiny)return ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex})|ftxui::border;
         return panel("DIDÁCTICA MPI",ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex}));
     }
@@ -2755,7 +2798,7 @@ private:
 
     std::string footerText() const {
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
-            "G CUDA · HJKL · [/] · A · V ayuda · Esc":"HJKL hilo · [/] bloque · N explora · G CUDA real · B preset · A cobertura · R · U · V ayuda · PgUp/PgDn · Esc";
+            "Esp pausa · +/- · G paso · N hilo · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
@@ -2833,6 +2876,7 @@ private:
     ui::BoardViewport cudaViewport_;
     bool cudaDetail_{false},cudaFollow_{true},cudaCoverage_{false};
     std::size_t cudaDetailRow_{};
+    std::chrono::steady_clock::time_point cudaPlaybackTickAt_{};
     PatternCatalog catalog_;
     CatalogPreview catalogPreview_;
     Page pathReturnPage_{Page::Main};

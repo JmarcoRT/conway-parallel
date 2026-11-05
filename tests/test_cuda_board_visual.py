@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='conway-board-visual-') as directory:
             if mode!='ON':
                 wait(t,'build sin CUDA');t.send('\x1b');t.send('q');assert t.process.wait(timeout=5)==0
                 print('PASS CUDA OFF selection remains unavailable with diagnostic');sys.exit(0)
-            t.send('d');wait(t,'Exploración conceptual');wait(t,'G0 · B16x16')
+            t.send('d');wait(t,'conceptual');wait(t,'En pausa')
             wait(t,'Hilo: (0,0)');capture(t,f'pty-{w}-dead-'+('mono' if mono else 'color'))
             assert '×' not in ''.join(board(t)[1]),flat(t)
             t.send('lljj');wait(t,'Hilo: (2,2)');assert '@1' not in ''.join(board(t)[1]) and ':1' not in ''.join(board(t)[1])
@@ -57,17 +57,17 @@ with tempfile.TemporaryDirectory(prefix='conway-board-visual-') as directory:
             if w==35:t.send(']'*5)
             wait(t,'Posición exterior');assert '║' not in ''.join(board(t)[1])
             capture(t,f'pty-{w}-exterior-'+('mono' if mono else 'color'))
-            for preset,label in [('1','B8x8'),('3','B32x8'),('2','B16x16')]:
-                t.send('b');t.send(preset);wait(t,label);wait(t,'G0 · B')
-            t.send('x');t.send('d');wait(t,'Cobertura A');wait(t,'G0 · B16x16')
+            for preset,label in [('1','8x8'),('3','32x8'),('2','16x16')]:
+                t.send('b');t.send(preset);wait(t,label);wait(t,'En pausa')
+            t.send('x');t.send('d');wait(t,'Cobertura A');wait(t,'En pausa')
             # Small layout: board stays present; A remains a fixed-height compact legend.
             import fcntl,struct,termios,signal
             t.columns,t.rows=40,18;t.raw=b''
             fcntl.ioctl(t.master,termios.TIOCSWINSZ,struct.pack('HHHH',18,40,0,0));os.kill(t.process.pid,signal.SIGWINCH);t.read();t.assert_fits()
-            wait(t,'Exploración conceptual');wait(t,'A:+');before=board(t)
+            wait(t,'conceptual');wait(t,'A:+');before=board(t)
             capture(t,f'pty-{w}-small-'+('mono' if mono else 'color'))
             t.send('a');assert board(t)==before,'Compact coverage displaced board'
             t.send('a');wait(t,'A:+');t.send('v');wait(t,'Cobertura A');t.send('v')
-            wait(t,'G0 · B16x16');t.send('x');t.send('q');assert t.process.wait(timeout=5)==0
+            wait(t,'En pausa');t.send('x');t.send('q');assert t.process.wait(timeout=5)==0
             print(f'PASS {w}x{h}, mono={mono}: live/dead/exterior, A fixed board, presets, persistence, 40x18; G unchanged',flush=True)
         finally:t.close()

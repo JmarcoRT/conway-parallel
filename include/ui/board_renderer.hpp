@@ -23,6 +23,8 @@ struct BoardDecorations {
     bool colors=false;
     std::function<BoardCellMark(std::size_t,std::size_t)> mark;
     std::function<bool(std::size_t,std::size_t)> alive;
+    // Optional ink for real, unselected block boundaries, by adjacent cell.
+    std::function<ftxui::Color(std::size_t,std::size_t)> blockColor;
 };
 struct BoardPrimitives {
     std::function<ftxui::Element(std::size_t,std::size_t,std::size_t)> cell;
