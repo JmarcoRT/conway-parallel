@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace conway::core {
@@ -50,6 +51,11 @@ public:
         device_ = device;
         check(cudaMalloc(reinterpret_cast<void**>(&data), count * sizeof(T)), "cudaMalloc");
     }
+    bool release() noexcept {
+        if(!data)return true;
+        if(cudaFree(data)!=cudaSuccess)return false;
+        data=nullptr;return true;
+    }
     T* data{};
 private:
     int device_{};
@@ -67,9 +73,30 @@ public:
         device_ = device;
         check(cudaStreamCreateWithFlags(&value, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
     }
+    bool release() noexcept {
+        if(!value)return true;
+        if(cudaStreamDestroy(value)!=cudaSuccess)return false;
+        value=nullptr;return true;
+    }
     cudaStream_t value{};
 private:
     int device_{};
+};
+
+class TimingEvent {
+public:
+    explicit TimingEvent(bool& uncertain):uncertain_(uncertain) {check(cudaEventCreate(&value),"cudaEventCreate");}
+    ~TimingEvent() {if(value && cudaEventDestroy(value)!=cudaSuccess)uncertain_=true;}
+    TimingEvent(const TimingEvent&)=delete;
+    TimingEvent& operator=(const TimingEvent&)=delete;
+    cudaError_t release() {
+        const auto result=cudaEventDestroy(value);
+        if(result==cudaSuccess)value=nullptr;else uncertain_=true;
+        return result;
+    }
+    cudaEvent_t value{};
+private:
+    bool& uncertain_;
 };
 
 // Keep host staging storage alive until queued transfers finish, also when a
@@ -130,7 +157,7 @@ struct CudaBackend::Impl {
     int device;
     std::size_t width, height, stride, cells, padded, generation;
     CudaLaunchGeometry launch;
-    bool failed{};
+    bool failed{},cleanupUncertain{};
     DeviceBuffer<std::uint8_t> current, next;
     DeviceBuffer<unsigned long long> population;
     Stream stream;
@@ -247,6 +274,61 @@ void CudaBackend::step() {
         state.failed = true;
         throw;
     }
+}
+
+CudaHardwareInfo CudaBackend::hardwareInfo(int device) {
+    DeviceSelection selected(device);cudaDeviceProp properties{};
+    check(cudaGetDeviceProperties(&properties,device),"cudaGetDeviceProperties");
+    CudaHardwareInfo info;info.name=properties.name;info.device=device;
+    info.totalMemoryBytes=properties.totalGlobalMem;info.major=properties.major;info.minor=properties.minor;
+    check(cudaRuntimeGetVersion(&info.runtimeVersion),"cudaRuntimeGetVersion");
+    check(cudaDriverGetVersion(&info.driverApiVersion),"cudaDriverGetVersion");
+    info.nvccVersion=std::to_string(__CUDACC_VER_MAJOR__)+"."+std::to_string(__CUDACC_VER_MINOR__)+"."+std::to_string(__CUDACC_VER_BUILD__);
+    return info;
+}
+
+CudaBatchTiming CudaBackend::runBatch(int generations) {
+    if(generations<1)throw std::invalid_argument("CUDA batch requires positive generations");
+    if(!impl_)throw std::logic_error("Closed or moved-from CUDA backend");
+    auto& state=*impl_;state.usable();
+    try {
+        DeviceSelection selected(state.device);
+        TimingEvent begin(state.cleanupUncertain),end(state.cleanupUncertain);
+        check(cudaStreamSynchronize(state.stream.value),"batch preparation synchronization");
+        using Clock=std::chrono::steady_clock;
+        const auto start=Clock::now();
+        check(cudaEventRecord(begin.value,state.stream.value),"batch start event");
+        auto* current=state.current.data;auto* next=state.next.data;
+        const dim3 grid(static_cast<unsigned>(state.launch.gridX),static_cast<unsigned>(state.launch.gridY));
+        const dim3 block(state.launch.block.x,state.launch.block.y);
+        for(int i=0;i<generations;++i) {
+            check(cudaMemsetAsync(state.population.data,0,sizeof(unsigned long long),state.stream.value),"batch population clear");
+            evolve<<<grid,block,0,state.stream.value>>>(current,next,state.width,state.height,state.stride,state.population.data);
+            check(cudaGetLastError(),"batch kernel launch");std::swap(current,next);
+        }
+        check(cudaEventRecord(end.value,state.stream.value),"batch stop event");
+        check(cudaStreamSynchronize(state.stream.value),"batch execution synchronization");
+        const double wall=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+        float deviceMs{};check(cudaEventElapsedTime(&deviceMs,begin.value,end.value),"batch event elapsed time");
+        const auto firstEvent=begin.release(),lastEvent=end.release();
+        check(firstEvent,"batch start event cleanup");check(lastEvent,"batch stop event cleanup");
+        state.current.data=current;state.next.data=next;state.generation+=static_cast<std::size_t>(generations);
+        return {wall,static_cast<double>(deviceMs)};
+    } catch(...) {state.failed=true;throw;}
+}
+
+bool CudaBackend::close() noexcept {
+    if(!impl_)return true;
+    bool clean=false;
+    try {
+        DeviceSelection selected(impl_->device);
+        clean=cudaStreamSynchronize(impl_->stream.value)==cudaSuccess && !impl_->cleanupUncertain;
+        clean=impl_->current.release() && clean;
+        clean=impl_->next.release() && clean;
+        clean=impl_->population.release() && clean;
+        clean=impl_->stream.release() && clean;
+    } catch(...) {clean=false;}
+    impl_.reset();return clean;
 }
 
 GameState CudaBackend::snapshot() const {

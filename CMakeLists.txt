@@ -37,6 +37,7 @@ target_include_directories(conway_generated_input PUBLIC include)
 add_library(conway_experiments STATIC
     src/app/scaling_study.cpp
     src/app/experimental_study.cpp
+    src/app/cuda_benchmark.cpp
     src/app/experiment_runner.cpp
     src/app/benchmark.cpp
     src/core/game.cpp
@@ -700,6 +701,37 @@ if(BUILD_TESTING)
         $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cuda_board_visual_pty PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
         RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(cuda_experiment_tests tests/cuda_experiment_tests.cpp src/app/experiment_form.cpp)
+    target_link_libraries(cuda_experiment_tests PRIVATE conway_experiment_export conway_cuda_ui)
+    add_dependencies(cuda_experiment_tests conway_mpi_worker)
+    add_test(NAME cuda_experimental_study COMMAND cuda_experiment_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(cuda_experimental_study PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_benchmark_ui_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_benchmark_ui.py" $<TARGET_FILE:conway>
+        $<TARGET_FILE:cuda_ui_session_tests> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cuda_benchmark_ui_pty PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_experimental_csv COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_benchmark_csv.py" $<TARGET_FILE:cuda_experiment_tests>
+        "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+    set_tests_properties(cuda_experimental_csv PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+    add_test(NAME cuda_experimental_unavailable COMMAND cuda_experiment_tests --unavailable)
+    set_tests_properties(cuda_experimental_unavailable PROPERTIES TIMEOUT 30 ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
+    if(CONWAY_ENABLE_CUDA)
+        add_executable(cuda_batch_tests tests/cuda_batch_tests.cpp src/core/game.cpp
+            src/core/engines/sequential.cpp src/core/engines/openmp.cpp src/core/bs23.cpp)
+        target_link_libraries(cuda_batch_tests PRIVATE conway_cuda OpenMP::OpenMP_CXX CUDA::cudart)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(cuda_batch_tests PRIVATE CONWAY_CUDA_BATCH_WRAP=1)
+            foreach(api IN ITEMS cudaMalloc cudaMemcpyAsync cudaEventRecord cudaEventDestroy)
+                target_link_options(cuda_batch_tests PRIVATE "LINKER:--wrap=${api}")
+            endforeach()
+        endif()
+        add_test(NAME cuda_resident_batch COMMAND cuda_batch_tests)
+        set_tests_properties(cuda_resident_batch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE)
+    endif()
 endif()
 
 # Every target compiling Game uses the same common geometry and optional backend.

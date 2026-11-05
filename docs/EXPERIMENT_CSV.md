@@ -182,3 +182,12 @@ locale, filas/orden/referencia compartida, procedencia, valores inválidos,
 permisos, escape, lectura/escritura, no sobrescritura y fallos de streams.
 Los fixtures temporales con tiempos sintéticos están identificados como tales;
 no se incorporan mediciones oficiales ni se ejecutan campañas extensas.
+
+## Estudios con CUDA: CSV v3
+
+Los resultados que incluyen CUDA usan v3 y el protocolo conway-experimental-v3.
+Añaden bloque, grid, intervalo GPU, preparación, snapshot, operación completa y
+limpieza CUDA a muestras; bloque a resúmenes; hardware y compilación a metadatos.
+Los campos CPU/MPI no aplicables están vacíos y la eficiencia GPU se marca
+not_applicable_cuda. Los estudios sin CUDA conservan v1/v2. El detalle de alcances
+está en [CUDA_BENCHMARK.md](CUDA_BENCHMARK.md).

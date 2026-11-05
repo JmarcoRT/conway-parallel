@@ -151,6 +151,9 @@ struct SeriesState {
 std::vector<std::size_t> validateResult(const ExperimentResult& result) {
     if(result.study) {
         validateStudy(*result.study);
+        if(std::any_of(result.study->configurations.begin(),result.study->configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;}) &&
+           (result.study->width!=result.input.width || result.study->height!=result.input.height))
+            throw std::invalid_argument("CUDA study dimensions contradict input identity");
         if(result.config.participants!=result.study->configurations || result.config.rotateRight!=result.study->rotateRight || result.config.generations!=result.study->generations ||
            result.config.warmups!=result.study->warmups || result.config.repetitions!=result.study->repetitions ||
            result.completedWarmupRuns!=result.study->completedWarmupRuns)
@@ -192,12 +195,16 @@ std::vector<std::size_t> validateResult(const ExperimentResult& result) {
 void validateResult(const ScalingResult& result) {
     if(result.study) {
         validateStudy(*result.study);
+        if(std::any_of(result.study->configurations.begin(),result.study->configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;}) &&
+           (result.study->width!=result.input.width || result.study->height!=result.input.height))
+            throw std::invalid_argument("CUDA study dimensions contradict input identity");
         std::vector<ExecutionConfiguration> configurations{{Engine::Sequential,{},{}}};
-        for(auto processes:result.config.requestedProcesses) {
+        if(result.config.parallelEngine==Engine::CUDA)for(auto block:result.config.cudaBlocks)configurations.push_back({Engine::CUDA,{},{},block});
+        else for(auto processes:result.config.requestedProcesses) {
             if(processes<1 || processes>1024) throw std::invalid_argument("Invalid MPI scaling configuration");
             configurations.push_back({Engine::MPI,{},static_cast<int>(processes)});
         }
-        if(result.config.parallelEngine!=Engine::MPI || configurations!=result.study->configurations ||
+        if((result.config.parallelEngine!=Engine::MPI && result.config.parallelEngine!=Engine::CUDA) || configurations!=result.study->configurations ||
            (result.config.order==ScalingOrder::RotateRight)!=result.study->rotateRight ||
            result.config.generations!=result.study->generations || result.config.warmups!=result.study->warmups ||
            result.config.repetitions!=result.study->repetitions || result.completedWarmupRuns!=result.study->completedWarmupRuns)
@@ -269,12 +276,20 @@ std::string studySpeedupStatus(const ExperimentalStudy& study,const StudySummary
 void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& metadata,
                     std::ostream& samples,std::ostream& summary,std::ostream& meta) {
     validateStudy(study);
-    row(samples,{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads",
+    const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
+    const std::string schema=hasCUDA?"3":"2";
+    auto engineName=[](Engine engine){return engine==Engine::CUDA?"cuda":engine==Engine::MPI?"mpi":engine==Engine::OpenMP?"openmp":"sequential";};
+    auto scope=[](Engine engine){return engine==Engine::CUDA?"cuda_resident_batch_wall":engine==Engine::MPI?"mpi_rank_max_batch":"local_batch";};
+    Row sampleHeader{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads",
         "requested_processes","effective_threads_min","effective_threads_max","observed_processes",
         "round","position","execution_order","sequential_reference_sample","generations","elapsed_ms",
-        "timing_scope","session_index","load_ms","batch_request_ms","snapshot_ms","warmups_in_session","equivalent","valid","study_complete","cleanup_confirmed","session_cleanup_confirmed"});
-    row(summary,{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads","requested_processes","timing_scope","sample_count","min_ms","max_ms",
-        "mean_ms","median_ms","stddev_population_ms","resources_min","resources_max","speedup","efficiency","equivalent","valid","speedup_status","efficiency_status","study_complete","cleanup_confirmed","diagnostic"});
+        "timing_scope","session_index","load_ms","batch_request_ms","snapshot_ms","warmups_in_session","equivalent","valid","study_complete","cleanup_confirmed","session_cleanup_confirmed"};
+    if(hasCUDA)for(const auto* key:{"cuda_block_x","cuda_block_y","cuda_device_ms","cuda_prepare_ms","cuda_snapshot_ms","cuda_total_operation_ms","cuda_grid_x","cuda_grid_y","cuda_cleanup_confirmed"})sampleHeader.push_back(key);
+    row(samples,sampleHeader);
+    Row summaryHeader{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads","requested_processes","timing_scope","sample_count","min_ms","max_ms",
+        "mean_ms","median_ms","stddev_population_ms","resources_min","resources_max","speedup","efficiency","equivalent","valid","speedup_status","efficiency_status","study_complete","cleanup_confirmed","diagnostic"};
+    if(hasCUDA) {summaryHeader.push_back("cuda_block_x");summaryHeader.push_back("cuda_block_y");}
+    row(summary,summaryHeader);
     row(meta,{"study_id","key","value","source","detail"});
     for(const auto& sample:study.samples) {
         const auto& c=study.configurations[sample.configurationIndex];
@@ -282,29 +297,40 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
         for(std::size_t i=0;i<study.samples.size();++i)
             if(study.samples[i].round==sample.round && study.configurations[study.samples[i].configurationIndex].engine==Engine::Sequential)
                 {reference=integer(i);break;}
-        row(samples,{"2",metadata.studyId,metadata.experimentType,configurationName(c),
-            c.engine==Engine::MPI?"mpi":c.engine==Engine::OpenMP?"openmp":"sequential",
+        Row sampleRow{schema,metadata.studyId,metadata.experimentType,configurationName(c),
+            engineName(c.engine),
             optionalInt(c.requestedThreads),optionalInt(c.requestedProcesses),
             optionalInt(sample.minEffectiveThreads),optionalInt(sample.maxEffectiveThreads),optionalInt(sample.observedProcesses),
             integer(sample.round),integer(sample.position),integer(sample.executionIndex),reference,integer(study.generations),
-            number(sample.elapsedMs),c.engine==Engine::MPI?"mpi_rank_max_batch":"local_batch",
+            number(sample.elapsedMs),scope(c.engine),
             sample.sessionIndex?integer(*sample.sessionIndex):"",optionalDouble(sample.loadMs),optionalDouble(sample.requestMs),
             optionalDouble(sample.snapshotMs),integer(sample.completedWarmups),boolean(sample.equivalent),boolean(sample.valid),
             boolean(study.complete),boolean(study.cleanupConfirmed),
-            sample.sessionIndex?boolean(study.sessions[*sample.sessionIndex].cleanupConfirmed):""});
+            sample.sessionIndex?boolean(study.sessions[*sample.sessionIndex].cleanupConfirmed):""};
+        if(hasCUDA) {
+            sampleRow.push_back(c.cudaBlock?integer(c.cudaBlock->x):"");sampleRow.push_back(c.cudaBlock?integer(c.cudaBlock->y):"");
+            if(sample.cuda) {
+                const auto& m=*sample.cuda;
+                for(auto v:{m.deviceMs,m.prepareMs,m.snapshotMs,m.totalMs})sampleRow.push_back(number(v));
+                sampleRow.push_back(integer(m.gridX));sampleRow.push_back(integer(m.gridY));sampleRow.push_back(boolean(m.cleanupConfirmed));
+            } else sampleRow.insert(sampleRow.end(),7,"");
+        }
+        row(samples,sampleRow);
     }
     for(const auto& s:study.summaries) {
         const auto& v=s.statistics;
         const auto& config=study.configurations[s.configurationIndex];
         const auto speedupStatus=studySpeedupStatus(study,s);
-        const auto efficiencyStatus=s.efficiency?"available":speedupStatus!="available"?speedupStatus:"variable_effective_resources";
-        row(summary,{"2",metadata.studyId,metadata.experimentType,configurationName(config),
-            config.engine==Engine::MPI?"mpi":config.engine==Engine::OpenMP?"openmp":"sequential",
+        const auto efficiencyStatus=config.engine==Engine::CUDA?"not_applicable_cuda":s.efficiency?"available":speedupStatus!="available"?speedupStatus:"variable_effective_resources";
+        Row summaryRow{schema,metadata.studyId,metadata.experimentType,configurationName(config),
+            engineName(config.engine),
             optionalInt(config.requestedThreads),optionalInt(config.requestedProcesses),
-            config.engine==Engine::MPI?"mpi_rank_max_batch":"local_batch",integer(s.sampleCount),v?number(v->minimumMs):"",v?number(v->maximumMs):"",v?number(v->meanMs):"",
+            scope(config.engine),integer(s.sampleCount),v?number(v->minimumMs):"",v?number(v->maximumMs):"",v?number(v->meanMs):"",
             v?number(v->medianMs):"",v?number(v->populationStddevMs):"",optionalInt(s.minimumResources),optionalInt(s.maximumResources),
             optionalDouble(s.speedup),optionalDouble(s.efficiency),boolean(s.equivalent),boolean(s.valid),
-            speedupStatus,efficiencyStatus,boolean(study.complete),boolean(study.cleanupConfirmed),study.diagnostic});
+            speedupStatus,efficiencyStatus,boolean(study.complete),boolean(study.cleanupConfirmed),study.diagnostic};
+        if(hasCUDA) {summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->x):"");summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->y):"");}
+        row(summary,summaryRow);
     }
     metadataRows(meta,metadata); finish(samples,summary,meta);
 }

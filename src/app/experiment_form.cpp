@@ -43,6 +43,7 @@ ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, boo
     draft.source=hasPattern?0:1;
     draft.values={"1000","1000","30","42","20","1","5",
         scaling?"1, 2, 4, 8":std::to_string(currentThreads),"","1",""};
+    draft.values[index(ExperimentField::CudaBlocks)]=scaling?"8x8, 16x16, 32x8":"16x16";
     return draft;
 }
 
@@ -65,8 +66,27 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
     parsed.scaling.warmups = parsed.comparison.warmups;
     parsed.scaling.repetitions = parsed.comparison.repetitions;
     const bool usesMPI=scaling?draft.parallelEngine==1:draft.mpi;
+    const bool usesCUDA=scaling?draft.parallelEngine==2:draft.cuda;
+    std::vector<core::CudaBlockSize> blocks;
+    if(usesCUDA) {
+        auto remaining=trim(draft.values[index(ExperimentField::CudaBlocks)]);
+        std::set<std::string> seen;
+        while(!remaining.empty()) {
+            const auto comma=remaining.find(',');const auto token=trim(remaining.substr(0,comma));
+            std::optional<core::CudaBlockSize> block;
+            if(token=="8x8")block=core::kCudaBlock8x8;
+            else if(token=="16x16")block=core::kCudaBlock16x16;
+            else if(token=="32x8")block=core::kCudaBlock32x8;
+            if(!block || !seen.insert(std::string(token)).second) {error(ExperimentField::CudaBlocks,"Use 8x8, 16x16 o 32x8, sin duplicados.");break;}
+            blocks.push_back(*block);
+            if(comma==remaining.npos)break;
+            remaining=trim(remaining.substr(comma+1));
+            if(remaining.empty())error(ExperimentField::CudaBlocks,"Falta un bloque después de la coma.");
+        }
+        if(blocks.empty() || (!scaling && blocks.size()!=1))error(ExperimentField::CudaBlocks,scaling?"Indica al menos un bloque CUDA.":"Selecciona un bloque: 8x8, 16x16 o 32x8.");
+    }
     if (!scaling) {
-        if(static_cast<int>(draft.sequential)+draft.openmp+draft.mpi<2)
+        if(static_cast<int>(draft.sequential)+draft.openmp+draft.mpi+draft.cuda<2)
             error(ExperimentField::Participants,"Selecciona al menos dos participantes.");
         if(draft.openmp) parseInt(ExperimentField::Threads, parsed.comparison.requestedThreads);
         int processes=1;
@@ -77,13 +97,15 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
         if(draft.sequential) parsed.comparison.participants.push_back({Engine::Sequential,{},{}});
         if(draft.openmp) parsed.comparison.participants.push_back({Engine::OpenMP,parsed.comparison.requestedThreads,{}});
         if(draft.mpi) parsed.comparison.participants.push_back({Engine::MPI,{},processes});
+        if(draft.cuda && !blocks.empty())parsed.comparison.participants.push_back({Engine::CUDA,{},{},blocks.front()});
     } else {
-        if(draft.parallelEngine!=0 && draft.parallelEngine!=1)
-            error(ExperimentField::Participants,"Selecciona OpenMP o MPI.");
-        parsed.scaling.parallelEngine=usesMPI?Engine::MPI:Engine::OpenMP;
+        if(draft.parallelEngine<0 || draft.parallelEngine>2)
+            error(ExperimentField::Participants,"Selecciona OpenMP, MPI o CUDA.");
+        parsed.scaling.parallelEngine=usesCUDA?Engine::CUDA:usesMPI?Engine::MPI:Engine::OpenMP;
+        parsed.scaling.cudaBlocks=blocks;
         auto& resources=usesMPI?parsed.scaling.requestedProcesses:parsed.scaling.requestedThreads;
         resources.clear();
-        auto remaining = trim(draft.values[index(ExperimentField::Threads)]);
+        auto remaining = usesCUDA?std::string_view{}:trim(draft.values[index(ExperimentField::Threads)]);
         std::set<int> seen;
         while (!remaining.empty()) {
             const auto comma = remaining.find(',');
@@ -101,7 +123,7 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
             remaining = trim(remaining.substr(comma + 1));
             if (remaining.empty()) error(ExperimentField::Threads, "Falta un número después de la coma.");
         }
-        if (seen.empty()) error(ExperimentField::Threads, "Indica al menos un recurso.");
+        if (!usesCUDA && seen.empty()) error(ExperimentField::Threads, "Indica al menos un recurso.");
     }
     if(usesMPI && parsed.comparison.generations>100000)
         error(ExperimentField::Generations,"MPI admite entre 1 y 100000 generaciones por lote.");
@@ -173,7 +195,7 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
                 if (pairs > std::vector<ExperimentSample>{}.max_size()) throw std::length_error("capacity");
                 (void)checkedAdd(1, checkedAdd(pairs, checkedMultiply(warmups, 2)));
             } else {
-                const auto threads = (usesMPI?parsed.scaling.requestedProcesses:parsed.scaling.requestedThreads).size();
+                const auto threads = (usesCUDA?parsed.scaling.cudaBlocks.size():(usesMPI?parsed.scaling.requestedProcesses:parsed.scaling.requestedThreads).size());
                 if (threads >= static_cast<std::size_t>(std::numeric_limits<int>::max())) throw std::length_error("index");
                 const auto configurations = checkedAdd(threads, 1);
                 const auto samples = checkedMultiply(configurations, repetitions);
@@ -198,20 +220,21 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
             error(ExperimentField::Repetitions, "Configuración excede la capacidad o el presupuesto de memoria del experimento.");
         }
     }
-    if((!scaling || usesMPI) && padded && std::all_of(result.errors.begin(),result.errors.end(),[](const auto& e){return e.empty();})) {
+    if((!scaling || usesMPI || usesCUDA) && padded && std::all_of(result.errors.begin(),result.errors.end(),[](const auto& e){return e.empty();})) {
         try {
             using detail::checkedAdd;using detail::checkedMultiply;
-            const auto configs=scaling?parsed.scaling.requestedProcesses.size()+1:parsed.comparison.participants.size();
+            const auto configs=scaling?(usesCUDA?parsed.scaling.cudaBlocks.size():parsed.scaling.requestedProcesses.size())+1:parsed.comparison.participants.size();
             const auto samples=checkedMultiply(configs,static_cast<std::size_t>(parsed.comparison.repetitions));
             auto bytes=checkedAdd(inputCapacity,checkedMultiply(6,padded));
             bytes=checkedAdd(bytes,checkedMultiply(samples,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
             if(usesMPI) {
                 std::size_t maximum=1;
                 if(scaling) for(auto p:parsed.scaling.requestedProcesses) maximum=std::max(maximum,static_cast<std::size_t>(p));
-                else maximum=static_cast<std::size_t>(*parsed.comparison.participants.back().requestedProcesses);
+                else for(const auto& c:parsed.comparison.participants)if(c.requestedProcesses)maximum=std::max(maximum,static_cast<std::size_t>(*c.requestedProcesses));
                 bytes=checkedAdd(bytes,checkedMultiply(2,checkedMultiply(checkedAdd(height,checkedMultiply(2,maximum)),checkedAdd(width,2))));
                 bytes=checkedAdd(bytes,checkedMultiply(2,checkedMultiply(width,height)));
             }
+            if(usesCUDA)bytes=checkedAdd(bytes,checkedMultiply(2,padded));
             bytes=checkedAdd(bytes,128u*1024u);
             if(bytes>parsed.scaling.maxMemoryBytes) throw std::length_error("budget");
         } catch(const std::length_error&) {

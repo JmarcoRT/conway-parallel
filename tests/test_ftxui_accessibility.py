@@ -80,7 +80,7 @@ def check(binary, cwd, size, name):
         t.send('d')
         ready(t)
         t.send(" ")  # Playback now starts automatically; freeze for viewport assertions.
-        visible(t, "efectivos 12")
+        visible(t, "12 creados", "12 con trabajo")
         old = endpoints(t, paired)
         before = screen(t)
         if paired:

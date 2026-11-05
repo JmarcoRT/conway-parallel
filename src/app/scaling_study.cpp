@@ -76,12 +76,13 @@ std::size_t positionOf(ScalingOrder order, std::size_t round,
 
 ScalingResult execute(const InputData& input, const ScalingConfig& config,
                       const input::GenerationMetadata* generated) {
-    if(config.parallelEngine==Engine::MPI) {
-        if(config.requestedProcesses.empty() ||
+    if(config.parallelEngine==Engine::MPI || config.parallelEngine==Engine::CUDA) {
+        if((config.parallelEngine==Engine::MPI?config.requestedProcesses.empty():config.cudaBlocks.empty()) ||
            (config.order!=ScalingOrder::RotateLeft && config.order!=ScalingOrder::RotateRight))
             throw std::invalid_argument("Invalid MPI scaling configurations/order");
         std::vector<ExecutionConfiguration> configurations{{Engine::Sequential,{},{}}};
-        for(auto p:config.requestedProcesses) {
+        if(config.parallelEngine==Engine::CUDA)for(auto block:config.cudaBlocks)configurations.push_back({Engine::CUDA,{},{},block});
+        else for(auto p:config.requestedProcesses) {
             if(p<1 || p>1024) throw std::invalid_argument("MPI processes must be in 1..1024");
             configurations.push_back({Engine::MPI,{},static_cast<int>(p)});
         }

@@ -59,7 +59,7 @@ def check(binary, size):
         scroll_visible(t, 'Sin participante Secuencial')
         scroll_visible(t, 'Speedup: N/D', 'Eficiencia: N/D')
         t.send('\x1b'); t.send('\x1b'); t.send('\x1b[B\r')
-        move_to(t, 'OpenMP'); t.send('\x1b[F')
+        move_to(t, 'OpenMP'); t.send('\x1b[H\x1b[B')
         small(t); field(t, 'Lista de procesos', '1,1')
         execute(t); visible(t, 'recursos duplicados')
         field(t, 'Lista de procesos', '1,2')

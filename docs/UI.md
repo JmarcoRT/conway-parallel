@@ -205,8 +205,8 @@ pausa, Esp/P reproduce, R reinicia, Esc/X vuelve al menú y V retoma el mismo es
 Los ajustes pausan; Enter/atajo confirma y Esc cancela sin cambiar generación.
 Motor, GPU y geometría se muestran desde datos guardados, sin consultar CUDA al
 renderizar. Los fallos conservan el snapshot confirmado y se recuperan con U.
-El catálogo sigue previsualizando con Secuencial. CUDA dispone de didáctico manual con D sobre la misma sesión; todavía no hay
-benchmark CUDA. Véase [CUDA.md](CUDA.md#cuda-en-selección-y-simulación-normal-2026-10-29)
+El catálogo sigue previsualizando con Secuencial. CUDA dispone de didáctico manual con D sobre la misma sesión y participa en el
+benchmark configurable. Véase [CUDA.md](CUDA.md#cuda-en-selección-y-simulación-normal-2026-10-29)
 para comandos exactos y diagnóstico de disponibilidad en ON/OFF.
 
 ## Didáctico CUDA manual
@@ -247,3 +247,12 @@ reales y muestra únicamente los tableros correspondientes a la etapa actual.
 D abre la ayuda técnica y vuelve a la vista anterior sin avanzar la generación.
 V conserva la navegación entre vista global, local y ayuda. Flechas y Home/End
 desplazan el contenido; [ y ] cambian el proceso seleccionado.
+
+### CUDA en Benchmark
+
+Comparación de motores ofrece CUDA con un bloque 8x8, 16x16 o 32x8. Escalabilidad
+ofrece CUDA como estudio de bloques en una GPU, con una lista sin duplicados.
+Resultados de la sesión conserva resumen, muestras y método. El tiempo principal
+es evolución residente; preparación, descarga y operación completa aparecen
+separados en las muestras. Eficiencia CUDA es N/D. Sin disponibilidad CUDA se
+muestra el diagnóstico y no se sustituye por CPU. Véase [CUDA_BENCHMARK.md](CUDA_BENCHMARK.md).

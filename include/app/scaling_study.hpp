@@ -18,6 +18,7 @@ struct ScalingConfig {
     Engine parallelEngine{Engine::OpenMP};
     std::vector<std::int64_t> requestedProcesses{1, 2, 4};
     mpi::ClientOptions mpiOptions;
+    std::vector<core::CudaBlockSize> cudaBlocks{core::kCudaBlock8x8,core::kCudaBlock16x16,core::kCudaBlock32x8};
 };
 
 struct ScalingSample {

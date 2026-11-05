@@ -32,6 +32,13 @@ private:
 // Resident engine used independently or by the optional Game CUDA dispatch.
 // Move-only GPU ownership. Snapshots own their CPU vectors and never alias GPU
 // resources or another snapshot. Calls on one instance must be serialized.
+struct CudaBatchTiming {double wallMs{}, deviceMs{};};
+struct CudaHardwareInfo {
+    std::string name, nvccVersion;
+    std::size_t totalMemoryBytes{};
+    int device{}, major{}, minor{}, runtimeVersion{}, driverApiVersion{};
+};
+
 class CudaBackend {
 public:
     explicit CudaBackend(const InputData& input, std::size_t generation = 0, int device = 0,
@@ -46,6 +53,11 @@ public:
     // buffers or advancing generation (size_t wrap, as in Game).
     // No allocation or board transfer per step.
     void step();
+    // Resident batch: no snapshots, one final synchronization, events on its stream.
+    CudaBatchTiming runBatch(int generations);
+    static CudaHardwareInfo hardwareInfo(int device = 0);
+    // Explicit checked cleanup for experimental evidence; destructor stays best effort.
+    bool close() noexcept;
     GameState snapshot() const;
 
     // Validate against this device/kernel without allocating GPU board resources.

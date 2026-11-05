@@ -37,6 +37,7 @@ rendimiento mediante experimentos reproducibles.
 | Secuencial | Implementado |
 | OpenMP | Implementado |
 | MPI | Simulación local con procesos separados (Linux/WSL2) |
+| CUDA | Opcional: simulación, didáctica y benchmark con GPU NVIDIA |
 | Pthreads | Pendiente |
 
 ## Inicio rápido
@@ -68,6 +69,21 @@ cmake --preset experimental-release
 cmake --build --preset experimental-release
 ./build-release/conway
 ```
+
+**CUDA opcional (Ubuntu 24.04 / WSL2)**
+
+Con CUDA 12.5, G++ 12 y una RTX 3050, el perfil experimental reúne los cuatro
+motores en una compilación Release:
+
+```bash
+cmake --preset experimental-cuda-release
+cmake --build --preset experimental-cuda-release
+./build-cuda-release/conway
+```
+
+Consulta el [método del benchmark CUDA y sus requisitos](docs/CUDA_BENCHMARK.md).
+La comparación admite los cuatro motores; el estudio CUDA varía tamaños de
+bloque en una GPU. La eficiencia CUDA se muestra como N/D.
 
 En el menú, `C` abre el catálogo de patrones. Usa flechas y Enter para navegar.
 Consulta los [controles](docs/UI.md), los [requisitos avanzados de compilación

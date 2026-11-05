@@ -23,6 +23,7 @@ std::string resources(std::optional<int> low,std::optional<int> high) {
 std::string name(const ExecutionConfiguration& c) {
     if(c.engine==Engine::Sequential) return "Secuencial · referencia";
     if(c.engine==Engine::OpenMP) return "OpenMP · "+unit(*c.requestedThreads,"hilo solicitado: ","hilos solicitados: ")+std::to_string(*c.requestedThreads);
+    if(c.engine==Engine::CUDA)return "CUDA · bloque "+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y);
     return "MPI · "+unit(*c.requestedProcesses,"proceso solicitado: ","procesos solicitados: ")+std::to_string(*c.requestedProcesses);
 }
 std::string yes(bool b) {return b?"SI":"NO";}
@@ -31,7 +32,7 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
     int tab,int columns,ftxui::Color accent,ftxui::Color positive) {
     using namespace ftxui;
     Elements rows;
-    auto section=[&](std::string title){rows.push_back(text(std::move(title))|bold|color(accent));};
+    auto section=[&](std::string title){if(!rows.empty())rows.push_back(text(" "));rows.push_back(text(std::move(title))|bold|color(accent));};
     auto diagnostic=[&](const std::string& label,const std::string& detail) {
         rows.push_back(paragraph(label)|color(Color::Red));
         std::istringstream words(detail);std::string word,line;
@@ -48,22 +49,25 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
     if(!study.diagnostic.empty()) diagnostic("Diagnóstico:",study.diagnostic);
     const bool sequential=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::Sequential;});
     const bool hasMPI=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::MPI;});
+    const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
     if(!sequential) rows.push_back(paragraph("Sin participante Secuencial: speedup y eficiencia respecto de él son N/D. El oráculo solo verifica equivalencia.")|dim);
     if(tab==0) {
         section("IDENTIFICACIÓN");
         rows.push_back(paragraph("Entrada: "+pattern+" · Generaciones: "+std::to_string(study.generations)+
             " · Repeticiones: "+std::to_string(study.repetitions)));
-        rows.push_back(paragraph("Calentamientos: "+std::to_string(study.warmups)+(hasMPI?" por configuración local; por sesión MPI nueva antes de cada muestra.":" por configuración local."))|dim);
+        rows.push_back(paragraph("Calentamientos: "+std::to_string(study.warmups)+" · ver Método")|dim);
         section("TIEMPO PRINCIPAL · mediana del lote en ms");
         double largest=0;
         for(const auto& s:study.summaries) if(s.statistics && std::isfinite(s.statistics->medianMs)) largest=std::max(largest,s.statistics->medianMs);
         for(const auto& s:study.summaries) {
             const auto& c=study.configurations[s.configurationIndex];
-            rows.push_back(paragraph(name(c))|bold);
-            rows.push_back(paragraph("Observados: "+resources(s.minimumResources,s.maximumResources)+
+            rows.push_back(text(" "));
+            rows.push_back(paragraph(name(c))|bold|color(accent));
+            if(c.engine==Engine::CUDA)rows.push_back(paragraph("GPU · bloque "+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y)+" · Muestras: "+std::to_string(s.sampleCount)+"/"+std::to_string(study.repetitions)));
+            else rows.push_back(paragraph("Observados: "+resources(s.minimumResources,s.maximumResources)+
                 (c.engine==Engine::MPI?unit(s.minimumResources==s.maximumResources?s.minimumResources.value_or(0):0," proceso"," procesos"):unit(s.minimumResources==s.maximumResources?s.minimumResources.value_or(0):0," hilo"," hilos"))+" · Muestras: "+std::to_string(s.sampleCount)+"/"+std::to_string(study.repetitions)));
             rows.push_back(paragraph("Mediana: "+metric(s.statistics?std::optional<double>(s.statistics->medianMs):std::nullopt," ms")+" · "+
-                (c.engine==Engine::MPI?"máximo entre ranks":"tiempo local del lote")));
+                (c.engine==Engine::CUDA?"evolución residente GPU (reloj CPU)":c.engine==Engine::MPI?"máximo entre ranks":"tiempo local del lote")));
             if(columns>=60 && s.valid && s.statistics && largest>0) {
                 const auto length=static_cast<int>(s.statistics->medianMs/largest*std::min(40,columns-4));
                 std::string bar;for(int i=0;i<length;++i) bar+="█";
@@ -72,7 +76,8 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
             rows.push_back(paragraph("Speedup: "+metric(s.speedup,"×")+" · Eficiencia: "+metric(s.efficiency," %",100)));
             rows.push_back(paragraph("Equivalencia: "+yes(s.equivalent)+" · Validez: "+yes(s.valid))|color(s.valid?positive:Color::Yellow));
         }
-        rows.push_back(paragraph("N/D: referencia ausente/inválida, equivalencia fallida, estudio incompleto, recursos variables o mediana cero. Las diferencias no prueban significancia estadística.")|dim);
+        rows.push_back(text(" "));
+        rows.push_back(paragraph("Consulta Método para interpretar los tiempos y las métricas N/D.")|dim);
     } else if(tab==1) {
         section("ESTADÍSTICAS DESCRIPTIVAS · ms");
         for(const auto& s:study.summaries) {
@@ -85,15 +90,24 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
         section("MUESTRAS · orden real de adquisición");
         for(const auto& s:study.samples) {
             const auto& c=study.configurations[s.configurationIndex];
+            rows.push_back(text(" "));
             rows.push_back(paragraph("#"+std::to_string(s.executionIndex)+" · Ronda "+std::to_string(s.round)+
                 " · Posición "+std::to_string(s.position)+" · "+name(c))|bold);
-            rows.push_back(paragraph("Principal: "+number(s.elapsedMs)+" ms · Observados: "+
+            if(c.engine==Engine::CUDA)rows.push_back(paragraph("Principal: "+number(s.elapsedMs)+" ms · lote residente GPU"));
+            else rows.push_back(paragraph("Principal: "+number(s.elapsedMs)+" ms · Observados: "+
                 (c.engine==Engine::MPI?(s.observedProcesses?std::to_string(*s.observedProcesses)+unit(*s.observedProcesses," proceso"," procesos"):"N/D"):resources(s.minEffectiveThreads,s.maxEffectiveThreads)+unit(s.minEffectiveThreads==s.maxEffectiveThreads?s.minEffectiveThreads.value_or(0):0," hilo"," hilos"))));
             rows.push_back(paragraph("Equivalencia: "+yes(s.equivalent)+" · Validez de muestra: "+yes(s.valid)));
+            if(c.engine==Engine::CUDA && s.cuda) {
+                const auto& m=*s.cuda;
+                rows.push_back(paragraph("GPU: "+m.deviceName+" · grid "+std::to_string(m.gridX)+"x"+std::to_string(m.gridY)));
+                rows.push_back(paragraph("Intervalo del stream: "+number(m.deviceMs)+" ms · Preparación: "+number(m.prepareMs)+" ms"));
+                rows.push_back(paragraph("Descarga final: "+number(m.snapshotMs)+" ms · Operación completa: "+number(m.totalMs)+" ms"));
+            }
             if(c.engine==Engine::MPI) {
                 rows.push_back(paragraph("Auxiliares MPI · Carga: "+metric(s.loadMs," ms")+" · Snapshot: "+metric(s.snapshotMs," ms")));
                 rows.push_back(paragraph("Solicitud del lote (incluye IPC): "+metric(s.requestMs," ms")+"; no se suma al principal."));
-                rows.push_back(paragraph("Sesión #"+std::to_string(*s.sessionIndex)+" · Calentamientos por sesión: "+std::to_string(s.completedWarmups)));
+                rows.push_back(text(" "));
+            rows.push_back(paragraph("Sesión #"+std::to_string(*s.sessionIndex)+" · Calentamientos por sesión: "+std::to_string(s.completedWarmups)));
             }
         }
         if(hasMPI) section("SESIONES MPI · arranque y cierre separados");
@@ -107,6 +121,11 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
     } else {
         section("TIEMPO PRINCIPAL");
         rows.push_back(paragraph("Local: lote completo de Game::step y observación del equipo efectivo. Excluye construcción y comparación."));
+        if(hasCUDA) {
+            rows.push_back(paragraph("CUDA: lote residente completo, medido por reloj CPU con sincronización final. Excluye preparación y descarga; no copia el tablero por generación."));
+            rows.push_back(paragraph("Eventos CUDA: intervalo del stream, no ocupación ni tiempo puro de kernel. Preparación, descarga y total de operación se registran separados."));
+            rows.push_back(paragraph("CUDA: eficiencia N/D. Los hilos por bloque no son núcleos ni hilos simultáneos; los bloques son configuraciones de una GPU."));
+        }
         if(hasMPI) rows.push_back(paragraph("MPI: máximo entre ranks de intervalos MPI_Wtime. Incluye cálculo, halos, reducciones y barrera final."));
         if(hasMPI) rows.push_back(paragraph("Fuera del principal MPI: barrera inicial, agregación de tiempos, carga, IPC y snapshot."));
         if(hasMPI) section("TIEMPOS AUXILIARES MPI");
@@ -118,6 +137,7 @@ std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study
         section("CÓMO INTERPRETAMOS");
         rows.push_back(paragraph("Speedup = mediana secuencial / mediana del participante. Eficiencia = speedup / recursos efectivos estables."));
         if(hasMPI) rows.push_back(paragraph("Recursos MPI: incluye rank 0 y ranks vacíos. La eficiencia puede superar 100 %; no es eficiencia por núcleo."));
+        rows.push_back(paragraph("N/D: referencia ausente/inválida, equivalencia fallida, estudio incompleto, recursos variables o mediana cero. Las diferencias no prueban significancia estadística.")|dim);
         rows.push_back(paragraph("Mínimo, máximo, media, mediana y desviación estándar poblacional (divisor N). Muestras inválidas y fallos conservan evidencia; no justifican métricas válidas."));
     }
     return rows;
