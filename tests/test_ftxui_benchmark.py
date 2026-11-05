@@ -99,7 +99,14 @@ def check_sources(terminal, values, change=False):
 def wait_state(terminal, state):
     import time
     deadline = time.monotonic() + 90  # Límite de bloqueo, no umbral de rendimiento.
-    while "Estado: " + state not in " ".join(terminal.screen().values()):
+    labels = ["Estado: " + state]
+    if state == "Finalizado":
+        labels += ["Comparación completada", "Escalabilidad completada", "Mediciones completadas"]
+    elif state in ("Preparando entrada", "Ejecutando mediciones"):
+        labels.append(state)
+        if state == "Ejecutando mediciones":
+            labels.append("Ejecutando benchmark")
+    while not any(label in " ".join(terminal.screen().values()) for label in labels):
         assert terminal.process.poll() is None
         assert time.monotonic() < deadline, terminal.screen()
         terminal.read()
@@ -131,13 +138,14 @@ def check(binary, cwd, columns, rows):
         edit(terminal, "3")
         field(terminal, "Calentamientos", "0"); field(terminal, "Repeticiones", "2")
         field(terminal, "Hilos OpenMP", "2"); execute(terminal); wait_state(terminal, "Finalizado")
-        scroll_visible(terminal, "IDENTIFICACIÓN", "Entrada: cedar.txt")
-        scroll_visible(terminal, "Speedup:", "Equivalencia: SI")
+        scroll_visible(terminal, "ENTRADA", "cedar.txt de 7 × 3")
+        scroll_visible(terminal, "Aceleración", "Correcto")
         terminal.send("\x1b[C")
-        scroll_visible(terminal, "ESTADÍSTICAS DESCRIPTIVAS")
-        scroll_visible(terminal, "Desviación estándar poblacional")
-        terminal.send("\x1b[F"); visible(terminal, "Ronda 1")
-        terminal.send("\x1b[C"); scroll_visible(terminal, "TIEMPO PRINCIPAL")
+        scroll_visible(terminal, "ESTADÍSTICAS POR MOTOR")
+        scroll_visible(terminal, "Desviación")
+        terminal.send("\x1b[F"); visible(terminal, "calentamientos no forman")
+        terminal.send("\x1b[C"); scroll_visible(terminal, "QUÉ TIEMPO SE COMPARA")
+        terminal.send("d"); scroll_visible(terminal, "TIEMPO PRINCIPAL")
         scroll_visible(terminal, "CÓMO COMPARAMOS"); scroll_visible(terminal, "Speedup =")
         terminal.send("\x1b[C"); before=terminal.raw
         terminal.send("\r" * 12); assert terminal.raw==before, "Enter duplicated finished experiment"
@@ -150,27 +158,27 @@ def check(binary, cwd, columns, rows):
         focused(terminal,"Lista de hilos");visible(terminal,"recursos duplicados")
         edit(terminal,"4,1,2");execute(terminal);wait_state(terminal,"Finalizado")
         visible(terminal,"Ejecución #2")
-        scroll_visible(terminal,"Entrada: Tablero generado","7 × 5")
-        scroll_visible(terminal,"TABLA DE ESCALABILIDAD");scroll_visible(terminal,"Eje Y: speedup")
-        terminal.send("\x1b[C");scroll_visible(terminal,"ESTADÍSTICAS","Sec. compartida")
-        terminal.send("\x1b[F");visible(terminal,"Ronda 1","Contexto conservado:")
+        scroll_visible(terminal,"ENTRADA","Tablero generado de 7 × 5")
+        scroll_visible(terminal,"RESULTADOS OPENMP");scroll_visible(terminal,"ACELERACIÓN SEGÚN LOS HILOS")
+        terminal.send("\x1b[C");scroll_visible(terminal,"ESTADÍSTICAS POR CONFIGURACIÓN","Secuencial")
+        terminal.send("\x1b[F");visible(terminal,"Ejecución #2")
         terminal.send(ESC);terminal.send(ESC);terminal.send("\x1b[A\r")
         move_to(terminal,"Patrón cargado");terminal.send("\x1b[F\r")
         field(terminal,"Ancho","8000");field(terminal,"Alto","8000");execute(terminal)
         visible(terminal,"256 MiB")
         terminal.send(ESC);terminal.send("\x1b[B\x1b[B\r")
         expect_identity_heading(terminal,"RESULTADOS DE LA SESIÓN")
-        scroll_visible(terminal,"Ejecución #2");terminal.send("\x1b[D");scroll_visible(terminal,"Equivalencia: SI")
+        scroll_visible(terminal,"Ejecución #2");terminal.send("\x1b[D");scroll_visible(terminal,"Correcto")
         terminal.send(ESC);terminal.send("\x1b[A\x1b[A\r")
         field(terminal,"Ancho","7");field(terminal,"Alto","5");execute(terminal);wait_state(terminal,"Finalizado")
         visible(terminal,"Ejecución #3")
-        scroll_visible(terminal,"Equivalencia: SI")
+        scroll_visible(terminal,"Correcto")
         assert terminal.identity()==identity
         terminal.send(ESC);terminal.send(ESC);terminal.send("\x1b[B\x1b[B\r")
         scroll_visible(terminal,"Ejecución #3")
         before=terminal.raw;terminal.read();assert before==terminal.raw
-        terminal.send("\x1b[C");scroll_visible(terminal,"ESTADÍSTICAS DESCRIPTIVAS")
-        terminal.send(ESC);terminal.send("\r");scroll_visible(terminal,"ESTADÍSTICAS DESCRIPTIVAS")
+        terminal.send("\x1b[C");scroll_visible(terminal,"ESTADÍSTICAS POR MOTOR")
+        terminal.send(ESC);terminal.send("\r");scroll_visible(terminal,"ESTADÍSTICAS POR MOTOR")
         assert b"\x1b[2J" not in terminal.raw
         terminal.send(ESC);terminal.send(ESC);terminal.send("q");assert terminal.process.wait(timeout=5)==0
         print(f"PASS local comparison/scaling, form errors, session preservation and focus {columns}x{rows}", flush=True)
@@ -212,7 +220,7 @@ def check_active_close(binary, cwd):
             stream.write("1")
         wait_state(terminal, "Finalizado")
         expect_identity_heading(terminal, "RESULTADOS DE LA SESIÓN")
-        scroll_visible(terminal, "Equivalencia: SI")
+        scroll_visible(terminal, "Correcto")
         terminal.send(ESC)
         terminal.send("\x1b[A\x1b[A\r")
         execute(terminal)

@@ -1,4 +1,5 @@
 #pragma once
+#include "app/benchmark_progress.hpp"
 #include "app/benchmark.hpp"
 #include "app/cuda_benchmark.hpp"
 #include "mpi/client.hpp"
@@ -58,7 +59,7 @@ mpi::ClientOptions experimentalMPIOptions();
 // Invalid input/configuration throws before starting processes. Never retries.
 ExperimentalStudy runExperimentalStudy(const InputData&, std::vector<ExecutionConfiguration>,
     int generations, int warmups, int repetitions, bool rotateRight,
-    mpi::ClientOptions options={}, std::size_t maxMemoryBytes=256u*1024u*1024u);
+    mpi::ClientOptions options={}, std::size_t maxMemoryBytes=256u*1024u*1024u, const BenchmarkProgressCallback& progress = {});
 std::vector<StudySummary> summarizeStudy(const ExperimentalStudy&);
 void validateStudy(const ExperimentalStudy&);
 std::string configurationName(const ExecutionConfiguration&);

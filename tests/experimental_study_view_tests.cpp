@@ -30,12 +30,18 @@ int main() {
             auto rows=[&](ComparisonTab tab){return render(comparisonRows(result,"blinker",tab,width,ftxui::Color::Cyan,ftxui::Color::Green),width);};
             auto text=rows(ComparisonTab::Summary);
             check(text.find("Secuencial")!=text.npos && text.find("OpenMP")!=text.npos && text.find("MPI")!=text.npos,"participants missing");
-            check(text.find("procesos")!=text.npos && text.find("Observados")!=text.npos,"separate resources missing");
+            check(text.find("procesos")!=text.npos && text.find("Configuración")!=text.npos,"separate resources missing");
             check(text.find("N/D×")==text.npos && text.find("N/D %")==text.npos,"suffix attached to N/D");
-            check(text.find("150.000 %")!=text.npos,"efficiency clamped or incorrectly formatted");
-            check(text.find("referencia")!=text.npos,"sequential reference missing");
-            text=rows(ComparisonTab::Samples);check(text.find("Auxiliares MPI")!=text.npos && text.find("Arranque")!=text.npos && text.find("Snapshot")!=text.npos,"MPI auxiliary times missing");
-            text=rows(ComparisonTab::Method);check(text.find("MPI_Wtime")!=text.npos && text.find("sesión")!=text.npos,"timing scope missing");
+            check(text.find("150.0 %")!=text.npos,"efficiency clamped or incorrectly formatted");
+            check(text.find("Referencia")!=text.npos,"sequential reference missing");
+            text=rows(ComparisonTab::Samples);check(text.find("ESTADÍSTICAS POR MOTOR")!=text.npos && text.find("MEDICIONES INDIVIDUALES")!=text.npos,"sample tables missing");
+            check(text.find("Auxiliares MPI")==text.npos,"technical details shown by default");
+            text=render(comparisonRows(result,"blinker",ComparisonTab::Samples,width,ftxui::Color::Cyan,ftxui::Color::Green,true),width);
+            check(text.find("Auxiliares MPI")!=text.npos && text.find("Arranque")!=text.npos && text.find("Snapshot")!=text.npos,"MPI auxiliary times missing");
+            text=rows(ComparisonTab::Method);check(text.find("QUÉ TIEMPO SE COMPARA")!=text.npos && text.find("CÓMO LEER LAS MÉTRICAS")!=text.npos,"method overview missing");
+            check(text.find("MPI_Wtime")==text.npos,"technical method shown by default");
+            text=render(comparisonRows(result,"blinker",ComparisonTab::Method,width,ftxui::Color::Cyan,ftxui::Color::Green,false,true),width);
+            check(text.find("MPI_Wtime")!=text.npos && text.find("sesión")!=text.npos,"timing scope missing");
             auto failed=result;failed.study->complete=false;failed.study->diagnostic="rank failure";for(auto& s:failed.study->summaries){s.valid=false;s.speedup.reset();s.efficiency.reset();}
             text=render(comparisonRows(failed,"blinker",ComparisonTab::Summary,width,ftxui::Color::Cyan,ftxui::Color::Green),width);
             check(text.find("ESTUDIO INCOMPLETO")!=text.npos && text.find("rank failure")!=text.npos && text.find("N/D")!=text.npos,"partial outcome hidden");

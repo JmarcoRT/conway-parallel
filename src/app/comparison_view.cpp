@@ -121,8 +121,16 @@ ComparisonBars comparisonBars(const ExperimentSummary& s, int columns) {
     return bars;
 }
 std::vector<ftxui::Element> comparisonRows(const ExperimentResult& result,
-    const std::string& patternName, ComparisonTab tab, int columns, Color accent, Color positive) {
-    if(result.study) return experimentalStudyRows(*result.study,(result.input.generated?std::string("Tablero generado"):patternName)+" · "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height),static_cast<int>(tab),columns,accent,positive);
+    const std::string& patternName, ComparisonTab tab, int columns, Color accent, Color positive, bool sampleDetails, bool methodDetails) {
+    if(result.study) {
+        const auto input=(result.input.generated?std::string("Tablero generado"):patternName)+
+            " de "+std::to_string(result.input.width)+" × "+std::to_string(result.input.height);
+        if(tab==ComparisonTab::Summary)
+            return comparisonStudySummaryRows(*result.study,input,columns,accent,positive);
+        if(tab==ComparisonTab::Samples)
+            return comparisonStudySampleRows(*result.study,columns,accent,positive,sampleDetails);
+        return comparisonStudyMethodRows(*result.study,columns,accent,positive,methodDetails);
+    }
 
     const auto& s = result.summary;
     std::vector<Element> rows;

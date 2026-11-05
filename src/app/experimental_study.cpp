@@ -86,7 +86,7 @@ std::string configurationName(const ExecutionConfiguration& c) {
     return c.engine==Engine::OpenMP?"openmp:"+std::to_string(*c.requestedThreads):"mpi:"+std::to_string(*c.requestedProcesses);
 }
 ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<ExecutionConfiguration> configurations,
-        int generations,int warmups,int repetitions,bool right,mpi::ClientOptions options,std::size_t budget) {
+        int generations,int warmups,int repetitions,bool right,mpi::ClientOptions options,std::size_t budget,const BenchmarkProgressCallback& progress) {
     (void)detail::validateInput(input);
     if(configurations.size()<2 || generations<1 || warmups<0 || repetitions<1)
         throw std::invalid_argument("Invalid experimental study dimensions/counts");
@@ -134,7 +134,12 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
     study.estimatedPeakBytes=bytes; study.maxMemoryBytes=budget;
     study.samples.reserve(count); study.sessions.reserve(count);
     detail::OpenMPSettingsGuard settings; omp_set_dynamic(0);
+    const auto mpiConfigurations=static_cast<std::size_t>(std::count_if(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::MPI;}));
+    const auto localWarmups=detail::checkedMultiply(study.configurations.size()-mpiConfigurations,static_cast<std::size_t>(warmups));
+    const auto mpiWarmups=detail::checkedMultiply(detail::checkedMultiply(mpiConfigurations,static_cast<std::size_t>(repetitions)),static_cast<std::size_t>(warmups));
+    detail::BenchmarkProgressCounter work(detail::checkedAdd(2,detail::checkedAdd(count,detail::checkedAdd(localWarmups,mpiWarmups))),progress);
     auto reference=detail::runOnce(input,Engine::Sequential,1,generations);
+    work.advance();
     std::size_t execution=1;
     try {
     auto cudaEquivalent=[&](const core::GameState& state) {
@@ -157,6 +162,7 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                 study.diagnostic="Local warmup is not equivalent to sequential oracle";
                 study.summaries=summarizeStudy(study); return study;
             }
+            work.advance();
         }
     for(int round=0;round<repetitions;++round) {
         for(std::size_t pos=0;pos<study.configurations.size();++pos) {
@@ -193,6 +199,7 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                         if(attempt<static_cast<std::size_t>(warmups)) {
                             ++session.completedWarmups; ++study.completedWarmupRuns; ++execution;
                             if(!same) throw std::runtime_error("MPI warmup is not equivalent to sequential oracle");
+                            work.advance();
                         } else {
                             sample.executionIndex=execution++; sample.completedWarmups=session.completedWarmups;
                             sample.elapsedMs=batch.maximumMs; sample.observedProcesses=batch.processes;
@@ -216,6 +223,7 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                     study.summaries=summarizeStudy(study); return study; // No retries or later participants.
                 }
             }
+            work.advance();
         }
     }
     } catch(const std::exception& error) {
@@ -223,7 +231,7 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
         study.diagnostic="Local experimental execution: "+std::string(error.what());
         study.summaries=summarizeStudy(study); return study;
     }
-    study.complete=true; study.summaries=summarizeStudy(study); return study;
+    study.complete=true; study.summaries=summarizeStudy(study); work.advance(); return study;
 }
 std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
     std::vector<StudySummary> summaries;

@@ -57,7 +57,7 @@ struct ScalingResult {
     std::optional<ExperimentalStudy> study; // MPI study, CSV v2.
 };
 
-ScalingResult runScalingStudy(const InputData& input, const ScalingConfig& config);
-ScalingResult runScalingStudy(const input::GeneratedInput& input, const ScalingConfig& config);
+ScalingResult runScalingStudy(const InputData& input, const ScalingConfig& config, const BenchmarkProgressCallback& progress = {});
+ScalingResult runScalingStudy(const input::GeneratedInput& input, const ScalingConfig& config, const BenchmarkProgressCallback& progress = {});
 
 } // namespace conway::app

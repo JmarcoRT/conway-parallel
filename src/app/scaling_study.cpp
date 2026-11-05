@@ -75,7 +75,7 @@ std::size_t positionOf(ScalingOrder order, std::size_t round,
 }
 
 ScalingResult execute(const InputData& input, const ScalingConfig& config,
-                      const input::GenerationMetadata* generated) {
+                      const input::GenerationMetadata* generated, const BenchmarkProgressCallback& progress) {
     if(config.parallelEngine==Engine::MPI || config.parallelEngine==Engine::CUDA) {
         if((config.parallelEngine==Engine::MPI?config.requestedProcesses.empty():config.cudaBlocks.empty()) ||
            (config.order!=ScalingOrder::RotateLeft && config.order!=ScalingOrder::RotateRight))
@@ -91,7 +91,7 @@ ScalingResult execute(const InputData& input, const ScalingConfig& config,
         ScalingResult result{config,std::move(identity),0,0,{},{}};
         result.study=runExperimentalStudy(input,std::move(configurations),config.generations,
             config.warmups,config.repetitions,config.order==ScalingOrder::RotateRight,
-            config.mpiOptions,config.maxMemoryBytes);
+            config.mpiOptions,config.maxMemoryBytes,progress);
         result.completedWarmupRuns=result.study->completedWarmupRuns;
         result.estimatedPeakBytes=result.study->estimatedPeakBytes;
         return result;
@@ -113,7 +113,9 @@ ScalingResult execute(const InputData& input, const ScalingConfig& config,
     omp_set_dynamic(0);
     // Correctness oracle only, never a performance sample. Enables rotated rounds
     // without retaining a final Game for every OpenMP configuration.
+    detail::BenchmarkProgressCounter work(checkedAdd(2,checkedAdd(shape.warmupRuns,shape.samples)),progress);
     const auto oracle = detail::runOnce(input, Engine::Sequential, 1, config.generations);
+    work.advance();
     for (int round = 0; round < config.warmups; ++round) {
         for (std::size_t position = 0; position < shape.configurations; ++position) {
             const auto index = configurationAt(config.order, static_cast<std::size_t>(round),
@@ -124,6 +126,7 @@ ScalingResult execute(const InputData& input, const ScalingConfig& config,
             if(!detail::sameState(warmed.finalGame,oracle.finalGame))
                 throw std::runtime_error("Warmup differs from sequential oracle");
             ++result.completedWarmupRuns;
+            work.advance();
         }
     }
     std::size_t executionIndex = 1 + result.completedWarmupRuns;
@@ -143,9 +146,11 @@ ScalingResult execute(const InputData& input, const ScalingConfig& config,
                   run.minEffectiveThreads, run.maxEffectiveThreads, equivalent},
                  round, static_cast<int>(position), executionIndex++},
                 index, referenceIndex});
+            work.advance();
         }
     }
     result.summary = summarizeScalingSamples(result.samples, config);
+    work.advance();
     return result;
 }
 } // namespace
@@ -209,10 +214,10 @@ ScalingSummary summarizeScalingSamples(std::span<const ScalingSample> samples,
     return result;
 }
 
-ScalingResult runScalingStudy(const InputData& input, const ScalingConfig& config) {
-    return execute(input, config, nullptr);
+ScalingResult runScalingStudy(const InputData& input, const ScalingConfig& config, const BenchmarkProgressCallback& progress) {
+    return execute(input, config, nullptr,progress);
 }
-ScalingResult runScalingStudy(const input::GeneratedInput& input, const ScalingConfig& config) {
-    return execute(input.input, config, &input.metadata);
+ScalingResult runScalingStudy(const input::GeneratedInput& input, const ScalingConfig& config, const BenchmarkProgressCallback& progress) {
+    return execute(input.input, config, &input.metadata,progress);
 }
 } // namespace conway::app

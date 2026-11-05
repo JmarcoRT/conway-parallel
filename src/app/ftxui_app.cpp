@@ -803,6 +803,7 @@ public:
 
     ~InteractiveApp() override {
         catalogPreview_.close();
+        benchmarkCompletionTimer_.request_stop();
         experiment_->shutdown();
         playbackTimer_.request_stop();
         // La salida normal ya confirmó el cierre asíncrono. La destrucción
@@ -932,6 +933,9 @@ public:
     bool OnEvent(Event event) override {
         if(state_.page==Page::Main && (event==Event::Tab || event==Event::TabReverse))return mainMenu_->OnEvent(event==Event::Tab?Event::ArrowDown:Event::ArrowUp);
         if (event == Event::Custom) {
+            const auto execution=experiment_->snapshot();
+            if(execution.phase==ExecutionPhase::Error || (execution.phase==ExecutionPhase::Finished &&
+               state_.page!=Page::ExperimentExecution && state_.page!=Page::BenchmarkResults)) completionPendingId_=0;
             catalogPreview_.poll();
             if(normalSession_) {
                 normalSession_->poll();
@@ -1032,6 +1036,16 @@ public:
                 else state_.message.clear();
                 return true;
             }
+        }
+        if ((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
+            && (showingComparisonSamples() || showingComparisonMethod() || showingScalingSamples() || showingScalingMethod()) && event.is_character()
+            && (event.character() == "d" || event.character() == "D")) {
+            auto& details = showingScalingSamples() ? scalingSampleDetails_ :
+                showingScalingMethod() ? scalingMethodDetails_ :
+                showingComparisonSamples() ? comparisonSampleDetails_ : comparisonMethodDetails_;
+            details = !details;
+            resultRow_ = 0;
+            return true;
         }
         if ((state_.page == Page::ExperimentExecution || state_.page == Page::BenchmarkResults)
             && (showingComparison() || showingScaling()) && (event == Event::ArrowLeft || event == Event::ArrowRight)) {
@@ -1992,7 +2006,10 @@ private:
             if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
                                     std::filesystem::path(state_.path).filename().string(), bytes))
                 return "Ya hay un experimento activo.";
-            resultRow_ = 0; comparisonTab_=0; scalingTab_=0;
+            resultRow_ = 0; comparisonTab_=0; scalingTab_=0; comparisonSampleDetails_=false; comparisonMethodDetails_=false; scalingSampleDetails_=false; scalingMethodDetails_=false;
+            benchmarkCompletionTimer_.request_stop();
+            completionPendingId_=experiment_->snapshot().description.id;
+            completionDisplayedId_=0;completionUntil_={};
             state_.page = Page::ExperimentExecution;
             return {};
         } catch (const std::exception& error) { return error.what(); }
@@ -2005,11 +2022,35 @@ private:
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
     }
 
+    bool showingComparisonSamples() const {
+        if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Samples) return false;
+        const auto snapshot = experiment_->snapshot();
+        return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
+    }
+
+    bool showingComparisonMethod() const {
+        if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Method) return false;
+        const auto snapshot = experiment_->snapshot();
+        return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
+    }
+
     bool showingScaling() const {
         const auto snapshot = experiment_->snapshot();
         return snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
+    }
+
+    bool showingScalingSamples() const {
+        if (!showingScaling() || static_cast<ScalingTab>(scalingTab_) != ScalingTab::Samples) return false;
+        const auto snapshot = experiment_->snapshot();
+        return !std::get<ScalingResult>(snapshot.latest->result).study;
+    }
+
+    bool showingScalingMethod() const {
+        if (!showingScaling() || static_cast<ScalingTab>(scalingTab_) != ScalingTab::Method) return false;
+        const auto snapshot = experiment_->snapshot();
+        return !std::get<ScalingResult>(snapshot.latest->result).study;
     }
 
     // Resolve paragraph heights at the viewport width before yframe computes
@@ -2033,6 +2074,8 @@ private:
 
     Element renderScaling(const ExecutionSnapshot& snapshot, bool session) {
         const auto& stored = *snapshot.latest;
+        const auto& scaling = std::get<ScalingResult>(stored.result);
+        const bool compactResults = !scaling.study;
         std::vector<Element> rows;
         if (snapshot.phase != ExecutionPhase::Finished) {
             const char* status = snapshot.phase == ExecutionPhase::Error ? "Error" :
@@ -2041,14 +2084,16 @@ private:
                 " · ejecución actual #" + std::to_string(snapshot.description.id)));
             if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
             rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
-        } else rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
+        } else if (!compactResults) rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
             ftxui::color(ftxui::Color::RGB(98,232,137)));
         auto presentation = scalingRows(std::get<ScalingResult>(stored.result), stored.description.patternName,
             static_cast<ScalingTab>(scalingTab_), static_cast<int>(controls::terminalSize().columns) - 2,
-            identityCyan(), ftxui::Color::RGB(98,232,137));
+            identityCyan(), ftxui::Color::RGB(98,232,137), scalingSampleDetails_, scalingMethodDetails_);
         auto tabs = presentation.front();
         rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
-        rows.push_back(ftxui::paragraph("Contexto conservado: " + stored.context.studyId) | ftxui::dim);
+        rows.push_back(ftxui::text(" "));
+        rows.push_back(ftxui::paragraph(compactResults ? "Ejecución #" + std::to_string(stored.description.id) :
+            "Contexto conservado: " + stored.context.studyId) | ftxui::dim);
         return panel(session ? "RESULTADOS DE LA SESIÓN" :
             std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::CUDA?"BLOQUES CUDA":std::get<ScalingResult>(stored.result).config.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP",
             resultViewport(std::move(rows), std::move(tabs)));
@@ -2056,6 +2101,7 @@ private:
 
     Element renderComparison(const ExecutionSnapshot& snapshot, bool session) {
         const auto& stored = *snapshot.latest;
+        const auto& comparison = std::get<ExperimentResult>(stored.result);
         std::vector<Element> rows;
         if (snapshot.phase != ExecutionPhase::Finished) {
             const char* status = snapshot.phase == ExecutionPhase::Error ? "Error" :
@@ -2063,27 +2109,84 @@ private:
             rows.push_back(ftxui::paragraph(std::string("Estado: ") + status +
                 " · ejecución actual #" + std::to_string(snapshot.description.id)));
             if (!snapshot.error.empty()) rows.push_back(ftxui::paragraph(snapshot.error) | ftxui::color(ftxui::Color::Red));
-        } else rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
-            ftxui::color(ftxui::Color::RGB(98,232,137)));
+        } else if (!comparison.study)
+            rows.push_back(ftxui::text("Estado: Finalizado · Ejecución #" + std::to_string(stored.description.id)) |
+                ftxui::color(ftxui::Color::RGB(98,232,137)));
         if (snapshot.phase != ExecutionPhase::Finished)
             rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
-        auto presentation = comparisonRows(std::get<ExperimentResult>(stored.result), stored.description.patternName,
+        auto presentation = comparisonRows(comparison, stored.description.patternName,
             static_cast<ComparisonTab>(comparisonTab_), static_cast<int>(controls::terminalSize().columns) - 2,
-            identityCyan(), ftxui::Color::RGB(98,232,137));
+            identityCyan(), ftxui::Color::RGB(98,232,137), comparisonSampleDetails_, comparisonMethodDetails_);
         auto tabs = presentation.front();
         rows.insert(rows.end(), std::make_move_iterator(presentation.begin() + 1), std::make_move_iterator(presentation.end()));
+        if (comparison.study) {
+            rows.push_back(ftxui::text(" "));
+            rows.push_back(ftxui::text("Ejecución #" + std::to_string(stored.description.id)) | ftxui::dim);
+        }
         return panel(session ? "RESULTADOS DE LA SESIÓN" : "COMPARACIÓN DE MOTORES",
             resultViewport(std::move(rows), std::move(tabs)));
     }
 
+    bool showExperimentCompletion(const ExecutionSnapshot& snapshot) {
+        if(snapshot.phase!=ExecutionPhase::Finished || !snapshot.latest ||
+           snapshot.latest->description.id!=snapshot.description.id || completionPendingId_!=snapshot.description.id) return false;
+        const bool valid=std::visit([](const auto& data) {
+            if(data.study) return data.study->complete && data.study->cleanupConfirmed &&
+                !data.study->summaries.empty() && std::all_of(data.study->summaries.begin(),data.study->summaries.end(),
+                    [](const auto& summary){return summary.valid && summary.equivalent;});
+            return data.summary.validForComparison && data.summary.equivalent;
+        },snapshot.latest->result);
+        if(!valid) {completionPendingId_=0;return false;}
+        const auto now=std::chrono::steady_clock::now();
+        if(completionDisplayedId_!=snapshot.description.id) {
+            completionDisplayedId_=snapshot.description.id;
+            completionUntil_=now+400ms;
+            benchmarkCompletionTimer_.request_stop();
+            benchmarkCompletionTimer_=std::jthread([this](std::stop_token token) {
+                std::mutex mutex;std::condition_variable_any wake;std::unique_lock lock(mutex);
+                wake.wait_for(lock,token,400ms,[]{return false;});
+                if(!token.stop_requested()) screen_.PostEvent(Event::Custom);
+            });
+        }
+        if(now<completionUntil_) return true;
+        completionPendingId_=0;
+        return false;
+    }
+
+    Element renderExperimentProgress(const ExecutionSnapshot& snapshot, bool session) {
+        using namespace ftxui;
+        const auto terminal=controls::terminalSize();
+        const auto& d=snapshot.description;
+        const auto& sc=d.config.scaling;
+        const bool finished=snapshot.phase==ExecutionPhase::Finished;
+        const int percent=finished?100:snapshot.totalWork?
+            std::clamp(static_cast<int>(static_cast<long double>(snapshot.completedWork)*100/snapshot.totalWork),0,99):0;
+        const auto tint=finished?Color::RGB(98,232,137):identityCyan();
+        const int barWidth=std::clamp(static_cast<int>(terminal.columns)-24,12,48);
+        const std::string title=!d.scaling?"COMPARACIÓN DE MOTORES":
+            sc.parallelEngine==Engine::CUDA?"BLOQUES CUDA":sc.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP";
+        const std::string status=finished?"Benchmark completado":
+            snapshot.phase==ExecutionPhase::Preparing?"Preparando entrada":"Ejecutando benchmark";
+        const auto digits=std::to_string(percent);
+        auto progress=hbox({gauge(static_cast<float>(percent)/100)|color(tint)|
+            bgcolor(Color::RGB(35,40,44))|size(WIDTH,EQUAL,barWidth),
+            text("  "+std::string(3-digits.size(),' ')+digits+" %")|bold|color(tint)});
+        auto card=vbox({text(" "),text(status)|bold|color(tint),text(" "),std::move(progress),text(" ")});
+        card=hbox({text("  "),std::move(card),text("  ")})|border;
+        resultRows_=1;resultRow_=0;
+        return panel(session?"RESULTADOS DE LA SESIÓN":title,card|center);
+    }
+
     Element renderExperiment(bool session) {
         const auto snapshot = experiment_->snapshot();
+        if(showExperimentCompletion(snapshot)) return renderExperimentProgress(snapshot,session);
         if (snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (session || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id))) return renderComparison(snapshot, session);
         if (snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
             && (session || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id))) return renderScaling(snapshot, session);
+        if (snapshot.active()) return renderExperimentProgress(snapshot, session);
         const auto& d = snapshot.description;
         std::vector<Element> rows;
         const char* status = "Listo";
@@ -2663,6 +2766,13 @@ private:
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · D ayuda · [/] · N paso · Esp · R · Esc";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · D ayuda · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
         const auto terminal = controls::terminalSize();
+        if (state_.page==Page::ExperimentExecution || state_.page==Page::BenchmarkResults) {
+            const auto snapshot=experiment_->snapshot();
+            if(snapshot.active() && (state_.page==Page::ExperimentExecution || !snapshot.latest))
+                return state_.page==Page::ExperimentExecution ?
+                    "Esc configuración (la ejecución continúa)" :
+                    "Esc Benchmark (la ejecución continúa)";
+        }
         if (!ui::roomyTerminal(terminal.columns, terminal.rows)) {
             switch (state_.page) {
                 case Page::Patterns: return catalogDetail_
@@ -2693,12 +2803,12 @@ private:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
             case Page::ExperimentExecution: return (showingComparison() || showingScaling())
-                ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración"
+                ? ((showingComparisonSamples() || showingComparisonMethod() || showingScalingSamples() || showingScalingMethod())?"←→ pestañas   D detalles   ↑↓ desplazar   Esc configuración":"←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración")
                 : "↑↓ desplazar · Esc configuración";
             case Page::ComparisonConfig:
             case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter activar · Esc volver a Benchmark";
             case Page::BenchmarkResults: return (showingComparison() || showingScaling())
-                ? "←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark"
+                ? ((showingComparisonSamples() || showingComparisonMethod() || showingScalingSamples() || showingScalingMethod())?"←→ pestañas   D detalles   ↑↓ desplazar   Esc Benchmark":"←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark")
                 : "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
             case Page::Didactic: return "T tableros/hilos · Flechas mover · N etapa en pausa · Esp pausa · R · +/- · Esc";
@@ -2729,6 +2839,9 @@ private:
     Page destinationAfterPath_{Page::Main};
     std::atomic<unsigned> pendingEvents_{0};
     std::jthread playbackTimer_;
+    std::jthread benchmarkCompletionTimer_;
+    std::uint64_t completionPendingId_{},completionDisplayedId_{};
+    std::chrono::steady_clock::time_point completionUntil_{};
     std::mutex benchmarkMutex_;
     std::optional<BenchmarkResult> benchmarkResult_;
     std::string benchmarkError_;
@@ -2738,7 +2851,11 @@ private:
     bool exitRequested_{false};
     int resultRow_{0}, resultRows_{1};
     int comparisonTab_{0};
+    bool comparisonSampleDetails_{false};
+    bool comparisonMethodDetails_{false};
     int scalingTab_{0};
+    bool scalingSampleDetails_{false};
+    bool scalingMethodDetails_{false};
     int workerRow_{0};
     bool catalogNext_{false}, catalogDetail_{false};
     int mpiDidacticHelpReturn_=0;
