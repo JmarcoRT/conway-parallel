@@ -105,7 +105,11 @@ def check(binary,root):
         assert 'Regla B3' not in first and 'Swap capturado' not in first and 'NEXT' not in first
         t.send('v');t.send('v');first_local=collect(t)
         assert cells(first_local,'H de R1 g3')=='..O..',first_local
-        assert 'Composición didáctica' in first_local and 'snapshot intermedio' in first_local
+        assert 'Recibe de: R1' in first_local and 'snapshot intermedio' not in first_local,first_local
+        before_help=text(t);t.send('d');help_view=collect(t)
+        assert 'Composición didáctica' in help_view and 'snapshot intermedio' in help_view,help_view
+        assert set(workers(t.process.pid))==pids,'help restarted MPI workers'
+        t.send('d');assert 'Etapa 2/6' in text(t) and 'En pausa' in text(t),text(t)
         assert 'NEXT' not in first_local
         t.send('n');t.send('v');second=collect(t)
         assert 'ENVÍA R0 -> R1' in second and 'ENVÍA R1 -> R0' not in second,second
@@ -113,15 +117,18 @@ def check(binary,root):
         t.send('n');cell=collect(t)
         assert 'S=1 · halo recibido de R1' in cell and 'Regla B3/S23 capturada: antes 1 · vecinos 2 -> 1' in cell,cell
         t.send('v');t.send('v');selected=collect(t)
-        assert 'NEXT · solo célula evaluada' in selected and 'Swap capturado' not in selected,selected
+        assert 'Resultado de la celda seleccionada' in selected and 'Swap capturado' not in selected,selected
         assert '║' in selected and '┃' in selected,selected
         # The same local row occurs twice: CURRENT and the selectively revealed NEXT.
         assert re.search(r'│\? +│\? +│O +│\? +│\?',selected),selected
         t.send('n');buffers=collect(t)
-        assert 'NEXT calculado G1' in buffers and 'Swap capturado: sí' in buffers,buffers
+        assert 'Nueva generación G1' in buffers and 'Swap capturado' not in buffers,buffers
+        t.send('d');buffer_help=collect(t)
+        assert 'NEXT calculado G1' in buffer_help and 'Swap capturado: sí' in buffer_help,buffer_help
+        t.send('d')
         assert re.search(r'│\. +│O +│O +│O +│\.',buffers),buffers
         t.send('n');result=collect(t)
-        assert 'CURRENT nuevo G1' in result and 'no vigente' in result
+        assert 'Tablero actualizado G1' in result and 'no vigente' in result
         t.send('v');result_explain=collect(t)
         assert 'Resultado generación 1' in result_explain and 'población global 3' in result_explain
         # Paused navigation, resizing and scrolling cannot compute another generation.
@@ -130,10 +137,10 @@ def check(binary,root):
         assert cells(small,'R0 g2')=='.OOO.',small
         assert 'capturada 1' in text(t) and 'Etapa 6/6' in text(t)
         t.send('v');t.send(']');local=collect(t)
-        assert 'R1 · memoria privada' in local and 'CURRENT nuevo G1' in local,local
+        assert 'Proceso: R1' in local and 'Tablero actualizado G1' in local,local
         t.send('[');resize(t,40,18);t.read()
         compact=collect(t)
-        assert 'N paso' in compact and 'En pausa' in compact and 'CURRENT nuevo G1' in compact,compact
+        assert 'N paso' in compact and 'En pausa' in compact and 'Tablero actualizado G1' in compact,compact
         assert set(workers(t.process.pid))==pids,'navigation replaced session'
         resize(t,160,45);t.read();t.send('++++');t.send(' ')
         wait(t,lambda:'capturada 2' in text(t),timeout=8)
@@ -141,7 +148,7 @@ def check(binary,root):
         t.send('r');wait(t,lambda:'capturada 1' in text(t) and 'Etapa 1/6' in text(t))
         assert 'En pausa' in text(t)
         pids.update(workers(t.process.pid));os.kill(workers(t.process.pid)[0],signal.SIGKILL)
-        t.send('n'*6);wait(t,lambda:'ERROR:' in text(t));assert 'En pausa' in text(t)
+        t.send('n'*6);wait(t,lambda:'CAPTURA DETENIDA' in text(t));assert 'Reproduciendo' not in text(t)
         t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0
         assert not any(Path('/proc/'+str(pid)).exists() for pid in pids)
         print('PASS visible grid pattern/colors, stage gates, directed messages/halos, partial NEXT, rank/scroll/resize, auto/reset/error/cleanup',flush=True)
@@ -172,7 +179,7 @@ def no_color_stages(binary,root):
                 if stage==3:
                     assert '║' in local and '┃' in local and re.search(r'│\? +│\? +│O +│\? +│\?',local),local
                 if stage==4:assert re.search(r'│\. +│O +│O +│O +│\.',local),local
-                if stage==5:assert 'CURRENT nuevo G1' in local and cells(local,'H↓ no vigente')=='?????',local
+                if stage==5:assert 'Tablero actualizado G1' in local and cells(local,'H↓ no vigente')=='?????',local
                 if stage<5:t.send('n')
             assert b'48;2;98;232;137m' not in t.raw
             t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0
@@ -200,7 +207,7 @@ def empty_and_initial_error(binary,root):
             t.send('\x1b');wait(t,lambda:not workers(t.process.pid));t.send('C');t.send('m')
             path.write_text('129 129\n'+('0'*129+'\n')*129)
             t.send(str(path)+'\r');t.send('u');t.send('d')
-            wait(t,lambda:'ERROR:' in text(t))
+            wait(t,lambda:'CAPTURA DETENIDA' in text(t))
             assert not workers(t.process.pid),text(t)
             t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0
             print('PASS empty rank and rejected first capture diagnostic without MPI launch',flush=True)

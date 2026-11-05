@@ -3,8 +3,15 @@ from pathlib import Path
 import sys
 import tempfile
 sys.dont_write_bytecode = True
-from test_ftxui_header import Terminal, ROW
+from test_ftxui_header import Terminal as BaseTerminal, ROW
 from test_ftxui_menu import expect_focus, expect_identity_heading, pixels, CYAN, CHARCOAL
+
+class Terminal(BaseTerminal):
+    def read(self):
+        # Hundreds of UI actions used to each wait 350 ms even after rendering
+        # finished. Drain the complete burst; keep 350 ms for silent observations.
+        super().read(idle_timeout=0.05)
+
 
 TAB = "\t"
 BACK_TAB = "\x1b[Z"

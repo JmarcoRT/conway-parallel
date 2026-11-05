@@ -1,8 +1,24 @@
 // Acceso a los helpers reales, sin reproducir su implementacion en el test.
 #include "../src/app/ftxui_app.cpp"
 #include <iostream>
+#include <fstream>
+#include <iterator>
 
-int main() {
+int main(int argc,char** argv) {
+    if(argc>1) {
+        using namespace conway::app;using namespace ftxui;
+        for(bool colors:{false,true})for(auto [w,h]:{std::pair{80,24},{40,12}}) {
+            DidacticFrame f;f.width=f.height=5;f.current_alive_map.assign(25,0);
+            f.current_alive_map[7]=f.current_alive_map[12]=f.current_alive_map[17]=1;
+            auto screen=Screen::Create(Dimension::Fixed(w),Dimension::Fixed(h));
+            Render(screen,renderDidacticBoardPanel(f,computeDidacticBoardGeometry(w,h,5,5),false,colors));
+            std::ifstream file(std::string(argv[1])+"/tests/fixtures/board_renderer/original-5-"+std::to_string(w)+(colors?"-color":"-mono")+".ansi",std::ios::binary);
+            std::string original((std::istreambuf_iterator<char>(file)),{});
+            if(original.empty() || screen.ToString()!=original) {
+                std::cerr<<"Shared renderer changed original didactic pixels "<<w<<" colors="<<colors<<'\n';return 1;
+            }
+        }
+    }
     using namespace conway::app;
     using namespace ftxui;
     // Both MPI and OpenMP call this same primitive. Check pixels, not labels.

@@ -39,6 +39,14 @@ void compare(const DidacticController& c,const Game& expected) {
         const auto& r=trace.ranks[rank];
         for(auto stage:{DidacticStage::MPIState,DidacticStage::MPIExchangeFirst,DidacticStage::MPIExchangeSecond,DidacticStage::MPICell,DidacticStage::MPIBuffers,DidacticStage::GenerationResult}) {
             const auto blocks=local(trace,rank,stage),explain=explanation(trace,rank,stage);
+            const auto brief=local(trace,rank,stage,false),info=summary(trace,rank,stage);
+            for(const auto& b:info)check(b.text.find("Sendrecv")==std::string::npos && b.text.find("snapshot")==std::string::npos && b.text.find("Swap")==std::string::npos,"Technical jargon leaked into summary");
+            std::vector<const Grid*> fullGrids,briefGrids;
+            for(const auto& b:blocks)if(b.grid)fullGrids.push_back(&*b.grid);
+            for(const auto& b:brief)if(b.grid)briefGrids.push_back(&*b.grid);
+            check(fullGrids.size()==briefGrids.size(),"Brief view removed a stage grid");
+            for(std::size_t i=0;i<fullGrids.size();++i)
+                check(fullGrids[i]->values==briefGrids[i]->values && fullGrids[i]->known==briefGrids[i]->known && fullGrids[i]->owners==briefGrids[i]->owners && fullGrids[i]->emphasis==briefGrids[i]->emphasis,"Summary changed captured cells, ownership or reveal stage");
             if(r.partition.empty()) {check(!blocks.front().grid && blocks.size()==2,"view invented empty rank work");continue;}
             const auto& current=*blocks[1].grid;
             if(stage==DidacticStage::MPIState || stage==DidacticStage::GenerationResult) {

@@ -65,6 +65,12 @@ GameState y la regla no dependen de MPI/OpenMP. La implementación específica d
 motor OpenMP sí incluye `omp.h`; no debe confundirse con una dependencia de los
 tipos compartidos. No se deduce una asignación observada a partir de hilos pedidos.
 
+CUDA dispone de un backend residente opcional e independiente (`core::CudaBackend`),
+no registrado en `Engine` ni en la interfaz. Posee recursos GPU mediante RAII y
+devuelve `GameState` CPU por valor; no añade handles a GameState ni a las copias
+de Game. La evaluación B3/S23 es compartida por host y dispositivo, preservando
+las APIs CPU. Contratos y límites: [CUDA.md](CUDA.md).
+
 ## Simulación e instrumentación
 
 `SimulationSession` mantiene entrada inicial, snapshot Game, motor y reproducción.

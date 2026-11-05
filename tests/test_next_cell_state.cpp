@@ -148,5 +148,19 @@ int main() {
                 "Halo no participa como 0 en (1,1); obtuvo " + std::to_string(got));
     });
 
+    suite.test("neighbor_sum_does_not_wrap_before_rule", [&] {
+        std::vector<std::uint8_t> buffer(kRows * kStride, 0);
+        buffer[kNW] = 255;
+        buffer[kN] = 4; // 259, not three neighbors after uint8 wrap.
+        conway::core::CellEvaluation capture;
+        require(conway::core::next_cell_state(buffer.data(), kStride, 2, 2) == 0,
+                "Uninstrumented rule wrapped its neighbor sum");
+        require(conway::core::next_cell_state(buffer.data(), kStride, 2, 2, capture) == 0,
+                "Instrumented rule wrapped its neighbor sum");
+        require(capture.neighbors[0] == 255 && capture.neighbors[1] == 4
+                && capture.neighborCount == 3 && capture.after == 0,
+                "Raw capture no longer matches the original helper");
+    });
+
     return suite.result();
 }

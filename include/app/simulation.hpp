@@ -20,7 +20,8 @@ public:
     // Default local/MPI behavior remains compatible with existing consumers.
     SimulationSession(const InputData& input, Engine engine,
                       mpi::ClientOptions options=defaultMPIOptions(),
-                      std::function<void()> notify={}, bool backgroundLocal=false);
+                      std::function<void()> notify={}, bool backgroundLocal=false,
+                      core::CudaBlockSize block=core::kDefaultCudaBlock);
     ~SimulationSession();
     const Game& game() const noexcept;
     const std::optional<Game>& preview() const noexcept { return preview_; }
@@ -37,7 +38,8 @@ public:
     void pause() noexcept { running_=false; }
     void advanceIfRunning();
     void reset();
-    void configure(Engine engine,int processes);
+    void configure(Engine engine,int processes,
+                   core::CudaBlockSize block=core::kDefaultCudaBlock);
     void recover();
     void close();
 private:
@@ -47,6 +49,7 @@ private:
     void updatePreview();
     InputData initialInput_;
     Engine engine_;
+    core::CudaBlockSize cudaBlock_{core::kDefaultCudaBlock};
     Game game_;
     std::optional<Game> preview_;
     mpi::ClientOptions options_;
