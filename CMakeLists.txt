@@ -163,6 +163,11 @@ endif()
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+    add_test(NAME mpi_error_message_pty COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpi_error_message.py"
+        $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(mpi_error_message_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
+
     add_executable(experimental_review_tests tests/experimental_review_tests.cpp src/app/experiment_execution.cpp)
     target_link_libraries(experimental_review_tests PRIVATE conway_experiment_export conway_generated_input)
     add_test(NAME experimental_review COMMAND "${Python3_EXECUTABLE}"

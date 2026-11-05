@@ -148,7 +148,7 @@ def check(binary,root):
         t.send('r');wait(t,lambda:'capturada 1' in text(t) and 'Etapa 1/6' in text(t))
         assert 'En pausa' in text(t)
         pids.update(workers(t.process.pid));os.kill(workers(t.process.pid)[0],signal.SIGKILL)
-        t.send('n'*6);wait(t,lambda:'ERROR:' in text(t));assert 'En pausa' in text(t)
+        t.send('n'*6);wait(t,lambda:'CAPTURA DETENIDA' in text(t));assert 'Reproduciendo' not in text(t)
         t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0
         assert not any(Path('/proc/'+str(pid)).exists() for pid in pids)
         print('PASS visible grid pattern/colors, stage gates, directed messages/halos, partial NEXT, rank/scroll/resize, auto/reset/error/cleanup',flush=True)
@@ -207,7 +207,7 @@ def empty_and_initial_error(binary,root):
             t.send('\x1b');wait(t,lambda:not workers(t.process.pid));t.send('C');t.send('m')
             path.write_text('129 129\n'+('0'*129+'\n')*129)
             t.send(str(path)+'\r');t.send('u');t.send('d')
-            wait(t,lambda:'ERROR:' in text(t))
+            wait(t,lambda:'CAPTURA DETENIDA' in text(t))
             assert not workers(t.process.pid),text(t)
             t.send('\x1b');t.send('0');assert t.process.wait(timeout=8)==0
             print('PASS empty rank and rejected first capture diagnostic without MPI launch',flush=True)

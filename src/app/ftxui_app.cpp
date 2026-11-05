@@ -941,7 +941,8 @@ public:
             if(state_.didactic) {
                 const bool preparing=state_.didactic->isPreparing();state_.didactic->poll();
                 didacticBecameReady=preparing && state_.didactic->isReady();
-                if(!state_.didactic->errorMessage().empty()) state_.message=state_.didactic->errorMessage();
+                if(!state_.didactic->errorMessage().empty()) state_.message=state_.engine==Engine::MPI
+                    ? "Error: captura MPI detenida." : state_.didactic->errorMessage();
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
             if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
@@ -1051,7 +1052,8 @@ public:
             if(event.is_character()) {
                 const auto k=event.character();
                 if(k=="d"||k=="D") {
-                    if(mpiDidacticView_==2)mpiDidacticView_=mpiDidacticHelpReturn_;
+                    if(!state_.didactic->errorMessage().empty())mpiErrorDetails_=!mpiErrorDetails_;
+                    else if(mpiDidacticView_==2)mpiDidacticView_=mpiDidacticHelpReturn_;
                     else {mpiDidacticHelpReturn_=mpiDidacticView_;mpiDidacticView_=2;}
                     mpiDidacticRow_=0;return true;
                 }
@@ -1611,7 +1613,7 @@ private:
 
     void createDidactic() {
         didacticViewport_ = {};
-        mpiDidacticHelpReturn_=0; mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0;
+        mpiDidacticHelpReturn_=0; mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0; mpiErrorDetails_=false;
         state_.message.clear();
         if (!state_.input) return;
         if(!state_.didactic) state_.didactic=std::make_unique<DidacticController>([this]{screen_.PostEvent(Event::Custom);});
@@ -2255,8 +2257,58 @@ private:
         return rows;
     }
 
+    Element renderMPIError(const DidacticFrame& frame) {
+        const auto error=frame.error_message;
+        // Only classify explicit resource diagnostics; preserve all other failures
+        // without guessing their cause. PMIx warnings remain in technical details.
+        const bool cpuUnavailable=error.find("more cpus than are available")!=std::string::npos ||
+            error.find("not enough slots")!=std::string::npos ||
+            error.find("insufficient slots")!=std::string::npos;
+        const auto title=cpuUnavailable
+            ? "No se pudo iniciar MPI con "+std::to_string(frame.requested_processes)+" procesos"
+            : "No se pudo completar la captura MPI";
+        auto content=ui::allocatedElement([this,error,cpuUnavailable,title](int width,int height) {
+            didactic_view::Blocks blocks{
+                {title,{}},{"",{}},
+                {cpuUnavailable
+                    ? "La configuración actual de MPI no permite asignar los procesos solicitados a las CPU disponibles."
+                    : "La sesión MPI se detuvo y no se pudo completar la visualización didáctica.",{}},
+                {"",{}},{"Qué puedes hacer",{}},{"",{}},
+                {cpuUnavailable
+                    ? "1. Pulsa Esc para volver al menú y abre la configuración de procesos MPI."
+                    : "1. Pulsa Esc para volver al menú y revisa la configuración de MPI.",{}},
+                {"",{}},{cpuUnavailable
+                    ? "2. Selecciona menos procesos; puedes empezar con 2 o 4."
+                    : "2. Abre los detalles técnicos con D para consultar la causa del fallo.",{}},
+                {"",{}},{"3. Vuelve a abrir la visualización didáctica para reintentar.",{}},
+                {"",{}},{mpiErrorDetails_ ? "D: ocultar detalles técnicos" : "D: ver detalles técnicos",{}}};
+            if(mpiErrorDetails_) {
+                blocks.push_back({"",{}});
+                blocks.push_back({"Detalles técnicos de MPI",{}});
+                blocks.push_back({"",{}});
+                blocks.push_back({error,{}});
+            }
+            auto lines=mpiDidacticRows(blocks,std::max(1,width-2));
+            // Color supports the hierarchy; headings remain clear without color.
+            const ftxui::Color color=colorsEnabled()?ftxui::Color(ftxui::Color::Red):ftxui::Color(ftxui::Color::Default);
+            const auto titleRows=mpiDidacticRows({{title,{}}},std::max(1,width-2)).size();
+            for(std::size_t i=0;i<titleRows;++i)
+                lines[i]=lines[i]|ftxui::bold|ftxui::color(color);
+            const int visible=std::max(1,height-1);
+            mpiDidacticMaxOffset_=std::max(0,static_cast<int>(lines.size())-visible);
+            const int start=std::clamp(mpiDidacticRow_,0,mpiDidacticMaxOffset_);
+            std::vector<Element> rows;
+            for(int i=start;i<std::min(start+visible,static_cast<int>(lines.size()));++i)rows.push_back(lines[i]);
+            return ftxui::vbox({ftxui::vbox(std::move(rows))|ftxui::flex,
+                ftxui::text("Líneas "+std::to_string(start+1)+"-"+std::to_string(std::min(start+visible,static_cast<int>(lines.size())))+
+                    "/"+std::to_string(lines.size())+" · ↑↓ Home/End")|ftxui::dim});
+        });
+        return panel("DIDÁCTICA MPI · CAPTURA DETENIDA",std::move(content));
+    }
+
     Element renderMPIDidactic(std::shared_ptr<const DidacticFrame> snapshot) {
         const auto& f=*snapshot;
+        if(!f.error_message.empty())return renderMPIError(f);
         const bool tiny=controls::terminalSize().columns<=44 || controls::terminalSize().rows<=20;
         const auto stage=f.stages.empty()?DidacticStage::MPIState:f.stages.at(f.stage_index);
         std::vector<Element> status{
@@ -2265,7 +2317,6 @@ private:
                 " · "+(f.playing?"Reproduciendo":"En pausa")+" · "+speedLabel(f.speed)),
             ftxui::paragraph(f.stages.empty()?"Etapa pendiente":("Etapa "+std::to_string(f.stage_index+1)+"/"+std::to_string(f.stages.size())+" · "+didactic_view::stage(stage)))};
         if(!tiny)status.push_back(ftxui::paragraph("Verde/inversa: viva · color: proceso · subrayado: pendiente"));
-        if(!f.error_message.empty())status.push_back(ftxui::paragraph("ERROR: captura detenida. Diagnóstico abajo.")|ftxui::color(ftxui::Color::Red));
         if(f.is_preparing)status.push_back(ftxui::text("Capturando; UI y pausa disponibles."));
         Element content=ftxui::text("Sin captura disponible. R reinicia; Esc cierra.");
         {
@@ -2274,8 +2325,7 @@ private:
             content=ui::allocatedElement([this,trace,stage,error=f.error_message](int w,int h) {
                 const bool multiple=trace && error.empty() && w>=110 && h>=14 && mpiDidacticView_!=2;
                 std::vector<didactic_view::Blocks> columns;
-                if(!error.empty())columns.push_back({{"Diagnóstico de captura MPI",{}},{error,{}},{"No se reintenta el paso automáticamente. R reinicia; Esc cierra.",{}}});
-                else if(!trace)columns.push_back({{"Sin captura disponible; esperando al trabajador.",{}},{"R reinicia; Esc cierra.",{}}});
+                if(!trace)columns.push_back({{"Sin captura disponible; esperando al trabajador.",{}},{"R reinicia; Esc cierra.",{}}});
                 else if(multiple) {
                     columns.push_back(didactic_view::global(*trace,stage,false));
                     auto local=didactic_view::summary(*trace,mpiDidacticRank_,stage);
@@ -2323,14 +2373,21 @@ private:
         return panel("DIDÁCTICA MPI",ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex}));
     }
 
+    std::string didacticThreadSummary(const DidacticFrame& frame) const {
+        const auto working=std::count_if(frame.workers.begin(),frame.workers.end(),
+            [](const auto& worker) { return worker.cells_processed>0; });
+        return "Hilos: "+std::to_string(frame.requested_threads)+" solicitados · "+
+            std::to_string(frame.effective_threads)+" creados · "+std::to_string(working)+" con trabajo";
+    }
+
     Element renderCompactDidactic(std::shared_ptr<const DidacticFrame> snapshot) {
         const auto& frame = *snapshot;
         std::vector<Element> rows;
         rows.push_back(ftxui::paragraph("REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo") | ftxui::color(ftxui::Color::Cyan));
         rows.push_back(ftxui::paragraph("Generación actual " + std::to_string(frame.current_generation) +
             " · " + std::to_string(frame.current_alive) + " vivas · NEXT " + std::to_string(frame.next_alive)));
-        rows.push_back(ftxui::paragraph(frame.engine_name + " · solicitados " + std::to_string(frame.requested_threads) +
-            " · efectivos " + std::to_string(frame.effective_threads)));
+        rows.push_back(ftxui::paragraph(frame.engine_name +
+            (frame.engine_name == "OpenMP" ? " · " + didacticThreadSummary(frame) : std::string{})));
         rows.push_back(ftxui::paragraph("Velocidad: " + speedLabel(frame.speed) + " · " + (frame.playing ? "Reproduciendo" : "En pausa")));
         Element body = didacticWorkers_ ? allWorkers(frame) : didacticBoards(snapshot, false);
         return panel("MODO DIDÁCTICO", ftxui::vbox({ftxui::vbox(std::move(rows)), std::move(body) | ftxui::flex}));
@@ -2423,17 +2480,13 @@ private:
         // Asi no compite con los boards por el espacio vertical.
         Element workersPanel = didacticWorkers_ ? ftxui::text("") : renderDidacticWorkers(frame, colors);
 
-        std::string statusLine = "Motor: " + frame.engine_name +
-            "  ·  Generación actual " +
+        const std::string generationLine = "Generación actual " +
             std::to_string(frame.current_generation) + " → siguiente " +
             std::to_string(frame.next_generation);
+        std::string statusLine = "Motor: " + frame.engine_name;
         if (frame.engine_name == "OpenMP") {
-            statusLine += "  ·  hilos solicitados " +
-                std::to_string(frame.requested_threads) +
-                "  ·  efectivos " + std::to_string(frame.effective_threads);
+            statusLine += " · " + didacticThreadSummary(frame);
         }
-        statusLine += "  ·  procesadores lógicos " +
-            std::to_string(frame.logical_processors);
 
         const std::string warning =
             "REPRODUCCIÓN DIDÁCTICA · No es ejecución en vivo";
@@ -2449,7 +2502,8 @@ private:
         return ftxui::vbox({
             ftxui::text(warning) | ftxui::bold | ftxui::color(ftxui::Color::Cyan),
             heading("MODO DIDÁCTICO · " + state_.path),
-            ftxui::text(statusLine) | ftxui::dim,
+            ftxui::paragraph(statusLine) | ftxui::dim,
+            ftxui::text(generationLine) | ftxui::dim,
             ftxui::text(" "),
             std::move(boards) | ftxui::flex,
             ftxui::text(" "),
@@ -2590,6 +2644,8 @@ private:
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
             "Esp pausa · R · U usar · D lista · ↑↓ mover · M ruta · Esc":"↑↓ lista · Enter ficha · U usar · M ruta · Esc";
         if(state_.page==Page::Main && controls::terminalSize().columns<80)return "Q salir · V normal · ↑↓/Tab · Enter · D/B/C/M/R";
+        if(state_.page==Page::Didactic && state_.engine==Engine::MPI && state_.didactic && !state_.didactic->errorMessage().empty())
+            return "Esc menú · D detalles · ↑↓ desplazar";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · D ayuda · [/] · N paso · Esp · R · Esc";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · D ayuda · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
         const auto terminal = controls::terminalSize();
@@ -2672,6 +2728,7 @@ private:
     int workerRow_{0};
     bool catalogNext_{false}, catalogDetail_{false};
     int mpiDidacticHelpReturn_=0;
+    bool mpiErrorDetails_=false;
     int mpiDidacticView_=0, mpiDidacticRank_=0, mpiDidacticRow_=0, mpiDidacticMaxOffset_=0, mpiDidacticCol_=0;
     bool didacticNext_{true}, didacticWorkers_{false};
     std::chrono::steady_clock::time_point didacticTickAt_{};
