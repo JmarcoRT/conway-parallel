@@ -5,6 +5,7 @@
 #include <ftxui/screen/string.hpp>
 #include <iomanip>
 #include <sstream>
+#include <set>
 
 namespace conway::app {
 namespace {
@@ -22,11 +23,13 @@ std::string resources(std::optional<int> low,std::optional<int> high) {
     if(!low || !high) return "N/D";
     return std::to_string(*low)+(*low==*high?"":"–"+std::to_string(*high));
 }
-std::string name(const ExecutionConfiguration& c) {
-    if(c.engine==Engine::Sequential) return "Secuencial · referencia";
-    if(c.engine==Engine::OpenMP) return "OpenMP · "+unit(*c.requestedThreads,"hilo solicitado: ","hilos solicitados: ")+std::to_string(*c.requestedThreads);
-    if(c.engine==Engine::CUDA)return "CUDA · bloque "+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y);
-    return "MPI · "+unit(*c.requestedProcesses,"proceso solicitado: ","procesos solicitados: ")+std::to_string(*c.requestedProcesses);
+std::string configurationLabel(const ExecutionConfiguration& c) {
+    if(c.engine==Engine::Sequential) return "Secuencial (referencia)";
+    if(c.engine==Engine::CUDA) return c.cudaBlock?"CUDA (bloque "+std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y)+")":"CUDA (N/D)";
+    const auto count=c.engine==Engine::MPI?c.requestedProcesses:c.requestedThreads;
+    return std::string(c.engine==Engine::MPI?"MPI (":"OpenMP (")+(count?std::to_string(*count):"N/D")+
+        (c.engine==Engine::MPI?unit(count.value_or(0)," proceso solicitado)"," procesos solicitados)"):
+            unit(count.value_or(0)," hilo solicitado)"," hilos solicitados)"));
 }
 std::string yes(bool b) {return b?"SI":"NO";}
 std::string motor(const ExecutionConfiguration& c) {
@@ -113,8 +116,8 @@ void studyMethodDetails(ftxui::Elements& rows,const ExperimentalStudy& study,ftx
     rows.push_back(paragraph("Mínimo, máximo, media, mediana y desviación estándar poblacional (divisor N). Muestras inválidas y fallos conservan evidencia; no justifican métricas válidas."));
 }
 }
-std::vector<ftxui::Element> comparisonStudyMethodRows(const ExperimentalStudy& study,int columns,
-    ftxui::Color accent,ftxui::Color positive,bool details) {
+std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy& study,int columns,
+    ftxui::Color accent,ftxui::Color positive,bool details,std::optional<Engine> scalingEngine) {
     using namespace ftxui;
     const auto muted=Color::RGB(150,160,170);
     const auto caution=Color::RGB(224,185,112);
@@ -138,11 +141,20 @@ std::vector<ftxui::Element> comparisonStudyMethodRows(const ExperimentalStudy& s
     if(!study.cleanupConfirmed) rows.push_back(paragraph("No se confirmó la liberación de recursos.")|color(failure));
     if(!study.diagnostic.empty()) rows.push_back(paragraph("Diagnóstico: "+study.diagnostic)|color(failure));
     rows.push_back(paragraph(details?"D Ocultar detalles técnicos":"D Ver detalles técnicos")|color(muted));
-    section("CÓMO SE REALIZÓ LA COMPARACIÓN");
+    section(scalingEngine?"CÓMO SE REALIZÓ EL ESTUDIO":"CÓMO SE REALIZÓ LA COMPARACIÓN");
+    if(scalingEngine) {
+        std::string configurations;
+        for(const auto& c:study.configurations) if(c.engine==*scalingEngine) {
+            if(!configurations.empty()) configurations+=", ";
+            if(c.engine==Engine::CUDA) configurations+=c.cudaBlock?std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y):"N/D";
+            else {const auto requested=c.engine==Engine::MPI?c.requestedProcesses:c.requestedThreads;configurations+=requested?std::to_string(*requested):"N/D";}
+        }
+        explanation(*scalingEngine==Engine::CUDA?"Bloques CUDA":*scalingEngine==Engine::MPI?"Procesos solicitados":"Hilos solicitados",configurations);
+    }
     explanation("Calentamientos",std::to_string(study.warmups)+" (no cuentan en los resultados)");
     explanation("Repeticiones",std::to_string(study.repetitions));
     explanation("Generaciones",std::to_string(study.generations)+" por ejecución");
-    explanation("Orden de los motores",std::string("Rotativo entre rondas hacia la ")+(study.rotateRight?"derecha":"izquierda"));
+    explanation(scalingEngine?"Orden de configuración":"Orden de los motores",std::string("Rotativo entre rondas hacia la ")+(study.rotateRight?"derecha":"izquierda"));
     rows.push_back(text(" "));
     rows.push_back(paragraph("Cada ejecución comienza con la misma entrada.")|size(WIDTH,LESS_THAN,width));
     rows.push_back(paragraph("El estado final se verifica contra una ejecución secuencial, fuera del tiempo medido.")|size(WIDTH,LESS_THAN,width));
@@ -171,7 +183,9 @@ std::vector<ftxui::Element> comparisonStudyMethodRows(const ExperimentalStudy& s
         rows.push_back(text(" "));
     };
     timingLine(headers,true);
+    std::set<Engine> describedEngines;
     for(const auto& c:study.configurations) {
+        if(!describedEngines.insert(c.engine).second) continue;
         if(c.engine==Engine::CUDA)
             timingLine({motor(c),"Evolución del tablero en GPU y espera hasta terminar.","Preparación, descarga del tablero y verificación."},false);
         else if(c.engine==Engine::MPI)
@@ -184,21 +198,36 @@ std::vector<ftxui::Element> comparisonStudyMethodRows(const ExperimentalStudy& s
     rows.push_back(text(" "));
     explanation("Aceleración","Tiempo secuencial / tiempo del motor. 2× significa el doble de rapidez en el tiempo medido.");
     rows.push_back(text(" "));
-    explanation("Eficiencia","Aceleración / hilos o procesos observados, expresada en porcentaje. Requiere recursos estables.");
+    explanation("Eficiencia",scalingEngine==Engine::CUDA?"No aplica al comparar bloques en una misma GPU.":"Aceleración / hilos o procesos observados, expresada en porcentaje. Requiere recursos estables.");
     rows.push_back(text(" "));
     explanation("—","No aplica. Por ejemplo, la eficiencia de CUDA.");
     rows.push_back(text(" "));
     explanation("N/D","No hay datos suficientes o válidos para calcular la métrica.");
+    if(scalingEngine) {
+        section("CÓMO LEER LA GRÁFICA");
+        explanation("Horizontal",*scalingEngine==Engine::CUDA?"Bloques CUDA como categorías, en una misma GPU.":*scalingEngine==Engine::MPI?"Procesos solicitados, con separación proporcional a sus valores.":"Hilos solicitados, con separación proporcional a sus valores.");
+        rows.push_back(text(" "));
+        explanation("Vertical","Aceleración respecto a Secuencial. La línea 1× indica igual tiempo.");
+        rows.push_back(text(" "));
+        explanation("Puntos","Configuraciones medidas. Verde indica la configuración con menor tiempo observado.");
+        rows.push_back(text(" "));
+        rows.push_back(paragraph(*scalingEngine==Engine::CUDA?"Cambiar el bloque no aumenta los recursos físicos de la GPU.":"Más procesos o hilos no garantizan menor tiempo.")|color(muted)|size(WIDTH,LESS_THAN,width));
+    }
     if(details) {
         section("DETALLES TÉCNICOS");
         studyMethodDetails(rows,study,accent);
+        if(scalingEngine) {
+            rows.push_back(paragraph("Solo se dibujan aceleraciones válidas; N/D no equivale a cero. Puntos sin interpolación ni línea ideal."));
+            rows.push_back(paragraph("La escala vertical usa log1p(S) solo en rangos extremos. La referencia 1× se aproxima a la fila disponible; la tabla conserva los valores exactos."));
+            rows.push_back(paragraph("La conclusión usa la menor mediana válida; los empates conservan la primera configuración ordenada."));
+        }
         rows.push_back(text(" "));
         rows.push_back(paragraph("Limpieza confirmada: "+yes(study.cleanupConfirmed))|color(study.cleanupConfirmed?positive:failure));
     }
     return rows;
 }
-std::vector<ftxui::Element> comparisonStudySampleRows(const ExperimentalStudy& study,int columns,
-    ftxui::Color accent,ftxui::Color positive,bool details) {
+std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int columns,
+    ftxui::Color accent,ftxui::Color positive,bool details,std::optional<Engine> scalingEngine) {
     using namespace ftxui;
     const auto muted=Color::RGB(150,160,170);
     const auto caution=Color::RGB(224,185,112);
@@ -214,18 +243,18 @@ std::vector<ftxui::Element> comparisonStudySampleRows(const ExperimentalStudy& s
     if(!study.cleanupConfirmed) rows.push_back(paragraph("No se confirmó la liberación de recursos.")|color(failure));
     if(!study.diagnostic.empty()) rows.push_back(paragraph("Diagnóstico: "+study.diagnostic)|color(failure));
     rows.push_back(paragraph(details?"D Ocultar detalles técnicos":"D Ver detalles técnicos")|color(muted));
-    section("ESTADÍSTICAS POR MOTOR (ms)");
+    section(scalingEngine?"ESTADÍSTICAS POR CONFIGURACIÓN (ms)":"ESTADÍSTICAS POR MOTOR (ms)");
     std::vector<std::vector<std::string>> statistics;
     bool invalidSummary=false;
     for(const auto& s:study.summaries) {
         const auto& c=study.configurations.at(s.configurationIndex);
         const auto& v=s.statistics;
-        statistics.push_back({motor(c)+(s.valid?"":" (no válido)"),v?number(v->medianMs):"N/D",
+        statistics.push_back({(scalingEngine?configurationLabel(c):motor(c))+(s.valid?"":" (no válido)"),v?number(v->medianMs):"N/D",
             v?number(v->meanMs):"N/D",v?number(v->minimumMs):"N/D",v?number(v->maximumMs):"N/D",
             v?number(v->populationStddevMs):"N/D"});
         invalidSummary=invalidSummary || !s.valid;
     }
-    sampleTable(rows,{"Motor","Mediana","Media","Mínimo","Máximo","Desviación"},statistics,columns,accent,positive,
+    sampleTable(rows,{scalingEngine?"Configuración":"Motor","Mediana","Media","Mínimo","Máximo","Desviación"},statistics,columns,accent,positive,
         {false,true,true,true,true,true});
     rows.push_back(text(" "));
     rows.push_back(paragraph("La mediana se usa en Resumen. La desviación indica cuánto varían las mediciones.")|color(muted));
@@ -295,8 +324,8 @@ std::vector<ftxui::Element> comparisonStudySampleRows(const ExperimentalStudy& s
     }
     return rows;
 }
-std::vector<ftxui::Element> comparisonStudySummaryRows(const ExperimentalStudy& study,const std::string& pattern,
-    int columns,ftxui::Color accent,ftxui::Color positive) {
+std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy& study,const std::string& pattern,
+    int columns,ftxui::Color accent,ftxui::Color positive,std::optional<Engine> scalingEngine) {
     using namespace ftxui;
     const auto muted=Color::RGB(150,160,170);
     const auto caution=Color::RGB(224,185,112);
@@ -310,9 +339,9 @@ std::vector<ftxui::Element> comparisonStudySummaryRows(const ExperimentalStudy& 
     };
     const bool correct=!study.configurations.empty() && study.summaries.size()==study.configurations.size() &&
         std::all_of(study.summaries.begin(),study.summaries.end(),usable);
-    rows.push_back(text(study.complete?"Comparación completada":"ESTUDIO INCOMPLETO")|bold|
+    rows.push_back(text(study.complete?(scalingEngine?"Estudio completado":"Comparación completada"):"ESTUDIO INCOMPLETO")|bold|
         color(correct?positive:caution));
-    if(correct) rows.push_back(paragraph("Todos los motores producen el mismo resultado")|color(positive));
+    if(correct) rows.push_back(paragraph(scalingEngine?"Todas las configuraciones producen el mismo resultado":"Todos los motores producen el mismo resultado")|color(positive));
     else rows.push_back(paragraph("Revisa el estado de cada motor antes de comparar sus métricas.")|color(caution));
     if(!study.cleanupConfirmed) rows.push_back(paragraph("No se confirmó la liberación de recursos.")|color(failure));
     if(!study.diagnostic.empty()) rows.push_back(paragraph("Diagnóstico: "+study.diagnostic)|color(failure));
@@ -322,7 +351,7 @@ std::vector<ftxui::Element> comparisonStudySummaryRows(const ExperimentalStudy& 
     rows.push_back(text("Generaciones   "+std::to_string(study.generations)));
     rows.push_back(text("Repeticiones   "+std::to_string(study.repetitions)));
     rows.push_back(text(" "));
-    rows.push_back(text("RESULTADOS")|bold|color(accent));
+    rows.push_back(text(scalingEngine==Engine::MPI?"RESULTADOS MPI":scalingEngine==Engine::CUDA?"RESULTADOS CUDA":scalingEngine?"RESULTADOS OPENMP":"RESULTADOS")|bold|color(accent));
 
     using Record=std::array<std::string,6>;
     struct Entry {Record cells;bool valid;bool fastest;std::optional<double> speedup;};
@@ -411,100 +440,6 @@ std::vector<ftxui::Element> comparisonStudySummaryRows(const ExperimentalStudy& 
     const bool reference=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::Sequential;});
     if(!reference) rows.push_back(paragraph("Sin participante Secuencial: aceleración y eficiencia N/D.")|color(caution));
     if(differingResources) rows.push_back(paragraph("Configuración muestra los recursos observados y los solicitados cuando difieren.")|color(caution));
-    return rows;
-}
-std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy& study,const std::string& pattern,
-    int tab,int columns,ftxui::Color accent,ftxui::Color positive) {
-    using namespace ftxui;
-    Elements rows;
-    auto section=[&](std::string title){if(!rows.empty())rows.push_back(text(" "));rows.push_back(text(std::move(title))|bold|color(accent));};
-    auto diagnostic=[&](const std::string& label,const std::string& detail) {
-        rows.push_back(paragraph(label)|color(Color::Red));
-        std::istringstream words(detail);std::string word,line;
-        const auto width=static_cast<std::size_t>(std::max(16,columns-4));
-        while(words>>word) {
-            if(!line.empty() && line.size()+word.size()+1>width) {rows.push_back(paragraph(line)|color(Color::Red));line.clear();}
-            if(!line.empty()) line+=' ';line+=word;
-        }
-        if(!line.empty()) rows.push_back(paragraph(line)|color(Color::Red));
-    };
-    rows.push_back(text(std::string(tab==0?"[Resumen]":"Resumen")+" · "+(tab==1?"[Muestras]":"Muestras")+" · "+(tab==2?"[Método]":"Método"))|color(accent));
-    rows.push_back(paragraph(std::string(study.complete?"Estudio completo":"ESTUDIO INCOMPLETO")+
-        " · Limpieza confirmada: "+yes(study.cleanupConfirmed))|color(study.complete && study.cleanupConfirmed?positive:Color::Yellow));
-    if(!study.diagnostic.empty()) diagnostic("Diagnóstico:",study.diagnostic);
-    const bool sequential=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::Sequential;});
-    const bool hasMPI=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::MPI;});
-    if(!sequential) rows.push_back(paragraph("Sin participante Secuencial: speedup y eficiencia respecto de él son N/D. El oráculo solo verifica equivalencia.")|dim);
-    if(tab==0) {
-        section("IDENTIFICACIÓN");
-        rows.push_back(paragraph("Entrada: "+pattern+" · Generaciones: "+std::to_string(study.generations)+
-            " · Repeticiones: "+std::to_string(study.repetitions)));
-        rows.push_back(paragraph("Calentamientos: "+std::to_string(study.warmups)+" · ver Método")|dim);
-        section("TIEMPO PRINCIPAL · mediana del lote en ms");
-        double largest=0;
-        for(const auto& s:study.summaries) if(s.statistics && std::isfinite(s.statistics->medianMs)) largest=std::max(largest,s.statistics->medianMs);
-        for(const auto& s:study.summaries) {
-            const auto& c=study.configurations[s.configurationIndex];
-            rows.push_back(text(" "));
-            rows.push_back(paragraph(name(c))|bold|color(accent));
-            if(c.engine==Engine::CUDA)rows.push_back(paragraph("GPU · bloque "+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y)+" · Muestras: "+std::to_string(s.sampleCount)+"/"+std::to_string(study.repetitions)));
-            else rows.push_back(paragraph("Observados: "+resources(s.minimumResources,s.maximumResources)+
-                (c.engine==Engine::MPI?unit(s.minimumResources==s.maximumResources?s.minimumResources.value_or(0):0," proceso"," procesos"):unit(s.minimumResources==s.maximumResources?s.minimumResources.value_or(0):0," hilo"," hilos"))+" · Muestras: "+std::to_string(s.sampleCount)+"/"+std::to_string(study.repetitions)));
-            rows.push_back(paragraph("Mediana: "+metric(s.statistics?std::optional<double>(s.statistics->medianMs):std::nullopt," ms")+" · "+
-                (c.engine==Engine::CUDA?"evolución residente GPU (reloj CPU)":c.engine==Engine::MPI?"máximo entre ranks":"tiempo local del lote")));
-            if(columns>=60 && s.valid && s.statistics && largest>0) {
-                const auto length=static_cast<int>(s.statistics->medianMs/largest*std::min(40,columns-4));
-                std::string bar;for(int i=0;i<length;++i) bar+="█";
-                rows.push_back(text(bar)|color(accent));
-            }
-            rows.push_back(paragraph("Speedup: "+metric(s.speedup,"×")+" · Eficiencia: "+metric(s.efficiency," %",100)));
-            rows.push_back(paragraph("Equivalencia: "+yes(s.equivalent)+" · Validez: "+yes(s.valid))|color(s.valid?positive:Color::Yellow));
-        }
-        rows.push_back(text(" "));
-        rows.push_back(paragraph("Consulta Método para interpretar los tiempos y las métricas N/D.")|dim);
-    } else if(tab==1) {
-        section("ESTADÍSTICAS DESCRIPTIVAS · ms");
-        for(const auto& s:study.summaries) {
-            rows.push_back(paragraph(name(study.configurations[s.configurationIndex]))|bold);
-            const auto& v=s.statistics;
-            rows.push_back(paragraph("Mediana: "+(v?number(v->medianMs):"N/D")+" · Media: "+(v?number(v->meanMs):"N/D")));
-            rows.push_back(paragraph("Mínimo: "+(v?number(v->minimumMs):"N/D")+" · Máximo: "+(v?number(v->maximumMs):"N/D")));
-            rows.push_back(paragraph("Desviación estándar poblacional: "+(v?number(v->populationStddevMs):"N/D")));
-        }
-        section("MUESTRAS · orden real de adquisición");
-        for(const auto& s:study.samples) {
-            const auto& c=study.configurations[s.configurationIndex];
-            rows.push_back(text(" "));
-            rows.push_back(paragraph("#"+std::to_string(s.executionIndex)+" · Ronda "+std::to_string(s.round)+
-                " · Posición "+std::to_string(s.position)+" · "+name(c))|bold);
-            if(c.engine==Engine::CUDA)rows.push_back(paragraph("Principal: "+number(s.elapsedMs)+" ms · lote residente GPU"));
-            else rows.push_back(paragraph("Principal: "+number(s.elapsedMs)+" ms · Observados: "+
-                (c.engine==Engine::MPI?(s.observedProcesses?std::to_string(*s.observedProcesses)+unit(*s.observedProcesses," proceso"," procesos"):"N/D"):resources(s.minEffectiveThreads,s.maxEffectiveThreads)+unit(s.minEffectiveThreads==s.maxEffectiveThreads?s.minEffectiveThreads.value_or(0):0," hilo"," hilos"))));
-            rows.push_back(paragraph("Equivalencia: "+yes(s.equivalent)+" · Validez de muestra: "+yes(s.valid)));
-            if(c.engine==Engine::CUDA && s.cuda) {
-                const auto& m=*s.cuda;
-                rows.push_back(paragraph("GPU: "+m.deviceName+" · grid "+std::to_string(m.gridX)+"x"+std::to_string(m.gridY)));
-                rows.push_back(paragraph("Intervalo del stream: "+number(m.deviceMs)+" ms · Preparación: "+number(m.prepareMs)+" ms"));
-                rows.push_back(paragraph("Descarga final: "+number(m.snapshotMs)+" ms · Operación completa: "+number(m.totalMs)+" ms"));
-            }
-            if(c.engine==Engine::MPI) {
-                rows.push_back(paragraph("Auxiliares MPI · Carga: "+metric(s.loadMs," ms")+" · Snapshot: "+metric(s.snapshotMs," ms")));
-                rows.push_back(paragraph("Solicitud del lote (incluye IPC): "+metric(s.requestMs," ms")+"; no se suma al principal."));
-                rows.push_back(text(" "));
-            rows.push_back(paragraph("Sesión #"+std::to_string(*s.sessionIndex)+" · Calentamientos por sesión: "+std::to_string(s.completedWarmups)));
-            }
-        }
-        if(hasMPI) section("SESIONES MPI · arranque y cierre separados");
-        for(std::size_t i=0;i<study.sessions.size();++i) {
-            const auto& s=study.sessions[i];
-            rows.push_back(paragraph("Sesión #"+std::to_string(i)+" · "+name(study.configurations[s.configurationIndex])+" · Ronda "+std::to_string(s.round)));
-            rows.push_back(paragraph("Arranque: "+number(s.startupMs)+" ms · Cierre: "+number(s.closeMs)+" ms · Limpieza: "+yes(s.cleanupConfirmed)));
-            rows.push_back(paragraph("Calentamientos completados: "+std::to_string(s.completedWarmups)+" · Runtime: "+s.runtime));
-            if(!s.diagnostic.empty()) diagnostic("Diagnóstico de sesión:",s.diagnostic);
-        }
-    } else {
-        studyMethodDetails(rows,study,accent);
-    }
     return rows;
 }
 }

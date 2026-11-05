@@ -1,4 +1,4 @@
-"""Real CUDA didactic: manual exploration versus generation, presets and resize."""
+"""CUDA exploration, real playback and speed controls, presets and resize."""
 import fcntl
 import os
 from pathlib import Path
@@ -23,9 +23,13 @@ def wait(t,value):
     end=time.monotonic()+6
     while value not in flat(t) and time.monotonic()<end:t.read(.03)
     assert value in flat(t),(value,flat(t))
+def wait_generation(t,expected):
+    end=time.monotonic()+6
+    while generation(t)!=expected and time.monotonic()<end:t.read(.03)
+    assert generation(t)==expected,flat(t)
 def generation(t):
-    match=re.search(r'G(\d+) · B',flat(t));assert match,flat(t);return int(match[1])
-warning='Exploración conceptual; no representa el orden de ejecución GPU'
+    match=re.search(r'(?:Generación |\bG)(\d+)\b',flat(t));assert match,flat(t);return int(match[1])
+warning='conceptual'
 with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
     pattern=Path(directory)/'example35x19.txt'
     pattern.write_text('19 35\n'+'\n'.join(''.join('1' if (r*35+c)*17%7<3 else '0' for c in range(35)) for r in range(19))+'\n')
@@ -39,37 +43,37 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
             print('PASS didactic CUDA unavailable: selection rejected with diagnosis');sys.exit(0)
         t.send('v');t.send('p');t.send('d');wait(t,warning)
         assert 'columna =' not in flat(t) and 'barreras' not in flat(t),flat(t)
-        wait(t,'HILO SELECCIONADO');wait(t,'ESTADO DE LA CELDA');wait(t,'V: ver explicación')
+        wait(t,'HILO SELECCIONADO');wait(t,'LEE SU CELDA Y VECINOS');wait(t,'V: ver explicación')
         paused=generation(t);t.read();assert generation(t)==paused,'Normal autoplay survived didactic entry'
-        for key in ['n','n',' ','p','+','-']:t.send(key)
-        assert generation(t)==paused,'Manual exploration/disabled playback advanced generation'
+        for key in ['n','n','+','-']:t.send(key)
+        assert generation(t)==paused,'Paused exploration or speed controls advanced generation'
         t.send(']'*5);t.send('l'*15);t.send('j'*15)
         t.send('v');wait(t,'blockIdx=(2,1)');wait(t,'threadIdx=(15,15)')
         wait(t,'columna = 2 * 16 + 15 = 47');wait(t,'fila = 1 * 16 + 15 = 31')
         wait(t,'Posición exterior');wait(t,'barreras');assert generation(t)==paused
-        t.send('g');wait(t,f'G{paused+1} · B');assert generation(t)==paused+1
+        t.send('g');wait_generation(t,paused+1);assert generation(t)==paused+1
         t.send('b');wait(t,'BLOQUE CUDA');t.send('\x1b');assert generation(t)==paused+1
-        t.send('b');t.send('3');wait(t,'B32x8');wait(t,'grid 2x3');wait(t,'Selección ajustada')
+        t.send('b');t.send('3');wait(t,'32x8');wait(t,'Grid 2x3');wait(t,'Selección ajustada')
         wait(t,'columna = 1 * 32 + 2 = 34');wait(t,'fila = 2 * 8 + 2 = 18')
-        t.send('b');t.send('1');wait(t,'B8x8');wait(t,'grid 5x3')
-        t.send('b');t.send('2');wait(t,'B16x16');wait(t,'grid 3x2')
+        t.send('b');t.send('1');wait(t,'8x8');wait(t,'Grid 5x3')
+        t.send('b');t.send('2');wait(t,'16x16');wait(t,'Grid 3x2')
         assert generation(t)==paused+1
         t.send('x');t.send('d');wait(t,warning);assert generation(t)==paused+1
         t.send('v');wait(t,'Siguiente estado:')
         t.send('x');t.send('v');wait(t,f'Generación {paused+1}')
-        t.send('d');wait(t,warning);t.send('r');wait(t,'G0 · B16x16')
+        t.send('d');wait(t,warning);t.send('r');wait_generation(t,0)
         wait(t,'Bloque: (0,0)');wait(t,'Hilo: (0,0)')
         # Show board before resize, then verify warning, essential data and grid.
         t.columns,t.rows=40,18
         t.raw=b'' # Discard the previous raster size, as in existing resize tests.
         fcntl.ioctl(t.master,termios.TIOCSWINSZ,struct.pack('HHHH',18,40,0,0))
         os.kill(t.process.pid,signal.SIGWINCH);t.read();t.assert_fits()
-        wait(t,warning);wait(t,'grid 3x2');wait(t,'vecinos')
+        wait(t,warning);wait(t,'Grid 3x2');wait(t,'vecinos')
         assert any(x in flat(t) for x in ['┼','┃','║']),flat(t)
         t.send(']'*5);t.send('l'*15);t.send('j'*15)
-        t.send('b');t.send('3');wait(t,'B32x8');wait(t,'Ajuste:')
+        t.send('b');t.send('3');wait(t,'32x8');wait(t,'Ajuste:')
         assert any(x in flat(t) for x in ['┼','┃','║']),flat(t)
-        t.send('b');t.send('2');wait(t,'B16x16');t.send('r');wait(t,'G0 · B16x16')
+        t.send('b');t.send('2');wait(t,'16x16');t.send('r');wait_generation(t,0)
         t.send('v');seen=flat(t)
         for _ in range(16):t.send('\x1b[6~');seen+=' '+flat(t)
         assert 'Predicción CPU con regla compartida' in seen,seen
@@ -81,6 +85,14 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
             fcntl.ioctl(t.master,termios.TIOCSWINSZ,struct.pack('HHHH',h,w,0,0))
             os.kill(t.process.pid,signal.SIGWINCH);t.read()
         wait(t,warning);assert generation(t)==0
+        t.send('++++');wait(t,'8.0x');t.send(' ');wait(t,'Reproduciendo')
+        deadline=time.monotonic()+6
+        while generation(t)==0 and time.monotonic()<deadline:t.read(.03)
+        assert generation(t)>0,'CUDA autoplay never advanced'
+        t.send(' ');wait(t,'En pausa');paused=generation(t)
+        t.read(.2);assert generation(t)==paused,'CUDA pause left a pending step'
+        t.send('-');wait(t,'4.0x');assert generation(t)==paused
+        t.send('g');wait_generation(t,paused+1);wait(t,'En pausa')
         t.send('x');t.send('q');assert t.process.wait(timeout=5)==0
         print('PASS 35x19 CUDA didactic PTY: manual exploration, true G, presets, persistence, reset, 40x18 and resize')
     finally:t.close()

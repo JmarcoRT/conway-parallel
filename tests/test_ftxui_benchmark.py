@@ -101,7 +101,7 @@ def wait_state(terminal, state):
     deadline = time.monotonic() + 90  # Límite de bloqueo, no umbral de rendimiento.
     labels = ["Estado: " + state]
     if state == "Finalizado":
-        labels += ["Comparación completada", "Escalabilidad completada", "Mediciones completadas"]
+        labels += ["Comparación completada", "Escalabilidad completada", "Mediciones completadas", "Estudio completado"]
     elif state in ("Preparando entrada", "Ejecutando mediciones"):
         labels.append(state)
         if state == "Ejecutando mediciones":

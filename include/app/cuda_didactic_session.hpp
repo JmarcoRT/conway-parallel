@@ -2,6 +2,7 @@
 #include "app/simulation.hpp"
 #include "core/cell_probe.hpp"
 #include <functional>
+#include <chrono>
 
 namespace conway::app {
 struct CudaCellDetail {
@@ -35,6 +36,12 @@ public:
     void moveThread(int dx,int dy,const Game&);
     void nextThread(const Game&);
     bool advance(SimulationSession&);
+    double speed() const noexcept {return speed_;}
+    void increaseSpeed();
+    void decreaseSpeed();
+    void restartPlaybackClock() noexcept {elapsed_={};}
+    // One confirmed CUDA generation at most per tick; never queues catch-up work.
+    bool tick(SimulationSession&,std::chrono::nanoseconds elapsed);
     bool reset(SimulationSession&);
     bool recover(SimulationSession&);
 private:
@@ -42,5 +49,7 @@ private:
     CudaDidacticFrame frame_{};
     bool initialized_{false};
     std::size_t revision_{};
+    double speed_{1};
+    long double elapsed_{};
 };
 }

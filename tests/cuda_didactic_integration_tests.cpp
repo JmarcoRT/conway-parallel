@@ -61,6 +61,21 @@ int main() {
     require(rejected && detail::sameGameBuffers(saved,session.game()),"Rejected preset modified state");
     require(model.reset(session) && model.frame().generation==0 && model.frame().column==0 && model.frame().row==0,"Reset state/selection");
     require(session.game().cudaBlockSize()==core::kCudaBlock32x8,"Reset lost preset");
+    using namespace std::chrono_literals;
+    require(!model.tick(session,10s) && session.game().generation()==0,"paused CUDA playback advanced");
+    session.toggleRunning();
+    require(!model.tick(session,500ms),"CUDA playback advanced before its interval");
+    require(model.tick(session,500ms) && model.frame().generation==1 && session.isRunning(),"CUDA autoplay did not refresh confirmed generation");
+    Game expected(input);expected.step();
+    require(detail::sameGameBuffers(session.game(),expected),"CUDA autoplay differs from sequential result");
+    require(model.tick(session,30s) && session.game().generation()==2,"CUDA playback queued catch-up generations");
+    require(model.advance(session) && !session.isRunning() && session.game().generation()==3,"manual CUDA step did not pause autoplay");
+    model.decreaseSpeed();model.decreaseSpeed();
+    session.toggleRunning();
+    require(!model.tick(session,3s) && model.tick(session,1s),"quarter-speed CUDA interval incorrect");
+    for(int i=0;i<10;++i) model.increaseSpeed();
+    require(!model.tick(session,124ms) && model.tick(session,1ms),"8x CUDA interval incorrect");
+    require(model.reset(session) && !session.isRunning() && model.frame().generation==0,"reset did not stop CUDA autoplay");
     std::cout<<"PASS CUDA didactic integration: all presets/35x19, real advances, full buffers, remap, reset, const rendering\n";return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

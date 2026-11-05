@@ -49,10 +49,10 @@ for size in [(120,40),(50,24)]:
         t.send('\x1b');t.send('\x1b');t.send('\x1b[B\r')
         move_to(t,'OpenMP');t.send('\x1b[F');small(t)
         field(t,'Bloques CUDA','8x8, 16x16, 32x8');execute(t);wait_state(t,'Finalizado')
-        for label in ['CUDA · bloque 8x8','CUDA · bloque 16x16','CUDA · bloque 32x8']:scroll_visible(t,label)
-        scroll_visible(t,'Configuraciones de bloque en una GPU')
+        for label in ['Bloque 8×8','Bloque 16×16','Bloque 32×8']:scroll_visible(t,label)
+        scroll_visible(t,'Bloques CUDA (categorías en una GPU)')
         t.send('\x1b');t.send('\x1b');t.send('\x1b[B\r')
-        visible(t,'RESULTADOS DE LA SESIÓN');scroll_visible(t,'CUDA · bloque 32x8')
+        visible(t,'RESULTADOS DE LA SESIÓN');scroll_visible(t,'Bloque 32×8')
         before=t.raw;t.read();assert before==t.raw,'finished result keeps repainting'
         t.send('\x1b');t.send('\x1b')
         if normal:

@@ -2,14 +2,11 @@
 #include "app/experimental_study.hpp"
 #include <ftxui/dom/elements.hpp>
 namespace conway::app {
-// Compact comparison summary; scaling retains its own presentation.
-std::vector<ftxui::Element> comparisonStudySummaryRows(const ExperimentalStudy&,const std::string& pattern,
-    int columns,ftxui::Color accent,ftxui::Color positive);
-std::vector<ftxui::Element> comparisonStudySampleRows(const ExperimentalStudy&,int columns,
-    ftxui::Color accent,ftxui::Color positive,bool details);
-std::vector<ftxui::Element> comparisonStudyMethodRows(const ExperimentalStudy&,int columns,
-    ftxui::Color accent,ftxui::Color positive,bool details);
-// Presentation only: statistics and validity are consumed, never recomputed.
-std::vector<ftxui::Element> experimentalStudyRows(const ExperimentalStudy&,const std::string& pattern,
-    int tab,int columns,ftxui::Color accent,ftxui::Color positive);
+// Shared compact presentation for comparison and per-engine scaling studies.
+std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy&,const std::string& pattern,
+    int columns,ftxui::Color accent,ftxui::Color positive,std::optional<Engine> scalingEngine = {});
+std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy&,int columns,
+    ftxui::Color accent,ftxui::Color positive,bool details,std::optional<Engine> scalingEngine = {});
+std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy&,int columns,
+    ftxui::Color accent,ftxui::Color positive,bool details,std::optional<Engine> scalingEngine = {});
 }

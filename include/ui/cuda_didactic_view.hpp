@@ -15,5 +15,5 @@ struct CudaDidacticPrimitives {
 ftxui::Element renderCudaDidactic(const Game&,const app::CudaDidacticFrame&,
     const std::string& gpu,const std::string& error,BoardViewport&,bool detailOnly,
     std::size_t detailOffset,bool followSelection,int width,int height,
-    const CudaDidacticPrimitives&,bool showCoverage=false);
+    const CudaDidacticPrimitives&,bool showCoverage=false,bool playing=false,double speed=1);
 }

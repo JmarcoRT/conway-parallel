@@ -16,7 +16,7 @@ def enter(t,path,p):
     t.send('\x1b[H'+'\x1b[3~'*10+str(p)+'\r')
     t.send('C');t.send('m');t.send(str(path)+'\r');t.send('u')
     t.send('d')
-    wait(t,lambda:'DIDÁCTICA MPI' in text(t) and 'capturada 1' in text(t))
+    wait(t,lambda:'DIDÁCTICA MPI' in text(t) and 'R0 g0' in text(t))
     t.send(' ')
     assert 'En pausa' in text(t),text(t)
 
@@ -109,7 +109,7 @@ def check(binary,root):
         before_help=text(t);t.send('d');help_view=collect(t)
         assert 'Composición didáctica' in help_view and 'snapshot intermedio' in help_view,help_view
         assert set(workers(t.process.pid))==pids,'help restarted MPI workers'
-        t.send('d');assert 'Etapa 2/6' in text(t) and 'En pausa' in text(t),text(t)
+        t.send('d');assert 'Paso 2 de 6' in text(t) and 'En pausa' in text(t),text(t)
         assert 'NEXT' not in first_local
         t.send('n');t.send('v');second=collect(t)
         assert 'ENVÍA R0 -> R1' in second and 'ENVÍA R1 -> R0' not in second,second
@@ -135,7 +135,7 @@ def check(binary,root):
         t.send('v');resize(t,50,24);t.read()
         small=collect(t)
         assert cells(small,'R0 g2')=='.OOO.',small
-        assert 'capturada 1' in text(t) and 'Etapa 6/6' in text(t)
+        assert 'Generación 1' in text(t) and 'Paso 6 de 6' in text(t)
         t.send('v');t.send(']');local=collect(t)
         assert 'Proceso: R1' in local and 'Tablero actualizado G1' in local,local
         t.send('[');resize(t,40,18);t.read()
@@ -143,9 +143,9 @@ def check(binary,root):
         assert 'N paso' in compact and 'En pausa' in compact and 'Tablero actualizado G1' in compact,compact
         assert set(workers(t.process.pid))==pids,'navigation replaced session'
         resize(t,160,45);t.read();t.send('++++');t.send(' ')
-        wait(t,lambda:'capturada 2' in text(t),timeout=8)
+        wait(t,lambda:'Generación 2' in text(t),timeout=8)
         t.send(' ');assert 'En pausa' in text(t)
-        t.send('r');wait(t,lambda:'capturada 1' in text(t) and 'Etapa 1/6' in text(t))
+        t.send('r');wait(t,lambda:'Generación 0' in text(t) and 'Paso 1 de 6' in text(t))
         assert 'En pausa' in text(t)
         pids.update(workers(t.process.pid));os.kill(workers(t.process.pid)[0],signal.SIGKILL)
         t.send('n'*6);wait(t,lambda:'CAPTURA DETENIDA' in text(t));assert 'Reproduciendo' not in text(t)

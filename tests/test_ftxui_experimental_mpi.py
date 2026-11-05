@@ -65,12 +65,12 @@ def check(binary, size):
         execute(t); visible(t, 'recursos duplicados')
         field(t, 'Lista de procesos', '1,2')
         execute(t); wait_state(t, 'Finalizado')
-        scroll_visible(t, 'MPI · procesos solicitados: 2')
-        scroll_visible(t, 'Procesos →')
-        t.send('\x1b[C'); scroll_visible(t, 'Auxiliares MPI')
+        scroll_visible(t, 'MPI', '2 procesos')
+        scroll_visible(t, 'Procesos solicitados')
+        t.send('\x1b[C'); scroll_visible(t, 'ESTADÍSTICAS POR CONFIGURACIÓN');t.send('d');scroll_visible(t, 'Auxiliares MPI')
         t.send('\x1b'); t.send('\x1b'); t.send('\x1b[B\r')
         visible(t, 'RESULTADOS DE LA SESIÓN')
-        scroll_visible(t, 'MPI · procesos solicitados: 2')
+        scroll_visible(t, 'MPI', '2 procesos')
         assert not workers(t.process.pid)
         before=t.raw;t.read();assert t.raw==before, 'periodic redraw while finished'
         t.send('\x1b'); t.send('\x1b'); t.send('0');assert t.process.wait(timeout=5)==0
