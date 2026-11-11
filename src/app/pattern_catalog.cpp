@@ -158,6 +158,45 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "pufferfish_spaceship") {
         return {"Nave espacial", "Nave c/2 de gran tamaño", std::nullopt};
     }
+    if (normalized == "spacefiller_2") {
+        return {"Rellenador espacial", "Llena el tablero con rayas de cebra", std::nullopt};
+    }
+    if (normalized == "space_rake") {
+        return {"Rastrillo", "Rastrillo de planeadores de periodo 20", 20};
+    }
+    if (normalized == "backward_space_rake") {
+        return {"Rastrillo", "Rastrillo inverso de periodo 20", 20};
+    }
+    if (normalized == "backrake_2") {
+        return {"Rastrillo", "Rastrillo inverso de periodo 12", 12};
+    }
+    if (normalized == "2_engine_cordership") {
+        return {"Nave espacial", "Cordership de 2 motores", 96};
+    }
+    if (normalized == "3_engine_cordership") {
+        return {"Nave espacial", "Cordership de 3 motores", 96};
+    }
+    if (normalized == "garden_of_eden_2") {
+        return {"Jardín del Edén", "Configuración sin predecesor", std::nullopt};
+    }
+    if (normalized == "lonedot_agar") {
+        return {"Agar", "Parche de agar estabilizado de periodo 2", 2};
+    }
+    if (normalized == "blinker_fuse") {
+        return {"Fusible", "Fusible de blinkers de periodo 18", 18};
+    }
+    if (normalized == "beehive_fuse") {
+        return {"Fusible", "Fusible diagonal de periodo 128", 128};
+    }
+    if (normalized == "quasar_wick") {
+        return {"Mecha", "Mecha de quásar", std::nullopt};
+    }
+    if (normalized == "wickstretcher_1") {
+        return {"Mecha", "Estirador de mechas", std::nullopt};
+    }
+    if (normalized == "pufferfish_rake") {
+        return {"Rastrillo", "Rastrillo c/2 de gran tamaño", std::nullopt};
+    }
     return {};
 }
 
