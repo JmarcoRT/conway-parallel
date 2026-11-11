@@ -150,6 +150,13 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 include(CTest)
 include(cmake/CudaBackend.cmake)
 
+# CMake accepts ON/TRUE/1 (including JSON preset booleans). The PTY scripts
+# have an explicit ON/OFF/HIDDEN protocol, so never forward the cache spelling.
+set(conway_cuda_test_mode OFF)
+if(CONWAY_ENABLE_CUDA)
+    set(conway_cuda_test_mode ON)
+endif()
+
 add_library(conway_cuda_ui STATIC src/app/cuda_info.cpp)
 target_include_directories(conway_cuda_ui PUBLIC include)
 target_link_libraries(conway_cuda_ui PUBLIC conway_cuda_launch)
@@ -163,6 +170,9 @@ endif()
 
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME pty_state_wait COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pty_state_wait.py")
+    set_tests_properties(pty_state_wait PROPERTIES TIMEOUT 5)
 
     add_test(NAME mpi_error_message_pty COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpi_error_message.py"
@@ -637,7 +647,7 @@ if(BUILD_TESTING)
     set_tests_properties(cuda_ui_unavailable PROPERTIES TIMEOUT 30 ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;OMP_NUM_THREADS=2")
     add_test(NAME cuda_ui_flows COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_ui.py" $<TARGET_FILE:conway>
-        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+        $<TARGET_FILE:cuda_ui_session_tests> "${conway_cuda_test_mode}" "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cuda_ui_flows PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
     if(CONWAY_ENABLE_CUDA)
         add_test(NAME cuda_ui_absent_flows COMMAND "${Python3_EXECUTABLE}"
@@ -679,7 +689,7 @@ if(BUILD_TESTING)
         RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
     add_test(NAME cuda_didactic_pty COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_didactic.py" $<TARGET_FILE:conway>
-        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+        $<TARGET_FILE:cuda_ui_session_tests> "${conway_cuda_test_mode}" "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cuda_didactic_pty PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
         RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
     if(CONWAY_ENABLE_CUDA)
@@ -698,7 +708,7 @@ if(BUILD_TESTING)
     add_test(NAME board_renderer_layout COMMAND board_renderer_tests)
     add_test(NAME cuda_board_visual_pty COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_board_visual.py" $<TARGET_FILE:conway>
-        $<TARGET_FILE:cuda_ui_session_tests> "${CONWAY_ENABLE_CUDA}" "${CMAKE_CURRENT_SOURCE_DIR}")
+        $<TARGET_FILE:cuda_ui_session_tests> "${conway_cuda_test_mode}" "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(cuda_board_visual_pty PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
         RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
 endif()

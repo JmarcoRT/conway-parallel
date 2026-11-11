@@ -6,7 +6,7 @@ using namespace ftxui;
 BoardGeometry computeBoardGeometry(std::size_t width,std::size_t height,std::size_t columns,std::size_t rows,
                                    std::size_t maxCellChars,bool compact,bool halfBlocks) {
     BoardGeometry g;
-    if(width<3 || height<3 || !columns || !rows)return g;
+    if(!columns || !rows || width<(compact?1u:3u) || height<(compact?1u:3u))return g;
     if(compact) {
         // Adjacent cells, no interior grid. Prefer two columns per cell so the
         // board stays square-ish, but don't let it monopolize the available

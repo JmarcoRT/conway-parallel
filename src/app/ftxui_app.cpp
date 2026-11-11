@@ -628,7 +628,7 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     // otherwise dominate the didactic panel. Worker logic is untouched.
     // Reserve the outer border before choosing a viewport. The compact fitter
     // may omit its own border to fit all cells; this panel always draws one.
-    if(panel_inner_width<5 || panel_inner_height<5)return {};
+    if(panel_inner_width<3 || panel_inner_height<3)return {};
     auto geometry=ui::computeBoardGeometry(
         panel_inner_width-2,panel_inner_height-2,board_width,board_height,2,true,halfBlocks);
     if(geometry.visible_rows && geometry.visible_cols) {
@@ -794,6 +794,14 @@ Element renderGameBoard(const Game& game, const ui::BoardGeometry& geom, bool co
         }};
     return ui::renderBoardGrid(
         geom,game.width(),game.height(),primitives,nullptr,{});
+}
+
+Element fitResultRow(Element row,int width) {
+    auto probe=ftxui::Screen::Create(ftxui::Dimension::Fixed(std::max(1,width)),ftxui::Dimension::Fit(row));
+    ftxui::Render(probe,row);
+    // Fit chose the screen height before flexbox knew the available width.
+    // Render resolves the wrapped requirement; the screen itself stays short.
+    return row|ftxui::size(ftxui::HEIGHT,ftxui::EQUAL,std::max(1,row->requirement().min_y));
 }
 
 std::string benchmarkReport(const BenchmarkResult& result) {
@@ -2192,11 +2200,7 @@ private:
     // heights and the frame can keep showing the first screen.
     Element resultViewport(std::vector<Element> rows, Element tabs) {
         const int width = std::max(1, static_cast<int>(controls::terminalSize().columns) - 3);
-        for (auto& row : rows) {
-            auto probe = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fit(row));
-            ftxui::Render(probe, row);
-            row = row | ftxui::size(ftxui::HEIGHT, ftxui::EQUAL, std::max(1, probe.dimy()));
-        }
+        for(auto& row:rows)row=fitResultRow(std::move(row),width);
         resultRows_ = static_cast<int>(rows.size());
         resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
         if (!rows.empty()) rows[resultRow_] = rows[resultRow_] | ftxui::focus;
@@ -2801,8 +2805,10 @@ private:
             for (std::size_t k = 0; k < chars; ++k) {
                 filled += "\xE2\x96\x80";
             }
-            segments.push_back(ftxui::text(filled) |
-                ftxui::bgcolor(workerColor(w.color_index)));
+            auto segment=ftxui::text(filled);
+            if(colorsEnabled())segment=segment|ftxui::bgcolor(workerColor(w.color_index));
+            else segment=segment|ftxui::dim;
+            segments.push_back(std::move(segment));
             (void)block;
         }
         return ftxui::hbox(std::move(segments));
@@ -2906,7 +2912,7 @@ private:
 
     std::string footerText() const {
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
-            "Esp pausa · +/- · G paso · N hilo · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
+            "Esp pausa · G paso · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?

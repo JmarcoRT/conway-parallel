@@ -21,6 +21,18 @@ int main(int argc,char** argv) {
     }
     using namespace conway::app;
     using namespace ftxui;
+    // Wrapped result paragraphs must retain their tail after a narrow layout.
+    // The first Fit screen starts at height 1 before flexbox resolves wrapping.
+    for(int width:{37,47,77}) {
+        auto row=fitResultRow(paragraph("Sesión original: #0   Calentamientos por sesión: 1 TAIL_SENTINEL"),width);
+        auto raster=Screen::Create(Dimension::Fixed(width),Dimension::Fit(row));
+        Render(raster,row);
+        std::string visible;
+        for(int y=0;y<raster.dimy();++y)for(int x=0;x<width;++x)visible+=raster.PixelAt(x,y).character;
+        if(visible.find("TAIL_SENTINEL")==std::string::npos) {
+            std::cerr<<"Wrapped result row lost its tail at width "<<width<<'\n';return 1;
+        }
+    }
     // Both MPI and OpenMP call this same primitive. Check pixels, not labels.
     for(bool colors:{false,true})for(bool alive:{false,true})for(bool known:{false,true})for(int width:{1,2,4,8}) {
         auto screen=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(1));
@@ -45,7 +57,7 @@ int main(int argc,char** argv) {
     }
     // Compact viewports must include their border in the allocation and draw
     // exactly the cell width advertised, including monochrome one-column cells.
-    for(bool halfBlocks:{false,true})for(auto [width,height]:{std::pair{30,12},{8,5},{40,18}}) {
+    for(bool halfBlocks:{false,true})for(auto [width,height]:{std::pair{30,12},{8,5},{40,18},{5,3}}) {
         auto geom=computeDidacticBoardGeometry(width,height,50,21,halfBlocks);
         if(!geom.visible_cols || !geom.visible_rows ||
            geom.board_chars>static_cast<std::size_t>(width) ||
@@ -56,6 +68,34 @@ int main(int argc,char** argv) {
         cell->ComputeRequirement();
         if(cell->requirement().min_x!=static_cast<int>(geom.cell_chars)) {
             std::cerr<<"Compact cell exceeds advertised width\n";return 1;
+        }
+    }
+    // Decode every real cell at the bottom/right viewport, including the last
+    // odd half-row. An intact label cannot hide a clipped or shifted raster.
+    for(bool colors:{false,true})for(auto [width,height]:{std::pair{30,12},{8,5},{40,18},{5,3}}) {
+        DidacticFrame frame;frame.width=50;frame.height=21;
+        frame.current_alive_map.resize(frame.width*frame.height);
+        for(std::size_t r=0;r<frame.height;++r)for(std::size_t c=0;c<frame.width;++c)
+            frame.current_alive_map[r*frame.width+c]=(r*3+c*5)%7==0;
+        auto geom=computeDidacticBoardGeometry(width,height,frame.width,frame.height,colors);
+        geom.row_offset=frame.height-geom.visible_rows;
+        geom.col_offset=frame.width-geom.visible_cols;
+        auto raster=Screen::Create(Dimension::Fixed(geom.board_chars),Dimension::Fixed(geom.board_lines));
+        Render(raster,renderDidacticBoardPanel(frame,geom,false,colors,false));
+        for(std::size_t r=0;r<geom.visible_rows;++r)for(std::size_t c=0;c<geom.visible_cols;++c) {
+            const auto row=geom.row_offset+r,col=geom.col_offset+c;
+            const bool alive=frame.current_alive_map[row*frame.width+col]!=0;
+            const int x=1+c*(geom.half_block?1:geom.cell_chars),y=1+(geom.half_block?r/2:r);
+            const auto& pixel=raster.PixelAt(x,y);
+            if(colors) {
+                const auto actual=geom.half_block && r%2==0?pixel.foreground_color:pixel.background_color;
+                const auto expected=didacticCellColor(alive,true,-1,((row+col)&1U)!=0U);
+                if(actual!=expected || pixel.character!=(geom.half_block?"▀":" ")) {
+                    std::cerr<<"Viewport lost or shifted cell "<<row<<','<<col<<'\n';return 1;
+                }
+            } else if(pixel.character!=" " || pixel.inverted!=alive) {
+                std::cerr<<"Monochrome viewport lost cell "<<row<<','<<col<<'\n';return 1;
+            }
         }
     }
     for (bool compact : {false, true}) {
