@@ -110,7 +110,8 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t panel_inner_width,
     std::size_t panel_inner_height,
     std::size_t board_width,
-    std::size_t board_height);
+    std::size_t board_height,
+    bool halfBlocks = false);
 
 Element renderDidacticBoardPanel(
     const conway::app::DidacticFrame& frame,
@@ -619,27 +620,20 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t panel_inner_width,
     std::size_t panel_inner_height,
     std::size_t board_width,
-    std::size_t board_height
+    std::size_t board_height,
+    bool halfBlocks
 ) {
-    // Didactic cells follow the catalogue presentation: two columns per
-    // cell, one terminal row, checkerboard tint and no interior grid. The
-    // rest of the didactic view (panels, colours, playback, workers) is
-    // unchanged; only the board viewport is recalculated for this cell size.
-    ui::BoardGeometry geometry;
-    if(!board_width || !board_height || panel_inner_width<4 || panel_inner_height<4)
-        return geometry;
-    geometry.compact=true;
-    geometry.compact_border=true;
-    geometry.compact_border_light=true;
-    geometry.cell_chars=2;
-    const bool full=board_width*2+2<=panel_inner_width && board_height+2<=panel_inner_height;
-    geometry.visible_cols=full?board_width:std::min<std::size_t>(
-        board_width,std::max<std::size_t>(1,(panel_inner_width-2)/2));
-    geometry.visible_rows=full?board_height:std::min<std::size_t>(
-        board_height,std::max<std::size_t>(1,panel_inner_height-2));
-    geometry.full_board_shown=full;
-    geometry.board_chars=geometry.visible_cols*2+2;
-    geometry.board_lines=geometry.visible_rows+2;
+    // Same adaptive presentation as the catalogue: adjacent cells with a
+    // checkerboard tint, and half-block rows when a wide/tall board would
+    // otherwise dominate the didactic panel. Worker logic is untouched.
+    auto geometry=ui::computeBoardGeometry(
+        panel_inner_width,panel_inner_height,board_width,board_height,2,true,halfBlocks);
+    if(geometry.visible_rows && geometry.visible_cols) {
+        geometry.compact_border=true;
+        geometry.compact_border_light=true;
+        geometry.board_chars=geometry.visible_cols*(geometry.half_block?1:geometry.cell_chars)+2;
+        geometry.board_lines=(geometry.half_block?(geometry.visible_rows+1)/2:geometry.visible_rows)+2;
+    }
     return geometry;
 }
 
@@ -653,6 +647,18 @@ Element renderDidacticBoardPanel(
     bool is_next,
     bool colors, bool showViewport
 ) {
+    auto cellColor=[&](std::size_t r,std::size_t c) {
+        const bool checker=geom.compact && ((r+c)&1U)!=0U;
+        if(r>=frame.height || c>=frame.width)
+            return didacticCellColor(false,true,std::int8_t{-1},checker);
+        const auto index=r*frame.width+c;
+        const bool alive=is_next?frame.next_alive_map[index]!=0:frame.current_alive_map[index]!=0;
+        if(is_next) {
+            const bool revealed=frame.revealed[index]!=0;
+            return didacticCellColor(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},checker);
+        }
+        return didacticCellColor(alive,true,std::int8_t{-1},checker);
+    };
     ui::BoardPrimitives primitives{
         [&](std::size_t r,std::size_t c,std::size_t cell) {
             const bool checker=geom.compact && ((r+c)&1U)!=0U;
@@ -664,7 +670,14 @@ Element renderDidacticBoardPanel(
                 return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors,checker);
             }
             return didacticCellElement(alive,true,-1,cell,colors,checker);
-        },[&](std::string value){return gridElement(std::move(value),colors);}};
+        },[&](std::string value){return gridElement(std::move(value),colors);},
+        [&](std::size_t r,std::size_t bottom,std::size_t c,std::size_t) {
+            const auto topColor=cellColor(r,c);
+            const auto bottomColor=bottom==std::size_t(-1)
+                ? didacticCellColor(false,true,std::int8_t{-1},((r+1+c)&1U)!=0U)
+                : cellColor(bottom,c);
+            return halfBlockCell(topColor,bottomColor);
+        }};
     std::string label;
     if(showViewport && !geom.full_board_shown)label="Viewport: filas "+std::to_string(geom.row_offset+1)+"–"+
         std::to_string(geom.row_offset+geom.visible_rows)+"/"+std::to_string(frame.height)+" · col. "+
@@ -2673,7 +2686,7 @@ private:
             if (height < (paired ? 10 : 6) || panelWidth < 4)
                 return ftxui::text("Tablero sin espacio. T consulta hilos.");
             auto geom = computeDidacticBoardGeometry(std::max(0, panelWidth - (paired ? 2 : 0)),
-                std::max(0, height - (paired ? 7 : 3)), frame.width, frame.height);
+                std::max(0, height - (paired ? 7 : 3)), frame.width, frame.height, colorsEnabled());
             didacticViewport_.clamp(frame.height, frame.width, geom.visible_rows, geom.visible_cols);
             geom.row_offset = didacticViewport_.row;
             geom.col_offset = didacticViewport_.column;
