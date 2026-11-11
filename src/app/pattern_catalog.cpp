@@ -101,6 +101,27 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "diamond_ring") {
         return {"Figura", "Anillo de diamante de periodo 3", 3};
     }
+    if (normalized == "clock") {
+        return {"Oscilador", "Reloj de periodo 2", 2};
+    }
+    if (normalized == "figure_eight") {
+        return {"Oscilador", "Ocho de periodo 8", 8};
+    }
+    if (normalized == "tumbler") {
+        return {"Oscilador", "Tumbler de periodo 14", 14};
+    }
+    if (normalized == "pinwheel") {
+        return {"Oscilador", "Molino de periodo 4", 4};
+    }
+    if (normalized == "spiral") {
+        return {"Estructura estable", "Espiral de 20 células", 1};
+    }
+    if (normalized == "swan") {
+        return {"Nave espacial", "Nave diagonal de periodo 4", 4};
+    }
+    if (normalized == "turtle") {
+        return {"Nave espacial", "Nave ortogonal de periodo 3", 3};
+    }
     return {};
 }
 
