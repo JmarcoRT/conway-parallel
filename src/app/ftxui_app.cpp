@@ -68,7 +68,7 @@ using ftxui::Event;
 // definicion (didacticBoardRows, didacticCurrentRows) y se mantienen
 // en el mismo namespace anonimo.
 Element cellElement(bool alive, bool colors);
-Element cellElement(bool alive, std::size_t cell_chars, bool colors);
+Element cellElement(bool alive, std::size_t cell_chars, bool colors, bool checker = false);
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index, bool colors);
 Element didacticCellElement(bool alive, bool revealed,
@@ -367,6 +367,21 @@ Element panel(std::string title, Element body) {
     }) | ftxui::border | ftxui::flex;
 }
 
+ftxui::Color checkerTint(const ftxui::Color& base, bool checker, bool dark) {
+    if (!checker) return base;
+    // Gamma-corrected interpolation needs different amounts for dark and
+    // bright fills to keep the checkerboard difference subtle but visible.
+    return dark
+        ? ftxui::Color::Interpolate(0.008F, base, ftxui::Color::RGB(255, 255, 255))
+        : ftxui::Color::Interpolate(0.08F, base, ftxui::Color::RGB(0, 0, 0));
+}
+
+// Two logical rows in one terminal line. The upper half uses the foreground
+// colour and the lower half the background colour.
+Element halfBlockCell(const ftxui::Color& top, const ftxui::Color& bottom) {
+    return ftxui::text("▀") | ftxui::color(top) | ftxui::bgcolor(bottom);
+}
+
 Element cellElement(bool alive, bool colors) {
     if (!colors) {
         return ftxui::text(alive ? "▓▓" : "░░");
@@ -380,16 +395,18 @@ Element cellElement(bool alive, bool colors) {
 // Variante con ancho de celda variable. En modo color se usa
 // `cell_chars` espacios como fondo; en modo monocromo se conservan
 // los bloques de 2 chars para no romper la estetica de la
-// visualizacion normal.
-Element cellElement(bool alive, std::size_t cell_chars, bool colors) {
-    if (cell_chars < 2) cell_chars = 2;
-    if (cell_chars > 8) cell_chars = 8;
+// visualizacion normal. El modo compacto permite una sola columna
+// por celda y alterna dos tonos muy cercanos para que las celdas
+// pegadas sigan siendo distinguibles.
+Element cellElement(bool alive, std::size_t cell_chars, bool colors, bool checker) {
+    cell_chars = std::clamp<std::size_t>(cell_chars, 1, 8);
     if (!colors) {
+        if (cell_chars == 1) return ftxui::text(alive ? "█" : " ");
         return ftxui::text(alive ? "▓▓" : "░░");
     }
-    const auto background = alive
+    const auto background = checkerTint(alive
         ? ftxui::Color::RGB(98, 232, 137)
-        : ftxui::Color::RGB(38, 49, 56);
+        : ftxui::Color::RGB(38, 49, 56), checker, !alive);
     return ftxui::text(std::string(cell_chars, ' ')) | ftxui::bgcolor(background);
 }
 
@@ -690,6 +707,47 @@ std::size_t visibleBoardRows(
     const std::size_t boardRowBudget = compact ? rowBudget / 4 : rowBudget / 2;
     return std::max<std::size_t>(
         1, std::min(boardHeight, boardRowBudget));
+}
+
+bool compactBoardStyle(const Game&) {
+    // Catalogue previews use adjacent cells with a subtle checkerboard tint
+    // instead of an interior grid. Other views keep their original layout.
+    return true;
+}
+
+ui::BoardGeometry gameBoardGeometry(
+    const Game& game,
+    std::size_t width,
+    std::size_t height,
+    bool halfBlocks
+) {
+    return ui::computeBoardGeometry(
+        width, height, game.width(), game.height(), 2, compactBoardStyle(game), halfBlocks);
+}
+
+Element renderGameBoard(const Game& game, const ui::BoardGeometry& geom, bool colors) {
+    auto fill=[&](std::size_t r,std::size_t c) {
+        const bool alive=game.isAlive(r,c);
+        return checkerTint(alive
+            ? ftxui::Color::RGB(98,232,137)
+            : ftxui::Color::RGB(38,49,56),
+            geom.compact && ((r+c)&1U)!=0U, !alive);
+    };
+    ui::BoardPrimitives primitives{
+        [&](std::size_t r,std::size_t c,std::size_t cell) {
+            const bool checker=geom.compact && ((r+c)&1U)!=0U;
+            return cellElement(game.isAlive(r,c),cell,colors,checker);
+        },
+        [&](std::string value){return gridElement(std::move(value),colors);},
+        [&](std::size_t r,std::size_t bottom,std::size_t c,std::size_t) {
+            const auto topColor=fill(r,c);
+            const auto bottomColor=bottom==std::size_t(-1)
+                ? ftxui::Color::RGB(38,49,56)
+                : fill(bottom,c);
+            return halfBlockCell(topColor,bottomColor);
+        }};
+    return ui::renderBoardGrid(
+        geom,game.width(),game.height(),primitives,nullptr,{});
 }
 
 std::string benchmarkReport(const BenchmarkResult& result) {
@@ -1919,12 +1977,16 @@ private:
         return ui::allocatedElement([this](int width,int height) {
             const auto& game=catalogPreview_.session()->game();
             if(width<4 || height<5)return ftxui::text("Sin espacio; reduce datos o amplía la terminal.");
-            const auto rows=static_cast<std::size_t>(std::max(1,(height-3)/2));
-            const auto columns=static_cast<std::size_t>(std::max(1,(width-1)/3));
-            catalogViewport_.clamp(game.height(),game.width(),rows,columns);
+            const auto boardWidth=static_cast<std::size_t>(std::max(1,width-2));
+            const auto boardHeight=static_cast<std::size_t>(std::max(1,height-3));
+            auto geom=gameBoardGeometry(game,boardWidth,boardHeight,colorsEnabled());
+            if(!geom.visible_rows || !geom.visible_cols)return ftxui::text("Sin espacio para el tablero.");
+            catalogViewport_.clamp(game.height(),game.width(),geom.visible_rows,geom.visible_cols);
+            geom.row_offset=catalogViewport_.row;
+            geom.col_offset=catalogViewport_.column;
             return ftxui::vbox({heading("CURRENT · generación "+std::to_string(game.generation())),
-                ftxui::vbox(boardRows(game,rows,columns,colorsEnabled(),catalogViewport_.row,catalogViewport_.column,false))|ftxui::flex,
-                viewportLabel(catalogViewport_,game.height(),game.width(),rows,columns)});
+                renderGameBoard(game,geom,colorsEnabled())|ftxui::flex,
+                viewportLabel(catalogViewport_,game.height(),game.width(),geom.visible_rows,geom.visible_cols)});
         });
     }
 
