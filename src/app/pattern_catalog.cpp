@@ -38,6 +38,36 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "pulsar") {
         return {"Oscilador", "Oscilador de periodo largo", 3};
     }
+    if (normalized == "lightweight_spaceship") {
+        return {"Nave espacial", "Nave ortogonal de periodo 4", 4};
+    }
+    if (normalized == "middleweight_spaceship") {
+        return {"Nave espacial", "Nave ortogonal de periodo 4", 4};
+    }
+    if (normalized == "heavyweight_spaceship") {
+        return {"Nave espacial", "Nave ortogonal de periodo 4", 4};
+    }
+    if (normalized == "loafer") {
+        return {"Nave espacial", "Nave ortogonal de periodo 7", 7};
+    }
+    if (normalized == "copperhead") {
+        return {"Nave espacial", "Nave ortogonal de periodo 10", 10};
+    }
+    if (normalized == "weekender") {
+        return {"Nave espacial", "Nave ortogonal de periodo 7", 7};
+    }
+    if (normalized == "spider") {
+        return {"Nave espacial", "Nave ortogonal de periodo 5", 5};
+    }
+    if (normalized == "pentadecathlon") {
+        return {"Oscilador", "Oscilador de periodo 15", 15};
+    }
+    if (normalized == "koks_galaxy") {
+        return {"Oscilador", "Oscilador de periodo 8", 8};
+    }
+    if (normalized == "queen_bee_shuttle") {
+        return {"Lanzadera", "Lanzadera de periodo 30", 30};
+    }
     return {};
 }
 
