@@ -13,6 +13,7 @@ struct BoardGeometry {
     // alternating cell shades keep individual cells distinguishable.
     bool compact=false;
     bool compact_border=false;
+    bool compact_border_light=false;
     // Two logical rows are packed into one terminal line with a half-block
     // glyph. Keeps cells square when one character per cell is too narrow.
     bool half_block=false;

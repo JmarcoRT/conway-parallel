@@ -73,7 +73,8 @@ Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index, bool colors);
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
-                             std::size_t cell_chars, bool colors);
+                             std::size_t cell_chars, bool colors,
+                             bool checker = false);
 Element gridElement(std::string value, bool colors);
 std::string gridBorder(
     std::size_t columns,
@@ -430,6 +431,15 @@ ftxui::Color workerColor(int index) {
     return palette[index % 8];
 }
 
+ftxui::Color didacticCellColor(bool alive, bool revealed,
+                               std::int8_t worker_index, bool checker) {
+    if(!revealed)return checkerTint(workerColor(-1),checker,true);
+    const auto background=alive
+        ? ftxui::Color::RGB(98,232,137)
+        : workerColor(worker_index);
+    return checkerTint(background,checker,!alive && worker_index<0);
+}
+
 // Celda didactica. alive siempre se pinta verde (#62E889). Las celdas
 // muertas usan el color del worker que las revelo (o dim gris si
 // no han sido reveladas). Asi el reparto se ve en las celdas
@@ -442,15 +452,15 @@ Element didacticCellElement(bool alive, bool revealed,
 // Shared by OpenMP and MPI: blank interiors, state conveyed by fill/attributes.
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
-                             std::size_t cell_chars, bool colors) {
+                             std::size_t cell_chars, bool colors, bool checker) {
     cell_chars=std::clamp<std::size_t>(cell_chars,2,8);
     auto cell=ftxui::text(std::string(cell_chars,' '));
     if(!revealed) {
-        if(colors)cell=cell|ftxui::bgcolor(workerColor(-1));
+        if(colors)cell=cell|ftxui::bgcolor(didacticCellColor(false,false,worker_index,checker));
         return cell|ftxui::underlined|ftxui::dim;
     }
     if(!colors)return alive?cell|ftxui::inverted:cell;
-    return cell|ftxui::bgcolor(alive?ftxui::Color::RGB(98,232,137):workerColor(worker_index));
+    return cell|ftxui::bgcolor(didacticCellColor(alive,true,worker_index,checker));
 }
 
 // Construye el tablero NEXT del panel didactico, usando la mascara
@@ -611,7 +621,26 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t board_width,
     std::size_t board_height
 ) {
-    return ui::computeBoardGeometry(panel_inner_width,panel_inner_height,board_width,board_height);
+    // Didactic cells follow the catalogue presentation: two columns per
+    // cell, one terminal row, checkerboard tint and no interior grid. The
+    // rest of the didactic view (panels, colours, playback, workers) is
+    // unchanged; only the board viewport is recalculated for this cell size.
+    ui::BoardGeometry geometry;
+    if(!board_width || !board_height || panel_inner_width<4 || panel_inner_height<4)
+        return geometry;
+    geometry.compact=true;
+    geometry.compact_border=true;
+    geometry.compact_border_light=true;
+    geometry.cell_chars=2;
+    const bool full=board_width*2+2<=panel_inner_width && board_height+2<=panel_inner_height;
+    geometry.visible_cols=full?board_width:std::min<std::size_t>(
+        board_width,std::max<std::size_t>(1,(panel_inner_width-2)/2));
+    geometry.visible_rows=full?board_height:std::min<std::size_t>(
+        board_height,std::max<std::size_t>(1,panel_inner_height-2));
+    geometry.full_board_shown=full;
+    geometry.board_chars=geometry.visible_cols*2+2;
+    geometry.board_lines=geometry.visible_rows+2;
+    return geometry;
 }
 
 // Renderiza un panel (CURRENT o NEXT) aplicando la geometria. La
@@ -626,14 +655,15 @@ Element renderDidacticBoardPanel(
 ) {
     ui::BoardPrimitives primitives{
         [&](std::size_t r,std::size_t c,std::size_t cell) {
-            if(r>=frame.height || c>=frame.width)return didacticCellElement(false,true,-1,cell,colors);
+            const bool checker=geom.compact && ((r+c)&1U)!=0U;
+            if(r>=frame.height || c>=frame.width)return didacticCellElement(false,true,-1,cell,colors,checker);
             const auto index=r*frame.width+c;
             const bool alive=is_next?frame.next_alive_map[index]!=0:frame.current_alive_map[index]!=0;
             if(is_next) {
                 const bool revealed=frame.revealed[index]!=0;
-                return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors);
+                return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors,checker);
             }
-            return didacticCellElement(alive,true,-1,cell,colors);
+            return didacticCellElement(alive,true,-1,cell,colors,checker);
         },[&](std::string value){return gridElement(std::move(value),colors);}};
     std::string label;
     if(showViewport && !geom.full_board_shown)label="Viewport: filas "+std::to_string(geom.row_offset+1)+"–"+

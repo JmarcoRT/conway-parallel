@@ -100,7 +100,7 @@ Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_
             rows.push_back(hbox(std::move(cells)));
         }
         Element board=vbox(std::move(rows));
-        if(g.compact_border)board=board|border;
+        if(g.compact_border)board=board|(g.compact_border_light?borderLight:border);
         if(!label.empty())board=vbox({std::move(board),text(std::move(label))|dim});
         return vbox({filler(),hbox({filler(),std::move(board),filler()}),filler()});
     }

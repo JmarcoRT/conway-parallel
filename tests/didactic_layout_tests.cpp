@@ -58,7 +58,7 @@ int main(int argc,char** argv) {
             const auto geom = computeDidacticBoardGeometry(width / 2 - 2, height - 2, 5, 5);
             Box current, next;
             auto body = [&](bool is_next, Box& box) {
-                return didacticBoardBody(is_next ? text("T0: filas 1-5") : text(" "),
+                return didacticBoardBody(is_next ? text("T0") : text(" "),
                     renderDidacticBoardPanel(frame, geom, is_next, false) | reflect(box));
             };
             auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(compact ? height * 2 : height));
