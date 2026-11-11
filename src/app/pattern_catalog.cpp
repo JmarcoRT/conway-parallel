@@ -86,6 +86,21 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "acorn") {
         return {"Matusalén", "Evolución caótica de larga vida", std::nullopt};
     }
+    if (normalized == "heart") {
+        return {"Figura", "Corazón de periodo 5", 5};
+    }
+    if (normalized == "smiley") {
+        return {"Figura", "Carita de periodo 8", 8};
+    }
+    if (normalized == "star") {
+        return {"Figura", "Estrella de periodo 3", 3};
+    }
+    if (normalized == "cross") {
+        return {"Figura", "Cruz de periodo 3", 3};
+    }
+    if (normalized == "diamond_ring") {
+        return {"Figura", "Anillo de diamante de periodo 3", 3};
+    }
     return {};
 }
 
