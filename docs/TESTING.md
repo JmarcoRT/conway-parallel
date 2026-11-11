@@ -94,3 +94,6 @@ de ejecutarlas. No son una campaña experimental oficial.
 Los tests funcionales/PTY verifican pausa sin repintado periódico, restauración,
 controles, navegación y resultados. La revisión visual Windows Terminal sigue
 siendo complementaria; no se infiere de un test PTY la apariencia de cada fuente.
+
+La auditoría de las nueve fallas de UI, las regresiones verificadas con alteraciones
+controladas y el alcance local/laboratorio están en [UI_SUITE_VALIDATION.md](UI_SUITE_VALIDATION.md).

@@ -10,9 +10,10 @@ didáctica desde el menú principal. La célula capturada está en la última fi
 de R0 y la columna central: con P>1 permite explicar una frontera entre franjas.
 Las coordenadas de filas/columnas mostradas tienen base cero.
 
-La cabecera distingue generación visible y capturada, etapa, reproducción y
-velocidad. El aviso permanente indica «Captura MPI real; orden de presentación
-didáctico». Reparto actual es contexto, no un Scatterv nuevo en cada paso.
+La cabecera muestra generación visible, paso, reproducción y velocidad.
+La ayuda D identifica la captura MPI real, su generación capturada y el carácter
+didáctico del orden de presentación. Reparto actual es contexto, no un Scatterv
+nuevo en cada paso.
 
 V alterna Global/Local/Explicación; [ y ] seleccionan cualquier rank, incluidos
 los vacíos. En terminal amplia, Global y Local muestran dos paneles: tablero
@@ -23,9 +24,10 @@ incluidas las cuadrículas; izquierda/derecha desplazan las columnas cuando no
 caben. El indicador de posición, estado y ayuda quedan fuera del contenido
 desplazable. Cambiar vista, rank o tamaño no toca el controlador.
 
-Las cuadrículas reutilizan geometría, bordes y celdas de la didáctica local.
-Las vivas conservan el verde; las muertas y bandas de fila llevan el color del
-rank, acompañado de etiquetas Rn y fila global. Los colores se repiten cada ocho
+MPI conserva la rejilla con dos caracteres interiores por célula; comparte
+las primitivas de estado, aunque la didáctica local puede usar filas comprimidas.
+Las vivas conservan el verde; las muertas y las marcas laterales de fila llevan
+el color del rank, acompañado de etiquetas Rn y fila global. Los colores se repiten cada ocho
 ranks: las etiquetas identifican siempre al propietario. Los interiores están
 vacíos: no contienen letras ni símbolos de estado. Viva usa fondo verde (inversión
 sin color), muerta usa el fondo del rank (vacío sin color) y oculta usa fondo

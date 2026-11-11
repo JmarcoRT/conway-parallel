@@ -76,16 +76,45 @@ int main() {
     check(scalingPlotPoints(r).empty(),"nonfinite zero and negative speedups not plotted");
     check(render(r,ScalingTab::Summary).find("Gráfico N/D")!=text.npos,"all invalid graph unavailable");
     r=fixture(); r.summary.points[0].summary.openMPStatistics->medianMs=16;
-    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 8 hilos")!=text.npos,"conclusion uses measured median without inferring a trend");
-    auto screen=ftxui::Screen::Create(ftxui::Dimensions{80,500});
-    const auto cyan=ftxui::Color::RGB(83,191,208);
-    ftxui::Render(screen,ftxui::vbox(scalingRows(r,"synthetic",ScalingTab::Summary,80,cyan,ftxui::Color::Green)));
-    int separators=0, headings=0;
-    for (int y=0;y<500;++y) {
-        if (screen.PixelAt(0,y).character=="─" && screen.PixelAt(0,y).dim) ++separators;
-        if (screen.PixelAt(0,y).bold && screen.PixelAt(0,y).foreground_color==cyan) ++headings;
+    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 4 hilos")!=text.npos,"conclusion uses measured median without inferring a trend");
+    // Explicit oracles: requested threads are deliberately not in sorted order.
+    // A small speedup cannot make a slower median the winner.
+    auto point=[](ScalingResult& value,int requested)->ExperimentSummary& {
+        return std::find_if(value.summary.points.begin(),value.summary.points.end(),
+            [&](const auto& p){return p.requestedThreads==requested;})->summary;
+    };
+    r=fixture();
+    point(r,8).openMPStatistics->medianMs=16;
+    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 4 hilos")!=text.npos,
+          "winner follows minimum median rather than largest request or stale speedup");
+    r=fixture();
+    point(r,1).openMPStatistics->medianMs=0.5;
+    point(r,2).openMPStatistics->medianMs=0.5;
+    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 1 hilos")!=text.npos,
+          "equal medians choose first configuration sorted by requested threads");
+    point(r,1).equivalent=false;
+    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 2 hilos")!=text.npos,
+          "nonequivalent fastest candidate cannot win");
+    point(r,2).validForComparison=false;
+    point(r,8).openMPStatistics->medianMs=std::numeric_limits<double>::quiet_NaN();
+    check(render(r,ScalingTab::Summary).find("Menor tiempo observado: 4 hilos")!=text.npos,
+          "invalid and nonfinite medians cannot win");
+    point(r,4).openMPStatistics->medianMs=-1;
+    check(render(r,ScalingTab::Summary).find("Sin mediciones válidas para identificar")!=text.npos,
+          "no winner when every candidate is invalid");
+    // A narrow labelled layout has no table divider; a wide table must have one.
+    for(int width:{80,180}) {
+        auto screen=ftxui::Screen::Create(ftxui::Dimensions{width,500});
+        const auto cyan=ftxui::Color::RGB(83,191,208);
+        ftxui::Render(screen,ftxui::vbox(scalingRows(fixture(),"synthetic",ScalingTab::Summary,width,cyan,ftxui::Color::Green)));
+        int separators=0,headings=0;
+        for(int y=0;y<500;++y)for(int x=0;x<width;++x) {
+            const auto& pixel=screen.PixelAt(x,y);
+            if(pixel.character=="─" && pixel.dim)++separators;
+            if(pixel.bold && pixel.foreground_color==cyan)++headings;
+        }
+        check(headings>=3 && (width==80 || separators>0),"responsive hierarchy and wide table divider");
     }
-    check(separators>=1 && headings>=3,"dim table divider and identity cyan hierarchy");
     r=fixture({1,2,4,8},20);
     text=render(r,ScalingTab::Samples,120,true);
     check(text.find("Identificador original: #100")!=text.npos && text.find("Ronda base cero: 19")!=text.npos,"many measurements retained");

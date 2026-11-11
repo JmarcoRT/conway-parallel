@@ -24,6 +24,14 @@ std::tuple<int,int,int,int> bounds(const Screen& screen) {
     }
     return {x0,x1,y0,y1};
 }
+std::string screenText(const Screen& screen) {
+    std::string text;
+    for(int y=0;y<screen.dimy();++y) {
+        for(int x=0;x<screen.dimx();++x)text+=screen.PixelAt(x,y).character;
+        text+='\n';
+    }
+    return text;
+}
 int main(int argc,char** argv) {
  try {
     for(bool colors:{false,true})for(std::size_t width:{2,3,4,8})for(bool alive:{false,true}) {
@@ -69,8 +77,16 @@ int main(int argc,char** argv) {
             Render(plain,ui::renderCudaDidactic(game,frame,"RTX 3050","",viewport,false,0,true,width,height,style,false));
             require(plain.ToString().find("×")==std::string::npos,"Real board expanded with exterior cells");
             if(width>=180) {
-                const auto rendered=plain.ToString();
-                require(rendered.find("HILO SELECCIONADO")!=std::string::npos && rendered.find("LEE SU CELDA Y VECINOS")!=std::string::npos,"Thread calculation sections missing");
+                const auto rendered=screenText(plain);
+                require(rendered.find("HILO SELECCIONADO")!=std::string::npos,"Selected thread section missing");
+                if(frame.cell.valid) {
+                    require(rendered.find("LEE SU CELDA Y VECINOS")!=std::string::npos,"Valid thread calculation missing");
+                } else {
+                    require(rendered.find("LEE SU CELDA Y VECINOS")==std::string::npos,
+                            "Exterior thread must not read cells");
+                    require(rendered.find("POSICIÓN EXTERIOR")!=std::string::npos,
+                            "Exterior thread explanation missing");
+                }
                 require(rendered.find("columna =")==std::string::npos && rendered.find("barreras")==std::string::npos,"Technical help leaked into selection summary");
             }
             auto box=bounds(plain);auto [x0,x1,y0,y1]=box;
@@ -113,7 +129,7 @@ int main(int argc,char** argv) {
         ui::BoardViewport viewport;
         auto screen=Screen::Create(Dimension::Fixed(180),Dimension::Fixed(60));
         Render(screen,ui::renderCudaDidactic(game,model.frame(),"GPU test","",viewport,false,0,true,180,60,style));
-        auto rendered=screen.ToString();
+        auto rendered=screenText(screen);
         require(rendered.find("BLOQUES CUDA")!=std::string::npos && rendered.find("Celdas")!=std::string::npos,"Block distribution table missing");
         require(rendered.find("APLICA LA REGLA B3/S23")!=std::string::npos && rendered.find("nace.")!=std::string::npos,"Birth rule explanation missing");
         auto [x0,x1,y0,y1]=bounds(screen);
@@ -122,7 +138,7 @@ int main(int argc,char** argv) {
         require(screen.PixelAt(x0+2*3+1,y0+1*2+1).background_color==Color::RGB(98,232,137),"Block tint hid a living cell");
         model.selectBlock(1,1,game);model.selectThread(15,15,game);
         Render(screen,ui::renderCudaDidactic(game,model.frame(),"GPU test","",viewport,false,0,true,180,60,style));
-        require(screen.ToString().find("Este hilo no actualiza ninguna celda")!=std::string::npos,"Exterior thread shown as a valid cell");
+        require(screenText(screen).find("Este hilo no actualiza ninguna celda")!=std::string::npos,"Exterior thread shown as a valid cell");
     }
     std::cout<<"PASS common board geometry, optional marks, boundary provenance, logical extents and fixed A coverage layout\n";return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

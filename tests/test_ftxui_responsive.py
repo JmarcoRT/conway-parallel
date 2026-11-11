@@ -9,8 +9,7 @@ import tempfile
 import termios
 import time
 sys.dont_write_bytecode = True
-from test_ftxui_header import Terminal
-from test_ftxui_benchmark import visible, field, execute, wait_state, focused, move_to
+from test_ftxui_benchmark import Terminal, visible, field, execute, wait_state, scroll_visible, focused, move_to
 
 SIZES = [(160, 45), (120, 40), (100, 30), (80, 24)]
 ESC = "\x1b"
@@ -91,7 +90,8 @@ def experiments(binary, cwd):
             wait_state(t, "Finalizado")
             for size in SIZES:
                 resize(t, *size)
-                visible(t, "IDENTIFICACIÓN", f"Ejecución #{2 if scaling else 1}")
+                scroll_visible(t, "ENTRADA")
+                scroll_visible(t, f"Ejecución #{2 if scaling else 1}")
                 t.send("\x1b[C")
                 visible(t, "ESTADÍSTICAS")
                 t.send("\x1b[F")

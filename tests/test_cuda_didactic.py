@@ -11,7 +11,7 @@ import tempfile
 import termios
 import time
 sys.dont_write_bytecode=True
-from test_ftxui_header import Terminal
+from test_ftxui_benchmark import Terminal
 binary,probe,mode,root=sys.argv[1:]
 check=subprocess.run([probe,'--availability'],capture_output=True,text=True)
 if mode=='ON' and check.returncode==77:
@@ -23,6 +23,14 @@ def wait(t,value):
     end=time.monotonic()+6
     while value not in flat(t) and time.monotonic()<end:t.read(.03)
     assert value in flat(t),(value,flat(t))
+def scroll_wait(t,value):
+    t.send('\x1b[H')
+    deadline=time.monotonic()+6
+    for _ in range(128):
+        if value in flat(t):return
+        assert time.monotonic()<deadline,(value,flat(t))
+        t.send('\x1b[6~')
+    raise AssertionError((value,flat(t)))
 def wait_generation(t,expected):
     end=time.monotonic()+6
     while generation(t)!=expected and time.monotonic()<end:t.read(.03)
@@ -48,18 +56,18 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
         for key in ['n','n','+','-']:t.send(key)
         assert generation(t)==paused,'Paused exploration or speed controls advanced generation'
         t.send(']'*5);t.send('l'*15);t.send('j'*15)
-        t.send('v');wait(t,'blockIdx=(2,1)');wait(t,'threadIdx=(15,15)')
-        wait(t,'columna = 2 * 16 + 15 = 47');wait(t,'fila = 1 * 16 + 15 = 31')
-        wait(t,'Posición exterior');wait(t,'barreras');assert generation(t)==paused
+        t.send('v');scroll_wait(t,'blockIdx=(2,1)');scroll_wait(t,'threadIdx=(15,15)')
+        scroll_wait(t,'columna = 2 * 16 + 15 = 47');scroll_wait(t,'fila = 1 * 16 + 15 = 31')
+        scroll_wait(t,'Posición exterior');scroll_wait(t,'barreras');assert generation(t)==paused
         t.send('g');wait_generation(t,paused+1);assert generation(t)==paused+1
         t.send('b');wait(t,'BLOQUE CUDA');t.send('\x1b');assert generation(t)==paused+1
-        t.send('b');t.send('3');wait(t,'32x8');wait(t,'Grid 2x3');wait(t,'Selección ajustada')
-        wait(t,'columna = 1 * 32 + 2 = 34');wait(t,'fila = 2 * 8 + 2 = 18')
+        t.send('b');t.send('3');wait(t,'32x8');wait(t,'Grid 2x3');scroll_wait(t,'Selección ajustada')
+        scroll_wait(t,'columna = 1 * 32 + 2 = 34');scroll_wait(t,'fila = 2 * 8 + 2 = 18')
         t.send('b');t.send('1');wait(t,'8x8');wait(t,'Grid 5x3')
         t.send('b');t.send('2');wait(t,'16x16');wait(t,'Grid 3x2')
         assert generation(t)==paused+1
         t.send('x');t.send('d');wait(t,warning);assert generation(t)==paused+1
-        t.send('v');wait(t,'Siguiente estado:')
+        t.send('v');scroll_wait(t,'Siguiente estado:')
         t.send('x');t.send('v');wait(t,f'Generación {paused+1}')
         t.send('d');wait(t,warning);t.send('r');wait_generation(t,0)
         wait(t,'Bloque: (0,0)');wait(t,'Hilo: (0,0)')
@@ -74,9 +82,7 @@ with tempfile.TemporaryDirectory(prefix='conway-cuda-didactic-') as directory:
         t.send('b');t.send('3');wait(t,'32x8');wait(t,'Ajuste:')
         assert any(x in flat(t) for x in ['┼','┃','║']),flat(t)
         t.send('b');t.send('2');wait(t,'16x16');t.send('r');wait_generation(t,0)
-        t.send('v');seen=flat(t)
-        for _ in range(16):t.send('\x1b[6~');seen+=' '+flat(t)
-        assert 'Predicción CPU con regla compartida' in seen,seen
+        t.send('v');scroll_wait(t,'Predicción CPU con regla compartida')
         assert generation(t)==0
         # Resize below supported minimum, restore: no selection/generation loss.
         for w,h in [(35,15),(120,42)]:

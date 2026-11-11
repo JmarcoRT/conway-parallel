@@ -1,16 +1,17 @@
 """Formularios experimentales reales en PTY: edición, validación y foco."""
 from pathlib import Path
 import sys
+import re
 import tempfile
 sys.dont_write_bytecode = True
 from test_ftxui_header import Terminal as BaseTerminal, ROW
 from test_ftxui_menu import expect_focus, expect_identity_heading, pixels, CYAN, CHARCOAL
 
 class Terminal(BaseTerminal):
-    def read(self):
+    def read(self, idle_timeout=0.05):
         # Hundreds of UI actions used to each wait 350 ms even after rendering
         # finished. Drain the complete burst; keep 350 ms for silent observations.
-        super().read(idle_timeout=0.05)
+        super().read(idle_timeout=idle_timeout)
 
 
 TAB = "\t"
@@ -19,17 +20,21 @@ ESC = "\x1b"
 
 
 def visible(terminal, *values):
+    # Wrapped phrases can cross physical rows beside the scrollbar. Geometry
+    # and raster checks are separate from these semantic text assertions.
     terminal.assert_fits()
-    text = " ".join(line.strip("│ ") for line in terminal.screen().values())
+    text = " ".join(" ".join(line.strip("│┃╻╹ ") for line in terminal.screen().values()).split())
     for value in values:
-        assert value in text, (value, text)
+        assert " ".join(value.split()) in text, (value, text)
 
 
 def scroll_visible(terminal, *values):
     terminal.send("\x1b[H")
-    for _ in range(90):
-        text = " ".join(line.strip("│ ") for line in terminal.screen().values())
-        if all(value in text for value in values):
+    position=re.search(r"Bloque (\d+)/(\d+)"," ".join(terminal.screen().values()))
+    budget=int(position[2])+1 if position else 90
+    for _ in range(budget):
+        text = " ".join(" ".join(line.strip("│┃╻╹ ") for line in terminal.screen().values()).split())
+        if all(" ".join(value.split()) in text for value in values):
             visible(terminal, *values)
             return
         terminal.send("\x1b[B")
@@ -69,7 +74,7 @@ def edit(terminal, value):
 
 def form_text(terminal):
     # Excluir la barra contextual y el pie global: siguen mostrando el patrón de la aplicación.
-    return " ".join(line.strip("│ ") for row, line in terminal.screen().items()
+    return " ".join(line.strip("│┃╻╹ ") for row, line in terminal.screen().items()
                     if terminal.identity_end() + 1 < row <= terminal.rows - 3)
 
 
@@ -96,9 +101,9 @@ def check_sources(terminal, values, change=False):
     terminal.expect("Patrón: cedar.txt", "3 × 7")
 
 
-def wait_state(terminal, state):
+def wait_state(terminal, state, timeout=90):
     import time
-    deadline = time.monotonic() + 90  # Límite de bloqueo, no umbral de rendimiento.
+    deadline = time.monotonic() + timeout  # Límite de bloqueo, no umbral de rendimiento.
     labels = ["Estado: " + state]
     if state == "Finalizado":
         labels += ["Comparación completada", "Escalabilidad completada", "Mediciones completadas", "Estudio completado"]
@@ -157,11 +162,11 @@ def check(binary, cwd, columns, rows):
         field(terminal,"Lista de hilos","1,1");execute(terminal)
         focused(terminal,"Lista de hilos");visible(terminal,"recursos duplicados")
         edit(terminal,"4,1,2");execute(terminal);wait_state(terminal,"Finalizado")
-        visible(terminal,"Ejecución #2")
+        scroll_visible(terminal,"Ejecución #2")
         scroll_visible(terminal,"ENTRADA","Tablero generado de 7 × 5")
         scroll_visible(terminal,"RESULTADOS OPENMP");scroll_visible(terminal,"ACELERACIÓN SEGÚN LOS HILOS")
         terminal.send("\x1b[C");scroll_visible(terminal,"ESTADÍSTICAS POR CONFIGURACIÓN","Secuencial")
-        terminal.send("\x1b[F");visible(terminal,"Ejecución #2")
+        terminal.send("\x1b[F");scroll_visible(terminal,"Ejecución #2")
         terminal.send(ESC);terminal.send(ESC);terminal.send("\x1b[A\r")
         move_to(terminal,"Patrón cargado");terminal.send("\x1b[F\r")
         field(terminal,"Ancho","8000");field(terminal,"Alto","8000");execute(terminal)
@@ -171,7 +176,7 @@ def check(binary, cwd, columns, rows):
         scroll_visible(terminal,"Ejecución #2");terminal.send("\x1b[D");scroll_visible(terminal,"Correcto")
         terminal.send(ESC);terminal.send("\x1b[A\x1b[A\r")
         field(terminal,"Ancho","7");field(terminal,"Alto","5");execute(terminal);wait_state(terminal,"Finalizado")
-        visible(terminal,"Ejecución #3")
+        scroll_visible(terminal,"Ejecución #3")
         scroll_visible(terminal,"Correcto")
         assert terminal.identity()==identity
         terminal.send(ESC);terminal.send(ESC);terminal.send("\x1b[B\x1b[B\r")

@@ -6,8 +6,7 @@ import sys
 import tempfile
 import time
 sys.dont_write_bytecode = True
-from test_ftxui_header import Terminal
-from test_ftxui_benchmark import field, execute, visible, scroll_visible, move_to, focus_text, wait_state
+from test_ftxui_benchmark import Terminal, field, execute, visible, scroll_visible, move_to, focus_text, wait_state
 from test_ftxui_mpi import workers
 
 
@@ -101,5 +100,9 @@ if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve());root=str(Path(sys.argv[2]).resolve())
     os.environ.update(OMP_NUM_THREADS='2', OMP_THREAD_LIMIT='2', OMP_DYNAMIC='FALSE')
     for size in [(120,40),(80,24),(50,24)]:
+        started=time.monotonic()
         check(binary,size)
+        print(f'TIMING MPI UI {size}: {time.monotonic()-started:.2f}s',flush=True)
+    started=time.monotonic()
     failure(binary)
+    print(f'TIMING missing worker: {time.monotonic()-started:.2f}s',flush=True)

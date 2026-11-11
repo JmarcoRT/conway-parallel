@@ -151,13 +151,17 @@ se mantienen dos paneles si caben horizontalmente y hay espacio para cinco
 filas lógicas (o todo el patrón, si es más corto). Las flechas desplazan el
 viewport del tablero. El indicador informa el intervalo visible.
 
-En el catálogo, `D` activa el detalle o devuelve el control a la lista.
-La región activa se identifica en su encabezado. En la lista, ↑/↓ seleccionan
-patrones; en el detalle, las flechas desplazan el viewport compartido de
-ACTUAL/SIGUIENTE sin cambiar el patrón. En compacto se muestra una región
-a la vez y `V` alterna ACTUAL/SIGUIENTE. `PgUp`/`PgDn` desplazan únicamente
-los metadatos, mientras el tablero y su indicador permanecen visibles.
-Enter carga el patrón seleccionado en cualquiera de las vistas. La selección nativa se conserva al redimensionar.
+En el catálogo, `D` alterna entre lista y detalle. En la lista, ↑/↓ seleccionan
+patrones; en el detalle, las flechas desplazan el tablero CURRENT sin cambiar
+el patrón. La vista previa usa Secuencial: `N` avanza, Espacio pausa/reproduce
+y `R` reinicia. `U` confirma la entrada inicial validada, aunque la vista previa
+haya avanzado. La selección y la generación se conservan al redimensionar.
+
+Catálogo y didáctica local usan celdas contiguas. En color, los tableros grandes
+pueden representar dos filas lógicas en una línea de terminal mediante medios
+bloques. El indicador siempre cuenta células lógicas, no líneas físicas.
+Sin color se usan células de una o dos columnas, sin comprimir filas con color.
+La primera y la última fila/columna siguen siendo accesibles con las flechas.
 
 En didáctica, las flechas desplazan el viewport compartido por CURRENT/NEXT
 en todos los tamaños. `T` alterna los tableros y la lista completa de
@@ -172,12 +176,12 @@ El redimensionamiento conserva simulaciones, borradores y resultados; no
 relanza experimentos. Por debajo de 40×18 se muestra un aviso de tamaño
 insuficiente. Este mínimo reserva espacio para la identidad, un panel con sus
 controles y la ayuda inferior. Los tableros grandes usan un viewport: para
-ver otras células hay que desplazarlo. La vista amplia conserva su presentación
-original, incluida la tabla resumida de trabajadores.
+ver otras células hay que desplazarlo. La vista amplia conserva la tabla resumida
+de trabajadores; `T` permite consultar la lista completa.
 
 La geometría de Catálogo y Didáctica se calcula a partir del rectángulo que
 FTXUI asigna finalmente al área de tableros, después del contenido circundante.
-Se reserva espacio para cuadrículas completas y un indicador compartido con
+Se reserva espacio para células completas, sus bordes y un indicador compartido con
 los intervalos de filas y columnas visibles. Si ni siquiera cabe una celda
 con sus controles, esa región muestra un aviso de espacio insuficiente.
 Al redimensionar se conservan región activa y offsets que sigan siendo válidos;
@@ -292,3 +296,17 @@ compacta de hilos/celdas válidas. El hilo seleccionado presenta una matriz 3x3,
 la suma de sus vecinos y la regla B3/S23 concreta, identificada como predicción
 CPU para la próxima generación. La tabla sigue el bloque seleccionado y no
 ensancha las celdas ni cambia el tablero al activar la cobertura A.
+
+### Detalles y desplazamiento de resultados
+
+Resumen, Muestras y Método permanecen accesibles con ←/→. En Muestras y Método,
+`D` muestra u oculta detalles técnicos. Los identificadores originales de muestra
+se consultan en los detalles, sin cambiar el orden ni el contenido de las mediciones.
+El identificador de ejecución se conserva al final del contenido desplazable;
+Inicio/Fin y las flechas permiten recorrerlo. Los párrafos reservan todas sus
+líneas al cambiar el ancho de terminal, sin perder su final ni relanzar el estudio.
+
+En CUDA a 40×18 el pie muestra los controles esenciales en una sola línea.
+`V` abre los controles completos y la explicación; PgUp/PgDn recorre el detalle.
+Una posición exterior se identifica como «POSICIÓN EXTERIOR» y no marca una célula
+válida como sustituta.

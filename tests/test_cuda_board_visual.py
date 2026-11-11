@@ -8,7 +8,8 @@ import sys
 import tempfile
 import time
 sys.dont_write_bytecode=True
-from test_ftxui_header import Terminal,ROW
+from test_ftxui_header import ROW
+from test_ftxui_benchmark import Terminal
 binary,probe,mode,root=sys.argv[1:]
 check=subprocess.run([probe,'--availability'],capture_output=True,text=True)
 if mode=='ON' and check.returncode==77:print(check.stdout);sys.exit(77)
@@ -18,6 +19,14 @@ def wait(t,value):
     end=time.monotonic()+6
     while value not in flat(t) and time.monotonic()<end:t.read(.03)
     assert value in flat(t),(value,flat(t))
+def scroll_wait(t,value):
+    t.send('\x1b[H')
+    deadline=time.monotonic()+6
+    for _ in range(128):
+        if value in flat(t):return
+        assert time.monotonic()<deadline,(value,flat(t))
+        t.send('\x1b[6~')
+    raise AssertionError((value,flat(t)))
 def board(t):
     lines=t.screen()
     tops=[(y,s.index('┌'),s.index('┐')) for y,s in lines.items() if '┌' in s and '┐' in s]
@@ -55,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='conway-board-visual-') as directory:
             capture(t,f'pty-{w}-coverage-'+('mono' if mono else 'color'))
             t.send('l'*13+'j'*13)
             if w==35:t.send(']'*5)
-            wait(t,'Posición exterior');assert '║' not in ''.join(board(t)[1])
+            wait(t,'POSICIÓN EXTERIOR');assert '║' not in ''.join(board(t)[1])
             capture(t,f'pty-{w}-exterior-'+('mono' if mono else 'color'))
             for preset,label in [('1','8x8'),('3','32x8'),('2','16x16')]:
                 t.send('b');t.send(preset);wait(t,label);wait(t,'En pausa')
@@ -67,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='conway-board-visual-') as directory:
             wait(t,'conceptual');wait(t,'A:+');before=board(t)
             capture(t,f'pty-{w}-small-'+('mono' if mono else 'color'))
             t.send('a');assert board(t)==before,'Compact coverage displaced board'
-            t.send('a');wait(t,'A:+');t.send('v');wait(t,'Cobertura A');t.send('v')
+            t.send('a');wait(t,'A:+');t.send('v');scroll_wait(t,'Cobertura A');t.send('v')
             wait(t,'En pausa');t.send('x');t.send('q');assert t.process.wait(timeout=5)==0
             print(f'PASS {w}x{h}, mono={mono}: live/dead/exterior, A fixed board, presets, persistence, 40x18; G unchanged',flush=True)
         finally:t.close()
