@@ -122,6 +122,30 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "turtle") {
         return {"Nave espacial", "Nave ortogonal de periodo 3", 3};
     }
+    if (normalized == "octagon_2") {
+        return {"Oscilador", "Octágono de periodo 5", 5};
+    }
+    if (normalized == "fumarole") {
+        return {"Oscilador", "Fumarola de periodo 5", 5};
+    }
+    if (normalized == "mazing") {
+        return {"Oscilador", "Mazing de periodo 4", 4};
+    }
+    if (normalized == "monogram") {
+        return {"Oscilador", "Monograma de periodo 4", 4};
+    }
+    if (normalized == "achims_p4") {
+        return {"Oscilador", "Achim's p4 de periodo 4", 4};
+    }
+    if (normalized == "pentoad") {
+        return {"Oscilador", "Pentoad de periodo 5", 5};
+    }
+    if (normalized == "twin_bees_shuttle") {
+        return {"Lanzadera", "Lanzadera de abejas de periodo 46", 46};
+    }
+    if (normalized == "p11_pinwheel") {
+        return {"Oscilador", "Molino de periodo 11", 11};
+    }
     return {};
 }
 
