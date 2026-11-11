@@ -158,9 +158,6 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "pufferfish_spaceship") {
         return {"Nave espacial", "Nave c/2 de gran tamaño", std::nullopt};
     }
-    if (normalized == "breeder_1") {
-        return {"Criador", "Crecimiento cuadrático; 4060 células", std::nullopt};
-    }
     return {};
 }
 
