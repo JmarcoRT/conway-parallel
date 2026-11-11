@@ -146,6 +146,21 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "p11_pinwheel") {
         return {"Oscilador", "Molino de periodo 11", 11};
     }
+    if (normalized == "simkin_glider_gun") {
+        return {"Cañón", "Cañón de planeadores de periodo 120", 120};
+    }
+    if (normalized == "r_pentomino") {
+        return {"Matusalén", "Reacción caótica de 1103 generaciones", std::nullopt};
+    }
+    if (normalized == "line_puffer") {
+        return {"Puffer", "Tren soplador de 878 células", std::nullopt};
+    }
+    if (normalized == "pufferfish_spaceship") {
+        return {"Nave espacial", "Nave c/2 de gran tamaño", std::nullopt};
+    }
+    if (normalized == "breeder_1") {
+        return {"Criador", "Crecimiento cuadrático; 4060 células", std::nullopt};
+    }
     return {};
 }
 
