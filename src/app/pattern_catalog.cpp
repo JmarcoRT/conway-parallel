@@ -68,6 +68,24 @@ PatternMetadata metadataFor(const std::string& name) {
     if (normalized == "queen_bee_shuttle") {
         return {"Lanzadera", "Lanzadera de periodo 30", 30};
     }
+    if (normalized == "b29") {
+        return {"Nave espacial", "Nave diagonal de periodo 4", 4};
+    }
+    if (normalized == "dragon") {
+        return {"Nave espacial", "Nave ortogonal de periodo 6", 6};
+    }
+    if (normalized == "sir_robin") {
+        return {"Nave espacial", "Nave oblicua de periodo 6", 6};
+    }
+    if (normalized == "pufferfish") {
+        return {"Puffer", "Puffer casi natural de velocidad c/2", std::nullopt};
+    }
+    if (normalized == "max") {
+        return {"Rellenador espacial", "Crece hasta llenar el tablero", std::nullopt};
+    }
+    if (normalized == "acorn") {
+        return {"Matusalén", "Evolución caótica de larga vida", std::nullopt};
+    }
     return {};
 }
 
