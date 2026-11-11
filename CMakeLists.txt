@@ -146,6 +146,13 @@ add_executable(mpi_partition_prototype
 target_include_directories(mpi_partition_prototype PRIVATE include)
 target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
+add_executable(conway_cluster
+    scripts/cluster/conway_cluster.cpp
+    src/input/input.cpp
+)
+target_include_directories(conway_cluster PRIVATE include)
+target_link_libraries(conway_cluster PRIVATE conway_mpi)
+
 
 include(CTest)
 include(cmake/CudaBackend.cmake)
