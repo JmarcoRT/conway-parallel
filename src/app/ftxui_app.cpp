@@ -454,7 +454,7 @@ Element didacticCellElement(bool alive, bool revealed,
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
                              std::size_t cell_chars, bool colors, bool checker) {
-    cell_chars=std::clamp<std::size_t>(cell_chars,2,8);
+    cell_chars=std::clamp<std::size_t>(cell_chars,1,8);
     auto cell=ftxui::text(std::string(cell_chars,' '));
     if(!revealed) {
         if(colors)cell=cell|ftxui::bgcolor(didacticCellColor(false,false,worker_index,checker));
@@ -626,8 +626,11 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     // Same adaptive presentation as the catalogue: adjacent cells with a
     // checkerboard tint, and half-block rows when a wide/tall board would
     // otherwise dominate the didactic panel. Worker logic is untouched.
+    // Reserve the outer border before choosing a viewport. The compact fitter
+    // may omit its own border to fit all cells; this panel always draws one.
+    if(panel_inner_width<5 || panel_inner_height<5)return {};
     auto geometry=ui::computeBoardGeometry(
-        panel_inner_width,panel_inner_height,board_width,board_height,2,true,halfBlocks);
+        panel_inner_width-2,panel_inner_height-2,board_width,board_height,2,true,halfBlocks);
     if(geometry.visible_rows && geometry.visible_cols) {
         geometry.compact_border=true;
         geometry.compact_border_light=true;
@@ -2021,7 +2024,7 @@ private:
             const auto& game=catalogPreview_.session()->game();
             if(width<4 || height<5)return ftxui::text("Sin espacio; reduce datos o amplía la terminal.");
             const auto boardWidth=static_cast<std::size_t>(std::max(1,width-2));
-            const auto boardHeight=static_cast<std::size_t>(std::max(1,height-3));
+            const auto boardHeight=static_cast<std::size_t>(std::max(1,height-2));
             auto geom=gameBoardGeometry(game,boardWidth,boardHeight,colorsEnabled());
             if(!geom.visible_rows || !geom.visible_cols)return ftxui::text("Sin espacio para el tablero.");
             catalogViewport_.clamp(game.height(),game.width(),geom.visible_rows,geom.visible_cols);

@@ -22,7 +22,7 @@ int main(int argc,char** argv) {
     using namespace conway::app;
     using namespace ftxui;
     // Both MPI and OpenMP call this same primitive. Check pixels, not labels.
-    for(bool colors:{false,true})for(bool alive:{false,true})for(bool known:{false,true})for(int width:{2,4,8}) {
+    for(bool colors:{false,true})for(bool alive:{false,true})for(bool known:{false,true})for(int width:{1,2,4,8}) {
         auto screen=Screen::Create(Dimension::Fixed(width),Dimension::Fixed(1));
         Render(screen,didacticCellElement(alive,known,0,width,colors));
         for(int x=0;x<width;++x) {
@@ -41,6 +41,21 @@ int main(int argc,char** argv) {
             auto other=Screen::Create(Dimension::Fixed(2),Dimension::Fixed(1));
             Render(other,didacticCellElement(alive,known,0,colors));
             if(screen.ToString()!=other.ToString()) {std::cerr<<"Cell overloads disagree\n";return 1;}
+        }
+    }
+    // Compact viewports must include their border in the allocation and draw
+    // exactly the cell width advertised, including monochrome one-column cells.
+    for(bool halfBlocks:{false,true})for(auto [width,height]:{std::pair{30,12},{8,5},{40,18}}) {
+        auto geom=computeDidacticBoardGeometry(width,height,50,21,halfBlocks);
+        if(!geom.visible_cols || !geom.visible_rows ||
+           geom.board_chars>static_cast<std::size_t>(width) ||
+           geom.board_lines>static_cast<std::size_t>(height)) {
+            std::cerr<<"Compact viewport exceeds panel budget\n";return 1;
+        }
+        auto cell=didacticCellElement(true,true,0,geom.cell_chars,false);
+        cell->ComputeRequirement();
+        if(cell->requirement().min_x!=static_cast<int>(geom.cell_chars)) {
+            std::cerr<<"Compact cell exceeds advertised width\n";return 1;
         }
     }
     for (bool compact : {false, true}) {
