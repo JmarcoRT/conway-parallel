@@ -16,10 +16,12 @@
 // Uso: mpirun -np P ./mpi_partition_prototype [archivo.txt | --synthetic ALTO ANCHO] [--show]
 
 #include <mpi.h>
+#include <omp.h>
 #include <unistd.h>
 
 #include "core/game_state.hpp"
 #include "core/engines/mpi.hpp"
+#include "core/engines/openmp.hpp"
 #include "core/engines/sequential.hpp"
 #include "input/input.hpp"
 #include "mpi/local_state.hpp"
@@ -49,6 +51,7 @@ struct Options {
     std::size_t synWidth{0};
     bool show{false};
     int steps{0};
+    int threads{1};
 };
 
 bool parse_args(int argc, char** argv, Options& opt) {
@@ -56,10 +59,12 @@ bool parse_args(int argc, char** argv, Options& opt) {
         const std::string a = argv[i];
         if (a == "--show") {
             opt.show = true;
-        } else if (a == "--steps" && i + 1 < argc) {
+        } else if ((a == "--steps" || a == "--threads") && i + 1 < argc) {
             const std::string value = argv[++i];
-            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), opt.steps);
-            if (error != std::errc{} || end != value.data() + value.size() || opt.steps < 0)
+            int& target = a == "--steps" ? opt.steps : opt.threads;
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), target);
+            if (error != std::errc{} || end != value.data() + value.size() ||
+                target < (a == "--steps" ? 0 : 1))
                 return false;
         } else if (a == "--synthetic" && i + 2 < argc) {
             char* e1 = nullptr;
@@ -126,6 +131,53 @@ bool local_state_ok(const conway::core::GameState& s,
 void check(bool ok, const std::string& label, bool& all) {
     std::cout << (ok ? "[OK]    " : "[FALLO] ") << label << '\n';
     all = all && ok;
+}
+
+void report_openmp_teams(int rank, int size, int requestedThreads) {
+    const int localThreads = conway::core::last_openmp_team_size();
+    std::vector<int> teams(rank == 0 ? size : 0);
+    MPI_Gather(&localThreads, 1, MPI_INT, teams.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (rank != 0) return;
+
+    std::cout << "MPI + OpenMP | hilos solicitados por rank: " << requestedThreads << '\n';
+    for (int r = 0; r < size; ++r)
+        std::cout << "rank " << r << ": " << teams[r] << " hilos observados\n";
+}
+
+int verify_evolution(int rank, int size, const Options& opt, const InputData& input,
+                     const conway::mpi::RowPartition& part, conway::core::GameState& state,
+                     const std::vector<int>& counts, const std::vector<int>& displs,
+                     std::vector<std::uint8_t>& board, int status) {
+    if (opt.steps == 0) return status;
+
+    std::optional<conway::core::GameState> reference;
+    if (rank == 0)
+        reference = conway::mpi::make_local_state(input, conway::mpi::partition_rows(input.height, 1, 0));
+    for (int step = 0; step < opt.steps; ++step) {
+        const auto globalAlive = opt.threads > 1
+            ? conway::core::step_mpi_openmp(state, part, MPI_COMM_WORLD)
+            : conway::core::step_mpi(state, part, MPI_COMM_WORLD);
+        const auto rows = conway::mpi::pack_local_rows(state);
+        MPI_Gatherv(rows.data(), static_cast<int>(rows.size()), MPI_UINT8_T,
+                    board.data(), counts.data(), displs.data(), MPI_UINT8_T, 0, MPI_COMM_WORLD);
+        int generationOk = state.generation == static_cast<std::size_t>(step) + 1;
+        int allGenerationsOk = 0;
+        MPI_Allreduce(&generationOk, &allGenerationsOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if (rank == 0) {
+            conway::core::step_sequential(*reference);
+            const bool equivalent = allGenerationsOk &&
+                state.generation == reference->generation &&
+                globalAlive == reference->aliveCount &&
+                board == conway::mpi::pack_local_rows(*reference);
+            std::cout << (equivalent ? "[OK] " : "[FALLO] ") << "generacion "
+                      << state.generation << ": celulas, generacion y poblacion\n";
+            if (!equivalent) status = 1;
+        }
+    }
+    if (opt.threads > 1) report_openmp_teams(rank, size, opt.threads);
+    if (rank == 0)
+        std::cout << "EVOLUCION: " << (status == 0 ? "OK" : "FALLO") << '\n';
+    return status;
 }
 
 int run(int rank, int size, const Options& opt) {
@@ -319,51 +371,37 @@ int run(int rank, int size, const Options& opt) {
         std::cout << "\nRESULTADO: " << (ok ? "OK" : "FALLO") << '\n';
         status = ok ? 0 : 1;
     }
-    // Keep the original distribution demo intact; evolution is opt-in.
-    std::optional<conway::core::GameState> reference;
-    if (rank == 0 && opt.steps > 0)
-        reference = conway::mpi::make_local_state(input, conway::mpi::partition_rows(H, 1, 0));
-    for (int step = 0; step < opt.steps; ++step) {
-        const auto globalAlive = conway::core::step_mpi(state, part, MPI_COMM_WORLD);
-        const auto rows = conway::mpi::pack_local_rows(state);
-        MPI_Gatherv(rows.data(), static_cast<int>(rows.size()), MPI_UINT8_T,
-                    board.data(), counts.data(), displs.data(), MPI_UINT8_T, 0, MPI_COMM_WORLD);
-        int generationOk = state.generation == static_cast<std::size_t>(step) + 1;
-        int allGenerationsOk = 0;
-        MPI_Allreduce(&generationOk, &allGenerationsOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-        if (rank == 0) {
-            conway::core::step_sequential(*reference);
-            const bool equivalent = allGenerationsOk &&
-                state.generation == reference->generation &&
-                globalAlive == reference->aliveCount &&
-                board == conway::mpi::pack_local_rows(*reference);
-            std::cout << (equivalent ? "[OK] " : "[FALLO] ") << "generacion "
-                      << state.generation << ": celulas, generacion y poblacion\n";
-            if (!equivalent) status = 1;
-        }
-    }
-    if (rank == 0 && opt.steps > 0)
-        std::cout << "EVOLUCION: " << (status == 0 ? "OK" : "FALLO") << '\n';
-    return status;
+    return verify_evolution(rank, size, opt, input, part, state, counts, displs, board, status);
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
+    Options opt;
+    const bool validArgs = parse_args(argc, argv, opt);
+    const int required = opt.threads > 1 ? MPI_THREAD_FUNNELED : MPI_THREAD_SINGLE;
+    int provided = MPI_THREAD_SINGLE;
+    MPI_Init_thread(&argc, &argv, required, &provided);
     int rank = 0, size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    Options opt;
+    const int supported = validArgs && provided >= required;
+    int allSupported = 0;
+    MPI_Allreduce(&supported, &allSupported, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
     int status = 0;
-    if (!parse_args(argc, argv, opt)) {
+    if (!allSupported) {
         if (rank == 0) {
-            std::cerr << "Uso: mpirun -np P " << argv[0]
-                      << " [archivo.txt | --synthetic ALTO ANCHO] [--show] [--steps N]\n";
+            std::cerr << "Argumentos inválidos o soporte de hilos MPI insuficiente.\n"
+                      << "Uso: mpirun -np P " << argv[0]
+                      << " [archivo.txt | --synthetic ALTO ANCHO] [--show] [--steps N] [--threads H]\n";
         }
         status = 2;
     } else {
+        if (opt.threads > 1) {
+            omp_set_dynamic(0);
+            omp_set_num_threads(opt.threads);
+        }
         try {
             status = run(rank, size, opt);
         } catch (const std::exception& error) {

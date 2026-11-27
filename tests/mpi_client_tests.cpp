@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "mpi/client.hpp"
 #include "mpi/local_state.hpp"
 #include "core/engines/sequential.hpp"
@@ -113,8 +114,9 @@ struct RawWorker {
         sockaddr_un address{}; address.sun_family=AF_UNIX;
         std::copy(path.begin(),path.end(),address.sun_path);
         check(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0 && listen(listener,1)==0,"raw bind failed");
-        std::vector<std::string> args{executable,"--oversubscribe","--host","localhost","-np","2",worker,
-                                      "--socket",path,"--session","42"};
+        auto args=conway::test::mpiTestLocalFlags();
+        args.insert(args.begin(),executable);
+        args.insert(args.end(),{"-np","2",worker,"--socket",path,"--session","42"});
         std::vector<char*> argv; for(auto& a:args) argv.push_back(a.data()); argv.push_back(nullptr);
         posix_spawnattr_t attr; posix_spawnattr_init(&attr);
         posix_spawnattr_setflags(&attr,POSIX_SPAWN_SETPGROUP); posix_spawnattr_setpgroup(&attr,0);
@@ -271,7 +273,7 @@ int main(int argc,char** argv) {
         ClientOptions options;
         options.launcher=argv[1]; options.worker=argv[2]; options.processes=2;
         // Local test policy, deliberately outside Client's defaults.
-        options.launcherArguments={"--oversubscribe"};
+        options.launcherArguments=conway::test::mpiTestFlags();
         options.startupTimeout=std::chrono::seconds(5);
         options.operationTimeout=std::chrono::seconds(1);
         const auto baseline=resources();

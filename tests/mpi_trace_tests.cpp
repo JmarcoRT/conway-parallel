@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "mpi/client.hpp"
 #include "mpi/local_state.hpp"
 #include "core/engines/mpi.hpp"
@@ -179,7 +180,7 @@ void codecs() {
 }
 int clientTests(int argc,char** argv) {
     check(argc==4,"expected launcher, worker and post-step failure worker");codecs();
-    ClientOptions options;options.launcher=argv[1];options.worker=argv[2];options.launcherArguments={"--oversubscribe"};
+    ClientOptions options;options.launcher=argv[1];options.worker=argv[2];options.launcherArguments=conway::test::mpiTestFlags();
     options.startupTimeout=std::chrono::seconds(5);options.operationTimeout=std::chrono::seconds(2);
     for(int p:{1,2,4,7}) {
         options.processes=p;Client client(options);const auto pids=client.workerPids();const auto launcher=client.launcherPid();const auto dir=client.resourceDirectory();

@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "app/didactic_session.hpp"
 #include "app/mpi_didactic_view.hpp"
 #include <algorithm>
@@ -92,7 +93,7 @@ void compare(const DidacticController& c,const Game& expected) {
 int main(int argc,char** argv) {
     try {
         check(argc==4,"expected launcher, worker, injected-failure worker");const auto baseline=resources();
-        mpi::ClientOptions options;options.launcher=argv[1];options.worker=argv[2];options.launcherArguments={"--oversubscribe"};
+        mpi::ClientOptions options;options.launcher=argv[1];options.worker=argv[2];options.launcherArguments=conway::test::mpiTestFlags();
         options.startupTimeout=5s;options.operationTimeout=2s;
         for(int p:{1,2,4}) {
             options.processes=p;

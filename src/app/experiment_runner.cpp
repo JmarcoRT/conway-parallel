@@ -29,9 +29,9 @@ ExperimentResult execute(const InputData& input, const ExperimentConfig& config,
         && config.order != MeasurementOrder::AlternatingOpenMPFirst)
         throw std::invalid_argument("Unknown experiment order policy");
     if(!config.participants.empty()) {
-        std::set<Engine> engines;
+        std::set<std::pair<Engine,bool>> engines;
         for(const auto& participant:config.participants)
-            if(!engines.insert(participant.engine).second)
+            if(!engines.emplace(participant.engine,participant.isHybrid()).second)
                 throw std::invalid_argument("Comparison permits one configuration per engine");
         auto identity=validateInput(input);
         detail::attachGeneratedMetadata(identity,input,generated);

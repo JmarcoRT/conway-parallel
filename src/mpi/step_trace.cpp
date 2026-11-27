@@ -19,8 +19,14 @@ HaloExchange exchangeMetadata(const RowPartition& p,int tag) {
     return e;
 }
 std::size_t padded(std::size_t width,const RowPartition& p) {return (width+2)*(p.rowCount+2);}
-std::size_t rankSize(std::size_t width,const RowPartition& p,const TraceRequest& q) {
-    return 64+3*padded(width,p)+(p.empty()?0:96+2*width*((above(p)!=noPeer)+(below(p)!=noPeer)))+(owns(p,q)?35:0);
+std::size_t workerSlots(const RowPartition& p,int threads) {
+    return std::min(p.rowCount,static_cast<std::size_t>(threads));
+}
+int requestedThreads(const RankStepTrace& rank) {
+    return rank.team?rank.team->requested:0;
+}
+std::size_t rankSize(std::size_t width,const RowPartition& p,const TraceRequest& q,int threads) {
+    return 64+3*padded(width,p)+(p.empty()?0:96+2*width*((above(p)!=noPeer)+(below(p)!=noPeer)))+(threads?16+24*workerSlots(p,threads):(owns(p,q)?35:0));
 }
 std::vector<std::uint8_t> row(const std::vector<std::uint8_t>& b,std::size_t w,std::size_t r) {
     const auto first=b.begin()+r*(w+2)+1;return {first,first+w};
@@ -46,34 +52,35 @@ struct Reader {
     std::uint8_t byte() {require(offset<bytes.size(),"MPI trace: truncated evaluation");return bytes[offset++];}
 };
 struct Header {MpiStepTrace trace;int processes;};
-Header readHeader(Reader& in) {
+Header readHeader(Reader& in,int threads=0) {
     Header h;
     auto& t=h.trace;
     t.width=in.get();t.height=in.get();t.generationBefore=in.get();t.generationAfter=in.get();
     t.aliveBefore=in.get();t.aliveAfter=in.get();t.selection={t.generationBefore,in.get(),in.get()};
     const auto p=in.get();require(p>0 && p<=maxTraceProcesses,"MPI trace: process limit");h.processes=static_cast<int>(p);
-    (void)trace_payload_size(t.width,t.height,h.processes,t.selection);
+    (void)trace_payload_size(t.width,t.height,h.processes,t.selection,threads);
     require(t.generationAfter==t.generationBefore+1 && t.aliveBefore<=t.width*t.height && t.aliveAfter<=t.width*t.height,
         "MPI trace: inconsistent header");
     return h;
 }
 }
-std::size_t trace_payload_size(std::size_t w,std::size_t h,int p,const TraceRequest& q) {
+std::size_t trace_payload_size(std::size_t w,std::size_t h,int p,const TraceRequest& q,int threads) {
     require(checked_cell_count(w,h)<=maxTraceCells,"MPI trace: cell limit (16384)");
     require(p>0 && p<=maxTraceProcesses,"MPI trace: process limit (128)");
     require(q.row<h && q.column<w && q.expectedGeneration<std::numeric_limits<std::size_t>::max(),"MPI trace: invalid selection or generation");
+    require(threads>=0 && threads<=maxTraceThreads,"MPI trace: thread limit (64)");
     std::size_t size=72;
-    for(int r=0;r<p;++r) size+=rankSize(w,partition_rows(h,p,r),q);
+    for(int r=0;r<p;++r) size+=rankSize(w,partition_rows(h,p,r),q,threads);
     require(size<=maxTraceBytes,"MPI trace: payload limit (8 MiB)");return size;
 }
-std::size_t rank_trace_payload_size(std::size_t w,const RowPartition& p,const TraceRequest& q) {
-    (void)trace_payload_size(w,p.globalHeight,p.size,q);
+std::size_t rank_trace_payload_size(std::size_t w,const RowPartition& p,const TraceRequest& q,int threads) {
+    (void)trace_payload_size(w,p.globalHeight,p.size,q,threads);
     const auto expected=partition_rows(p.globalHeight,p.size,p.rank);
     require(p.firstRow==expected.firstRow && p.rowCount==expected.rowCount,"MPI trace: invalid partition");
-    return rankSize(w,p,q);
+    return rankSize(w,p,q,threads);
 }
-RankStepTrace prepare_rank_trace(std::size_t w,const RowPartition& part,const TraceRequest& q) {
-    (void)trace_payload_size(w,part.globalHeight,part.size,q);
+RankStepTrace prepare_rank_trace(std::size_t w,const RowPartition& part,const TraceRequest& q,int threads) {
+    (void)trace_payload_size(w,part.globalHeight,part.size,q,threads);
     const auto expected=partition_rows(part.globalHeight,part.size,part.rank);
     require(part.firstRow==expected.firstRow && part.rowCount==expected.rowCount,"MPI trace: invalid partition");
     RankStepTrace t;t.partition=part;t.selection=q;t.generationBefore=q.expectedGeneration;
@@ -86,12 +93,16 @@ RankStepTrace prepare_rank_trace(std::size_t w,const RowPartition& part,const Tr
             if(e.receivedFrom!=noPeer) e.received.resize(w);
         }
     }
-    if(owns(part,q)) t.cell=core::CellProbe{q.row-part.firstRow+1,q.column+1,false,{}};
+    if(threads) {
+        t.team.emplace();
+        t.team->requested=threads;
+        t.team->workers.reserve(workerSlots(part,threads));
+    } else if(owns(part,q)) t.cell=core::CellProbe{q.row-part.firstRow+1,q.column+1,false,{}};
     return t;
 }
 void validate_prepared_rank_trace(const RankStepTrace& t,std::size_t w) {
     const auto& p=t.partition;const auto& q=t.selection;
-    (void)rank_trace_payload_size(w,p,q); // Checks policy and partition before padded arithmetic.
+    (void)rank_trace_payload_size(w,p,q,requestedThreads(t)); // Checks policy and partition before padded arithmetic.
     require(t.generationBefore==q.expectedGeneration,"MPI trace: prepared generation mismatch");
     for(const auto* b:{&t.currentBefore,&t.currentWithHalos,&t.currentAfter})
         require(b->size()==padded(w,p),"MPI trace: buffer size mismatch");
@@ -102,7 +113,7 @@ void validate_prepared_rank_trace(const RankStepTrace& t,std::size_t w) {
             e.receivedGlobalRow==x.receivedGlobalRow && e.receiveLocalRow==x.receiveLocalRow &&
             e.sent.size()==(x.sendTo==noPeer?0:w) && e.received.size()==(x.receivedFrom==noPeer?0:w),"MPI trace: exchange metadata mismatch");
     }
-    require(t.cell.has_value()==owns(p,q),"MPI trace: cell owner mismatch");
+    require(t.cell.has_value()==(!t.team && owns(p,q)),"MPI trace: cell owner mismatch");
     if(t.cell) require(t.cell->row==q.row-p.firstRow+1 && t.cell->column==q.column+1,"MPI trace: selected cell coordinates mismatch");
 }
 void validate_rank_trace(const RankStepTrace& t,std::size_t w,const TraceRequest& q) {
@@ -126,6 +137,21 @@ void validate_rank_trace(const RankStepTrace& t,std::size_t w,const TraceRequest
         require((e.sendTo==noPeer || e.sent==row(t.currentBefore,w,i==0?1:p.rowCount)) &&
             (e.receivedFrom==noPeer || e.received==row(t.currentWithHalos,w,e.receiveLocalRow)),"MPI trace: exchange cells mismatch");
     }
+    if(t.team) {
+        const auto& team=*t.team;
+        require(team.requested>0 && team.effective>0 && team.effective<=team.requested &&
+            team.workers.size()<=workerSlots(p,team.effective),"MPI trace: invalid OpenMP team");
+        std::array<bool,maxTraceThreads> seen{};
+        std::size_t next=1;
+        for(const auto& worker:team.workers) {
+            require(worker.id>=0 && worker.id<team.effective && !seen[worker.id] &&
+                worker.first==next && worker.end>worker.first && worker.end<=p.rowCount+1,
+                "MPI trace: invalid OpenMP row coverage");
+            seen[worker.id]=true;
+            next=worker.end;
+        }
+        require(next==p.rowCount+1,"MPI trace: incomplete OpenMP row coverage");
+    }
     if(t.cell) {
         const auto& c=*t.cell;const auto& v=c.evaluation;
         require(c.captured,"MPI trace: selected cell not captured");
@@ -138,12 +164,14 @@ void validate_rank_trace(const RankStepTrace& t,std::size_t w,const TraceRequest
 }
 void validate_step_trace(const MpiStepTrace& t) {
     require(t.ranks.size()>0 && t.ranks.size()<=maxTraceProcesses,"MPI trace: rank count mismatch");
-    (void)trace_payload_size(t.width,t.height,static_cast<int>(t.ranks.size()),t.selection);
+    const auto threads=requestedThreads(t.ranks.front());
+    (void)trace_payload_size(t.width,t.height,static_cast<int>(t.ranks.size()),t.selection,threads);
     require(t.selection.expectedGeneration==t.generationBefore && t.generationAfter==t.generationBefore+1,"MPI trace: global generation mismatch");
     std::size_t before=0,after=0;
     for(std::size_t r=0;r<t.ranks.size();++r) {
         const auto& rank=t.ranks[r];const auto& p=rank.partition;
         require(p.rank==static_cast<int>(r) && p.size==static_cast<int>(t.ranks.size()) && p.globalHeight==t.height,"MPI trace: rank identity mismatch");
+        require(requestedThreads(rank)==threads,"MPI trace: inconsistent thread request");
         validate_rank_trace(rank,t.width,t.selection);before+=rank.aliveBefore;after+=rank.aliveAfter;
     }
     for(const auto& rank:t.ranks) {
@@ -156,7 +184,8 @@ void validate_step_trace(const MpiStepTrace& t) {
 }
 wire::Bytes encode_rank_trace(const RankStepTrace& t,std::size_t w,const TraceRequest& q) {
     validate_rank_trace(t,w,q);
-    wire::Bytes out;out.reserve(rankSize(w,t.partition,q));
+    const auto threads=requestedThreads(t);
+    wire::Bytes out;out.reserve(rankSize(w,t.partition,q,threads));
     for(auto v:{std::size_t(t.partition.rank),t.partition.firstRow,t.partition.rowCount,t.generationBefore,t.generationAfter,t.aliveBefore,t.aliveAfter,std::size_t(t.buffersSwapped)}) wire::put(out,v);
     for(const auto* b:{&t.currentBefore,&t.currentWithHalos,&t.currentAfter}) out.insert(out.end(),b->begin(),b->end());
     for(const auto& e:t.exchanges) {
@@ -167,11 +196,19 @@ wire::Bytes encode_rank_trace(const RankStepTrace& t,std::size_t w,const TraceRe
         const auto& c=*t.cell;wire::put(out,c.row);wire::put(out,c.column);wire::put(out,c.captured);
         out.push_back(c.evaluation.before);out.insert(out.end(),c.evaluation.neighbors.begin(),c.evaluation.neighbors.end());out.push_back(c.evaluation.neighborCount);out.push_back(c.evaluation.after);
     }
-    require(out.size()==rankSize(w,t.partition,q),"MPI trace: internal encoding size mismatch");return out;
+    if(t.team) {
+        wire::put(out,t.team->effective);
+        wire::put(out,t.team->workers.size());
+        for(const auto& worker:t.team->workers) {
+            wire::put(out,worker.id);wire::put(out,worker.first);wire::put(out,worker.end);
+        }
+        out.resize(rankSize(w,t.partition,q,threads),0);
+    }
+    require(out.size()==rankSize(w,t.partition,q,threads),"MPI trace: internal encoding size mismatch");return out;
 }
-RankStepTrace decode_rank_trace(const wire::Bytes& bytes,std::size_t w,const RowPartition& p,const TraceRequest& q) {
-    require(bytes.size()==rank_trace_payload_size(w,p,q),"MPI trace: rank payload length mismatch");
-    auto t=prepare_rank_trace(w,p,q);Reader in{bytes};
+RankStepTrace decode_rank_trace(const wire::Bytes& bytes,std::size_t w,const RowPartition& p,const TraceRequest& q,int threads) {
+    require(bytes.size()==rank_trace_payload_size(w,p,q,threads),"MPI trace: rank payload length mismatch");
+    auto t=prepare_rank_trace(w,p,q,threads);Reader in{bytes};
     require(in.get()==static_cast<std::size_t>(p.rank) && in.get()==p.firstRow && in.get()==p.rowCount,"MPI trace: encoded partition mismatch");
     t.generationBefore=in.get();t.generationAfter=in.get();t.aliveBefore=in.get();t.aliveAfter=in.get();const auto swapped=in.get();
     require(swapped==1,"MPI trace: swap flag mismatch");t.buffersSwapped=true;
@@ -185,6 +222,20 @@ RankStepTrace decode_rank_trace(const wire::Bytes& bytes,std::size_t w,const Row
         auto& c=*t.cell;require(in.get()==c.row && in.get()==c.column && in.get()==1,"MPI trace: encoded cell mismatch");c.captured=true;
         c.evaluation.before=in.byte();for(auto& n:c.evaluation.neighbors) n=in.byte();c.evaluation.neighborCount=in.byte();c.evaluation.after=in.byte();
     }
+    if(t.team) {
+        const auto effective=in.get(), active=in.get();
+        const auto slots=workerSlots(p,threads);
+        require(effective>0 && effective<=static_cast<std::size_t>(threads) && active<=slots,
+            "MPI trace: encoded team mismatch");
+        t.team->effective=static_cast<int>(effective);
+        for(std::size_t slot=0;slot<slots;++slot) {
+            const auto id=in.get(), first=in.get(), end=in.get();
+            if(slot<active) {
+                require(id<effective,"MPI trace: encoded thread ID mismatch");
+                t.team->workers.push_back({static_cast<int>(id),first,end});
+            } else require(id==0 && first==0 && end==0,"MPI trace: nonzero thread padding");
+        }
+    }
     require(in.offset==bytes.size(),"MPI trace: trailing rank payload");validate_rank_trace(t,w,q);return t;
 }
 void validate_trace_payload_header(const wire::Bytes& prefix,std::uint64_t length) {
@@ -192,18 +243,18 @@ void validate_trace_payload_header(const wire::Bytes& prefix,std::uint64_t lengt
     require(length==trace_payload_size(h.trace.width,h.trace.height,h.processes,h.trace.selection),"MPI trace: payload length mismatch");
 }
 wire::Bytes encode_step_trace(const MpiStepTrace& t) {
-    validate_step_trace(t);wire::Bytes out;out.reserve(trace_payload_size(t.width,t.height,static_cast<int>(t.ranks.size()),t.selection));
+    validate_step_trace(t);wire::Bytes out;out.reserve(trace_payload_size(t.width,t.height,static_cast<int>(t.ranks.size()),t.selection,requestedThreads(t.ranks.front())));
     for(auto v:{t.width,t.height,t.generationBefore,t.generationAfter,t.aliveBefore,t.aliveAfter,t.selection.row,t.selection.column,t.ranks.size()}) wire::put(out,v);
     for(const auto& r:t.ranks) {const auto bytes=encode_rank_trace(r,t.width,t.selection);out.insert(out.end(),bytes.begin(),bytes.end());}return out;
 }
-MpiStepTrace decode_step_trace(const wire::Bytes& bytes) {
-    Reader in{bytes};auto h=readHeader(in);auto& t=h.trace;
-    require(bytes.size()==trace_payload_size(t.width,t.height,h.processes,t.selection),"MPI trace: payload length mismatch");
+MpiStepTrace decode_step_trace(const wire::Bytes& bytes,int threads) {
+    Reader in{bytes};auto h=readHeader(in,threads);auto& t=h.trace;
+    require(bytes.size()==trace_payload_size(t.width,t.height,h.processes,t.selection,threads),"MPI trace: payload length mismatch");
     t.ranks.reserve(h.processes);
     for(int rank=0;rank<h.processes;++rank) {
-        const auto p=partition_rows(t.height,h.processes,rank);const auto length=rankSize(t.width,p,t.selection);
+        const auto p=partition_rows(t.height,h.processes,rank);const auto length=rankSize(t.width,p,t.selection,threads);
         const wire::Bytes record(bytes.begin()+in.offset,bytes.begin()+in.offset+length);in.offset+=length;
-        t.ranks.push_back(decode_rank_trace(record,t.width,p,t.selection));
+        t.ranks.push_back(decode_rank_trace(record,t.width,p,t.selection,threads));
     }
     validate_step_trace(t);return t;
 }

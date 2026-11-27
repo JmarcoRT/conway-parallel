@@ -12,9 +12,9 @@ from test_ftxui_mpi import workers
 
 def select(t, label, checked=True):
     for _ in range(24):
-        current = focus_text(t)
-        if '[x] ' + label in current or '[ ] ' + label in current:
-            if ('[x] ' + label in current) != checked:
+        current = focus_text(t).strip()
+        if current in ('[x] ' + label, '[ ] ' + label):
+            if (current == '[x] ' + label) != checked:
                 t.send(' ')
             return
         t.send('\t')
@@ -96,9 +96,44 @@ def failure(binary):
             t.close()
 
 
+def hybrid_comparison(binary):
+    t = Terminal(binary, root, 120, 40)
+    try:
+        t.send('1\r')
+        select(t, 'OpenMP')
+        select(t, 'MPI')
+        select(t, 'MPI + OpenMP')
+        field(t, 'Repeticiones', '2')
+        field(t, 'Hilos OpenMP', '1')
+        field(t, 'Procesos MPI', '1')
+        field(t, 'Procesos híbridos', '2')
+        field(t, 'Hilos por rank', '0')
+        execute(t)
+        assert 'Hilos por rank' in focus_text(t)
+        visible(t, 'Entero entre 1')
+        # The runtime cap is two. Verify the observed teams are shown even
+        # when the request differs from the teams used in the kernels.
+        field(t, 'Hilos por rank', '3')
+        execute(t)
+        wait_state(t, 'Finalizado', timeout=45)
+        scroll_visible(t, 'Tablero generado de 1000 × 1000', 'Generaciones 20')
+        scroll_visible(t, 'Todos los motores producen el mismo resultado')
+        scroll_visible(t, 'MPI + OpenMP', '2 procesos', 'Hilos efectivos por rank: 0=2, 1=2', '3 solicitados por rank')
+        assert not workers(t.process.pid)
+        t.send('\x1b[C')
+        scroll_visible(t, 'ESTADÍSTICAS POR MOTOR', 'MPI + OpenMP')
+        scroll_visible(t, 'Hilos efectivos por rank: 0=2, 1=2')
+        print('PASS four local motors, 1000 × 1000, 20 generations, two ranks with two observed threads each', flush=True)
+    finally:
+        t.close()
+
+
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve());root=str(Path(sys.argv[2]).resolve())
     os.environ.update(OMP_NUM_THREADS='2', OMP_THREAD_LIMIT='2', OMP_DYNAMIC='FALSE')
+    if sys.argv[3:] == ['--hybrid']:
+        hybrid_comparison(binary)
+        sys.exit(0)
     for size in [(120,40),(80,24),(50,24)]:
         started=time.monotonic()
         check(binary,size)

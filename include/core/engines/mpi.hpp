@@ -30,4 +30,9 @@ std::size_t step_mpi(GameState& state, const mpi::RowPartition& part,
                      MPI_Comm comm, mpi::RankStepTrace* trace = nullptr,
                      MpiWindowProbe* window = nullptr);
 
+// Same collective contract as step_mpi. OpenMP computes each local stripe.
+// Call from the MPI initializing thread with at least MPI_THREAD_FUNNELED.
+std::size_t step_mpi_openmp(GameState& state, const mpi::RowPartition& part, MPI_Comm comm,
+                            mpi::RankStepTrace* trace = nullptr);
+
 } // namespace conway::core
