@@ -33,15 +33,27 @@ std::string configurationLabel(const ExecutionConfiguration& c) {
 }
 std::string yes(bool b) {return b?"SI":"NO";}
 std::string motor(const ExecutionConfiguration& c) {
+    if(c.isHybrid()) return "MPI + OpenMP";
     return c.engine==Engine::Sequential?"Secuencial":c.engine==Engine::OpenMP?"OpenMP":c.engine==Engine::MPI?"MPI":"CUDA";
+}
+std::string rankThreads(const std::vector<mpi::RankThreads>& observed,int requested) {
+    std::string text=" · Hilos efectivos por rank: ";
+    if(observed.empty()) text+="N/D";
+    for(std::size_t rank=0;rank<observed.size();++rank) {
+        if(rank>0) text+=", ";
+        text+=std::to_string(rank)+"="+resources(observed[rank].minimum,observed[rank].maximum);
+    }
+    return text+" ("+std::to_string(requested)+" solicitados por rank)";
 }
 std::string sampleConfiguration(const StudySample& sample,const ExecutionConfiguration& c) {
     if(c.engine==Engine::CUDA)
         return c.cudaBlock?"Bloque "+std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y):"N/D";
     const auto low=c.engine==Engine::MPI?sample.observedProcesses:sample.minEffectiveThreads;
     const auto high=c.engine==Engine::MPI?sample.observedProcesses:sample.maxEffectiveThreads;
-    return resources(low,high)+(c.engine==Engine::MPI?unit(low==high?low.value_or(0):0," proceso"," procesos"):
+    auto label=resources(low,high)+(c.engine==Engine::MPI?unit(low==high?low.value_or(0):0," proceso"," procesos"):
         unit(low==high?low.value_or(0):0," hilo"," hilos"));
+    if(c.isHybrid()) label+=rankThreads(sample.threadsByRank,*c.requestedThreads);
+    return label;
 }
 // Natural widths keep every value visible; narrow terminals use labelled records.
 void sampleTable(ftxui::Elements& rows,const std::vector<std::string>& headers,
@@ -183,13 +195,14 @@ std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy& study,int c
         rows.push_back(text(" "));
     };
     timingLine(headers,true);
-    std::set<Engine> describedEngines;
+    std::set<std::string> describedEngines;
     for(const auto& c:study.configurations) {
-        if(!describedEngines.insert(c.engine).second) continue;
+        if(!describedEngines.insert(motor(c)).second) continue;
         if(c.engine==Engine::CUDA)
             timingLine({motor(c),"Evolución del tablero en GPU y espera hasta terminar.","Preparación, descarga del tablero y verificación."},false);
         else if(c.engine==Engine::MPI)
-            timingLine({motor(c),"Cálculo y comunicación. Tiempo del proceso más lento.","Arranque, carga y descarga del tablero, verificación y cierre."},false);
+            timingLine({motor(c),c.isHybrid()?"Cálculo OpenMP por rank y comunicación. Tiempo del proceso más lento.":
+                "Cálculo y comunicación. Tiempo del proceso más lento.","Arranque, carga y descarga del tablero, verificación y cierre."},false);
         else timingLine({motor(c),"Ejecución de las generaciones del tablero.","Preparación y verificación."},false);
     }
     rows.push_back(paragraph("El tiempo principal mide la evolución del tablero, no la operación completa.")|color(muted)|size(WIDTH,LESS_THAN,width));
@@ -199,6 +212,8 @@ std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy& study,int c
     explanation("Aceleración","Tiempo secuencial / tiempo del motor. 2× significa el doble de rapidez en el tiempo medido.");
     rows.push_back(text(" "));
     explanation("Eficiencia",scalingEngine==Engine::CUDA?"No aplica al comparar bloques en una misma GPU.":"Aceleración / hilos o procesos observados, expresada en porcentaje. Requiere recursos estables.");
+    if(std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.isHybrid();}))
+        rows.push_back(paragraph("MPI + OpenMP usa la suma de los hilos efectivos de todos los ranks para la eficiencia."));
     rows.push_back(text(" "));
     explanation("—","No aplica. Por ejemplo, la eficiencia de CUDA.");
     rows.push_back(text(" "));
@@ -372,7 +387,7 @@ std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy& study,cons
         const auto& c=study.configurations[s.configurationIndex];
         const bool valid=usable(s);
         const bool reference=c.engine==Engine::Sequential;
-        std::string engine=reference?"Secuencial":c.engine==Engine::OpenMP?"OpenMP":c.engine==Engine::MPI?"MPI":"CUDA";
+        std::string engine=motor(c);
         std::string configuration;
         if(c.engine==Engine::CUDA) {
             configuration=c.cudaBlock?"Bloque "+std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y):"N/D";
@@ -385,6 +400,7 @@ std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy& study,cons
                 configuration+=" (solicitados: "+std::to_string(*requested)+")";
                 differingResources=true;
             }
+            if(c.isHybrid()) configuration+=rankThreads(s.threadsByRank,*c.requestedThreads);
         }
         const auto speed=valid?s.speedup:std::nullopt;
         std::string state;

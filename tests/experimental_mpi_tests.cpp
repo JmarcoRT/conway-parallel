@@ -96,7 +96,20 @@ int main(int argc,char** argv) {
         rejects([&]{std::ostringstream x,y,z;writeExperimentCsv(inconsistent,context,x,y,z);});
         auto constrained=config;constrained.maxMemoryBytes=1;rejects([&]{runExperiment(input,constrained);});
         auto invalid=config;invalid.participants.push_back(invalid.participants.back());rejects([&]{runExperiment(input,invalid);});
-        invalid=config;invalid.participants.back().requestedThreads=2;rejects([&]{runExperiment(input,invalid);});
+        invalid=config;invalid.participants.back().requestedThreads=0;rejects([&]{runExperiment(input,invalid);});
+        auto hybrid=config;
+        hybrid.repetitions=1;
+        hybrid.participants.push_back({Engine::MPI,2,2});
+        auto hybridResult=runExperiment(input,hybrid);
+        verify(*hybridResult.study);
+        const auto& sample=hybridResult.study->samples.back();
+        check(sample.observedProcesses==2 && sample.threadsByRank.size()==2 &&
+              hybridResult.study->summaries.back().threadsByRank==sample.threadsByRank,
+              "missing hybrid team observations");
+        std::ostringstream ha,hb,hc;writeExperimentCsv(hybridResult,context,ha,hb,hc);
+        check(ha.str().find("mpi_openmp:2x2,mpi_openmp,2,2")!=std::string::npos &&
+              ha.str().find("effective_threads_by_rank")!=std::string::npos &&
+              hc.str().find("csv.schema_version,4")!=std::string::npos,"CSV v4 missing hybrid audit");
         invalid=config;invalid.generations=100001;rejects([&]{runExperiment(input,invalid);});
         auto duplicate=scaling;duplicate.requestedProcesses={2,2};rejects([&]{runScalingStudy(input,duplicate);});
         auto broken=config;broken.mpiOptions.launcher="/no/such/mpi-launcher";

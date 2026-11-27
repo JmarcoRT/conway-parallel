@@ -27,6 +27,10 @@ FetchContent_MakeAvailable(ftxui)
 
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED COMPONENTS CXX)
+include(CheckCXXSymbolExists)
+set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_CXX)
+check_cxx_symbol_exists(MPICH_NAME "mpi.h" CONWAY_MPI_USES_HYDRA)
+unset(CMAKE_REQUIRED_LIBRARIES)
 
 
 # Standalone reproducible input module: standard C++ only, no engine or UI.
@@ -131,6 +135,9 @@ target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX conway_mpi_protocol PRIVATE
 add_library(conway_mpi_client STATIC src/mpi/client.cpp)
 target_link_libraries(conway_mpi_client PUBLIC conway_mpi_protocol)
 target_include_directories(conway_mpi_client PUBLIC include)
+if(CONWAY_MPI_USES_HYDRA)
+    target_compile_definitions(conway_mpi_client PRIVATE CONWAY_MPI_USES_HYDRA)
+endif()
 add_library(conway_simulation STATIC src/app/simulation.cpp)
 target_include_directories(conway_simulation PUBLIC include)
 target_link_libraries(conway_simulation PUBLIC conway_mpi_client OpenMP::OpenMP_CXX conway_cuda_ui)
@@ -138,7 +145,7 @@ target_compile_definitions(conway_simulation PRIVATE CONWAY_MPI_LAUNCHER="${MPIE
 target_link_libraries(conway PRIVATE conway_simulation)
 
 add_executable(conway_mpi_worker src/mpi/worker.cpp)
-target_link_libraries(conway_mpi_worker PRIVATE conway_mpi)
+target_link_libraries(conway_mpi_worker PRIVATE conway_mpi OpenMP::OpenMP_CXX)
 
 add_executable(mpi_partition_prototype
     src/mpi/partition_prototype.cpp
@@ -212,7 +219,7 @@ if(BUILD_TESTING)
     set_tests_properties(mpi_simulation PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE PROCESSORS 4
         ENVIRONMENT "OMP_NUM_THREADS=2")
     add_executable(mpi_trace_failure_worker src/mpi/worker.cpp)
-    target_link_libraries(mpi_trace_failure_worker PRIVATE conway_mpi)
+    target_link_libraries(mpi_trace_failure_worker PRIVATE conway_mpi OpenMP::OpenMP_CXX)
     target_compile_definitions(mpi_trace_failure_worker PRIVATE CONWAY_MPI_TRACE_FAIL_AFTER_STEP=1)
     add_executable(mpi_trace_tests tests/mpi_trace_tests.cpp)
     target_link_libraries(mpi_trace_tests PRIVATE conway_mpi_client conway_mpi)
@@ -516,6 +523,13 @@ add_dependencies(didactic_mpi_tests conway_mpi_worker mpi_trace_failure_worker)
 add_test(NAME didactic_mpi COMMAND didactic_mpi_tests "${MPIEXEC_EXECUTABLE}"
     $<TARGET_FILE:conway_mpi_worker> $<TARGET_FILE:mpi_trace_failure_worker>)
 set_tests_properties(didactic_mpi PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4)
+add_executable(didactic_hybrid_tests tests/didactic_hybrid_tests.cpp src/app/didactic_session.cpp)
+target_link_libraries(didactic_hybrid_tests PRIVATE conway_experiments conway_simulation)
+add_dependencies(didactic_hybrid_tests conway_mpi_worker)
+add_test(NAME didactic_hybrid COMMAND didactic_hybrid_tests "${MPIEXEC_EXECUTABLE}" $<TARGET_FILE:conway_mpi_worker>)
+set_tests_properties(didactic_hybrid PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE PROCESSORS 4
+    ENVIRONMENT "OMP_THREAD_LIMIT=2")
+
 # Compila los helpers reales de FTXUI para comprobar coordenadas renderizadas.
 get_target_property(didactic_layout_sources conway SOURCES)
 list(REMOVE_ITEM didactic_layout_sources src/main.cpp src/app/ftxui_app.cpp)
@@ -541,6 +555,10 @@ set_tests_properties(ftxui_didactic_controller_pty PROPERTIES TIMEOUT 90 RUN_SER
 add_test(NAME ftxui_didactic_mpi_views_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_mpi_views.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_didactic_mpi_views_pty PROPERTIES TIMEOUT 100 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
+add_test(NAME ftxui_didactic_hybrid_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_didactic_hybrid.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(ftxui_didactic_hybrid_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE PROCESSORS 2)
+
 add_test(NAME catalog_preview_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_catalog_preview.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(catalog_preview_pty PROPERTIES TIMEOUT 160 RUN_SERIAL TRUE ENVIRONMENT "OMP_NUM_THREADS=2")
@@ -579,6 +597,9 @@ set_tests_properties(ftxui_result_scroll_pty PROPERTIES TIMEOUT 180 RUN_SERIAL T
 add_test(NAME ftxui_experimental_mpi_pty COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_experimental_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(ftxui_experimental_mpi_pty PROPERTIES TIMEOUT 360 RUN_SERIAL TRUE)
+add_test(NAME ftxui_mpi_openmp_pty COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_experimental_mpi.py" $<TARGET_FILE:conway> "${CMAKE_CURRENT_SOURCE_DIR}" --hybrid)
+set_tests_properties(ftxui_mpi_openmp_pty PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE PROCESSORS 4)
 add_test(NAME ftxui_benchmark_pty
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_benchmark.py"
             "$<TARGET_FILE:conway>" "$<TARGET_FILE:ftxui_execution_fixture>")

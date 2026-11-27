@@ -273,22 +273,39 @@ std::string studySpeedupStatus(const ExperimentalStudy& study,const StudySummary
         return "no_sequential_participant";
     return summary.speedup?"available":"zero_median_or_unrepresentable";
 }
+std::string rankThreadCounts(const std::vector<mpi::RankThreads>& observed) {
+    std::string counts;
+    for(std::size_t rank=0;rank<observed.size();++rank) {
+        const auto& threads=observed[rank];
+        if(rank>0) counts+=" ";
+        counts+=integer(rank)+"="+integer(threads.minimum);
+        if(threads.maximum!=threads.minimum) counts+="-"+integer(threads.maximum);
+    }
+    return counts;
+}
 void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& metadata,
                     std::ostream& samples,std::ostream& summary,std::ostream& meta) {
     validateStudy(study);
     const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
-    const std::string schema=hasCUDA?"3":"2";
-    auto engineName=[](Engine engine){return engine==Engine::CUDA?"cuda":engine==Engine::MPI?"mpi":engine==Engine::OpenMP?"openmp":"sequential";};
+    const bool hasHybrid=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.isHybrid();});
+    const std::string schema=hasHybrid?"4":hasCUDA?"3":"2";
+    const bool includeCudaColumns=hasCUDA || hasHybrid;
+    auto engineName=[](const ExecutionConfiguration& c) {
+        if(c.isHybrid()) return "mpi_openmp";
+        return c.engine==Engine::CUDA?"cuda":c.engine==Engine::MPI?"mpi":c.engine==Engine::OpenMP?"openmp":"sequential";
+    };
     auto scope=[](Engine engine){return engine==Engine::CUDA?"cuda_resident_batch_wall":engine==Engine::MPI?"mpi_rank_max_batch":"local_batch";};
     Row sampleHeader{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads",
         "requested_processes","effective_threads_min","effective_threads_max","observed_processes",
         "round","position","execution_order","sequential_reference_sample","generations","elapsed_ms",
         "timing_scope","session_index","load_ms","batch_request_ms","snapshot_ms","warmups_in_session","equivalent","valid","study_complete","cleanup_confirmed","session_cleanup_confirmed"};
-    if(hasCUDA)for(const auto* key:{"cuda_block_x","cuda_block_y","cuda_device_ms","cuda_prepare_ms","cuda_snapshot_ms","cuda_total_operation_ms","cuda_grid_x","cuda_grid_y","cuda_cleanup_confirmed"})sampleHeader.push_back(key);
+    if(includeCudaColumns)for(const auto* key:{"cuda_block_x","cuda_block_y","cuda_device_ms","cuda_prepare_ms","cuda_snapshot_ms","cuda_total_operation_ms","cuda_grid_x","cuda_grid_y","cuda_cleanup_confirmed"})sampleHeader.push_back(key);
+    if(hasHybrid) sampleHeader.push_back("effective_threads_by_rank");
     row(samples,sampleHeader);
     Row summaryHeader{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads","requested_processes","timing_scope","sample_count","min_ms","max_ms",
         "mean_ms","median_ms","stddev_population_ms","resources_min","resources_max","speedup","efficiency","equivalent","valid","speedup_status","efficiency_status","study_complete","cleanup_confirmed","diagnostic"};
-    if(hasCUDA) {summaryHeader.push_back("cuda_block_x");summaryHeader.push_back("cuda_block_y");}
+    if(includeCudaColumns) {summaryHeader.push_back("cuda_block_x");summaryHeader.push_back("cuda_block_y");}
+    if(hasHybrid) summaryHeader.push_back("effective_threads_by_rank");
     row(summary,summaryHeader);
     row(meta,{"study_id","key","value","source","detail"});
     for(const auto& sample:study.samples) {
@@ -298,7 +315,7 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
             if(study.samples[i].round==sample.round && study.configurations[study.samples[i].configurationIndex].engine==Engine::Sequential)
                 {reference=integer(i);break;}
         Row sampleRow{schema,metadata.studyId,metadata.experimentType,configurationName(c),
-            engineName(c.engine),
+            engineName(c),
             optionalInt(c.requestedThreads),optionalInt(c.requestedProcesses),
             optionalInt(sample.minEffectiveThreads),optionalInt(sample.maxEffectiveThreads),optionalInt(sample.observedProcesses),
             integer(sample.round),integer(sample.position),integer(sample.executionIndex),reference,integer(study.generations),
@@ -307,7 +324,7 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
             optionalDouble(sample.snapshotMs),integer(sample.completedWarmups),boolean(sample.equivalent),boolean(sample.valid),
             boolean(study.complete),boolean(study.cleanupConfirmed),
             sample.sessionIndex?boolean(study.sessions[*sample.sessionIndex].cleanupConfirmed):""};
-        if(hasCUDA) {
+        if(includeCudaColumns) {
             sampleRow.push_back(c.cudaBlock?integer(c.cudaBlock->x):"");sampleRow.push_back(c.cudaBlock?integer(c.cudaBlock->y):"");
             if(sample.cuda) {
                 const auto& m=*sample.cuda;
@@ -315,6 +332,7 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
                 sampleRow.push_back(integer(m.gridX));sampleRow.push_back(integer(m.gridY));sampleRow.push_back(boolean(m.cleanupConfirmed));
             } else sampleRow.insert(sampleRow.end(),7,"");
         }
+        if(hasHybrid) sampleRow.push_back(rankThreadCounts(sample.threadsByRank));
         row(samples,sampleRow);
     }
     for(const auto& s:study.summaries) {
@@ -323,13 +341,14 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
         const auto speedupStatus=studySpeedupStatus(study,s);
         const auto efficiencyStatus=config.engine==Engine::CUDA?"not_applicable_cuda":s.efficiency?"available":speedupStatus!="available"?speedupStatus:"variable_effective_resources";
         Row summaryRow{schema,metadata.studyId,metadata.experimentType,configurationName(config),
-            engineName(config.engine),
+            engineName(config),
             optionalInt(config.requestedThreads),optionalInt(config.requestedProcesses),
             scope(config.engine),integer(s.sampleCount),v?number(v->minimumMs):"",v?number(v->maximumMs):"",v?number(v->meanMs):"",
             v?number(v->medianMs):"",v?number(v->populationStddevMs):"",optionalInt(s.minimumResources),optionalInt(s.maximumResources),
             optionalDouble(s.speedup),optionalDouble(s.efficiency),boolean(s.equivalent),boolean(s.valid),
             speedupStatus,efficiencyStatus,boolean(study.complete),boolean(study.cleanupConfirmed),study.diagnostic};
-        if(hasCUDA) {summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->x):"");summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->y):"");}
+        if(includeCudaColumns) {summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->x):"");summaryRow.push_back(config.cudaBlock?integer(config.cudaBlock->y):"");}
+        if(hasHybrid) summaryRow.push_back(rankThreadCounts(s.threadsByRank));
         row(summary,summaryRow);
     }
     metadataRows(meta,metadata); finish(samples,summary,meta);

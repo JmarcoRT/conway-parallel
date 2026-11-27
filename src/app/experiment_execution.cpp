@@ -22,7 +22,12 @@ std::size_t retained(const StoredExperiment& stored) {
             value=checkedAdd(value,checkedMultiply(study.sessions.capacity(),sizeof(StudySession)));
             value=checkedAdd(value,checkedMultiply(study.configurations.capacity(),sizeof(ExecutionConfiguration)));
             value=checkedAdd(value,checkedMultiply(study.summaries.capacity(),sizeof(StudySummary)));
-            for(const auto& sample:study.samples)if(sample.cuda)value=checkedAdd(value,sample.cuda->deviceName.capacity()+sample.cuda->nvccVersion.capacity());
+            for(const auto& sample:study.samples) {
+                value=checkedAdd(value,checkedMultiply(sample.threadsByRank.capacity(),sizeof(mpi::RankThreads)));
+                if(sample.cuda)value=checkedAdd(value,sample.cuda->deviceName.capacity()+sample.cuda->nvccVersion.capacity());
+            }
+            for(const auto& summary:study.summaries)
+                value=checkedAdd(value,checkedMultiply(summary.threadsByRank.capacity(),sizeof(mpi::RankThreads)));
             for(const auto& session:study.sessions)
                 value=checkedAdd(value,checkedAdd(session.runtime.capacity()+session.diagnostic.capacity(),checkedMultiply(session.workerPids.capacity(),sizeof(int))));
         }
@@ -49,6 +54,9 @@ void preflight(const ExecutionDescription& d, std::size_t uiBytes, const StoredE
     const auto samples = checkedMultiply(checkedAdd(threads, 1), repetitions);
     if(generalized) {
         bytes=checkedAdd(bytes,checkedMultiply(samples,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
+        if(!d.scaling) for(const auto& c:d.config.comparison.participants) if(c.isHybrid() && c.requestedProcesses)
+            bytes=checkedAdd(bytes,checkedMultiply(checkedAdd(repetitions,1),
+                checkedMultiply(*c.requestedProcesses,sizeof(mpi::RankThreads))));
     }
     // Result records plus summarization workspace and retained configuration copies.
     bytes = checkedAdd(bytes, checkedMultiply(samples, d.scaling ? sizeof(ScalingSample) : sizeof(ExperimentSample)));

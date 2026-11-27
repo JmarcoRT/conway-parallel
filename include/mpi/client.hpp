@@ -21,8 +21,19 @@ struct ClientOptions {
     // Explicit caller policy only. The client NEVER adds oversubscription.
     std::vector<std::string> launcherArguments;
     std::chrono::milliseconds startupTimeout{10000}, operationTimeout{5000}, closeTimeout{3000};
+    int openMPThreads{}; // Zero selects the MPI-only worker.
 };
-struct BatchMetrics { double maximumMs{}; std::size_t generation{}; int processes{}; std::string runtime; };
+struct RankThreads {
+    int minimum{}, maximum{};
+    bool operator==(const RankThreads&) const = default;
+};
+struct BatchMetrics {
+    double maximumMs{};
+    std::size_t generation{};
+    int processes{};
+    std::string runtime;
+    std::vector<RankThreads> threadsByRank;
+};
 struct RemoteSnapshot { InputData input; std::size_t generation{}, aliveCount{}; };
 // Synchronous API intended for an application worker thread, never Render().
 // try_lock rejects concurrent requests; failures invalidate and clean the job.
@@ -45,7 +56,7 @@ public:
     const std::string& resourceDirectory() const noexcept { return directory_; }
 private:
     wire::Frame exchange(std::uint64_t type, wire::Bytes payload, std::uint64_t expected,
-                         wire::Deadline deadline);
+                         wire::Deadline deadline,std::size_t expectedBytes=0);
     void tick(bool allowLauncherExit=false);
     void drain() noexcept;
     void cleanup() noexcept;

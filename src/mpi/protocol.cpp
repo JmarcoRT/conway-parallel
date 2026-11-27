@@ -61,14 +61,14 @@ Frame receive(int fd, Deadline d, const std::function<void()>& tick, const Heade
     f.type=get(header,offset); f.session=get(header,offset); f.request=get(header,offset);
     const auto length=get(header,offset);
     if (length>maxPayload) throw std::runtime_error("MPI protocol: payload too large");
-    if (f.type<Ready || f.type>TraceResult || !f.session ||
+    if (f.type<Ready || f.type>HybridTraceResult || !f.session ||
         (f.type==Ready ? f.request!=0 : f.request==0))
         throw std::runtime_error("MPI protocol: invalid type or identity");
     const bool validLength =
         (f.type==Ready && length>=16 && length<=8*1025 && length%8==0) ||
         (f.type==Load && length>=25) || (f.type==Advance && length==8) || (f.type==RunBatch && length==16) ||
-        (f.type==TraceStep && length==24) ||
-        (f.type==TraceResult && length>=72 && length<=maxTraceBytes) ||
+        ((f.type==TraceStep || f.type==HybridTraceStep) && length==24) ||
+        ((f.type==TraceResult || f.type==HybridTraceResult) && length>=72 && length<=maxTraceBytes) ||
         (f.type==BatchResult && length>=32 && length<=32+8192) ||
         ((f.type==Snapshot || f.type==Close || f.type==Closed) && length==0) ||
         (f.type==Reply && (length==0 || length>=33)) || (f.type==Error && length<=4096);

@@ -44,6 +44,8 @@ ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, boo
     draft.values={"1000","1000","30","42","20","1","5",
         scaling?"1, 2, 4, 8":std::to_string(currentThreads),"","1",""};
     draft.values[index(ExperimentField::CudaBlocks)]=scaling?"8x8, 16x16, 32x8":"16x16";
+    draft.values[index(ExperimentField::HybridProcesses)]="1";
+    draft.values[index(ExperimentField::HybridThreads)]=std::to_string(currentThreads);
     return draft;
 }
 
@@ -65,8 +67,10 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
     parsed.scaling.generations = parsed.comparison.generations;
     parsed.scaling.warmups = parsed.comparison.warmups;
     parsed.scaling.repetitions = parsed.comparison.repetitions;
-    const bool usesMPI=scaling?draft.parallelEngine==1:draft.mpi;
+    const bool usesHybrid=!scaling && draft.hybrid;
+    const bool usesMPI=scaling?draft.parallelEngine==1:(draft.mpi || usesHybrid);
     const bool usesCUDA=scaling?draft.parallelEngine==2:draft.cuda;
+    int hybridProcesses=1;
     std::vector<core::CudaBlockSize> blocks;
     if(usesCUDA) {
         auto remaining=trim(draft.values[index(ExperimentField::CudaBlocks)]);
@@ -86,7 +90,7 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
         if(blocks.empty() || (!scaling && blocks.size()!=1))error(ExperimentField::CudaBlocks,scaling?"Indica al menos un bloque CUDA.":"Selecciona un bloque: 8x8, 16x16 o 32x8.");
     }
     if (!scaling) {
-        if(static_cast<int>(draft.sequential)+draft.openmp+draft.mpi+draft.cuda<2)
+        if(static_cast<int>(draft.sequential)+draft.openmp+draft.mpi+draft.cuda+draft.hybrid<2)
             error(ExperimentField::Participants,"Selecciona al menos dos participantes.");
         if(draft.openmp) parseInt(ExperimentField::Threads, parsed.comparison.requestedThreads);
         int processes=1;
@@ -97,6 +101,13 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
         if(draft.sequential) parsed.comparison.participants.push_back({Engine::Sequential,{},{}});
         if(draft.openmp) parsed.comparison.participants.push_back({Engine::OpenMP,parsed.comparison.requestedThreads,{}});
         if(draft.mpi) parsed.comparison.participants.push_back({Engine::MPI,{},processes});
+        if(usesHybrid) {
+            int hybridThreads=1;
+            parseInt(ExperimentField::HybridProcesses,hybridProcesses);
+            if(hybridProcesses>1024) error(ExperimentField::HybridProcesses,"Procesos MPI entre 1 y 1024.");
+            parseInt(ExperimentField::HybridThreads,hybridThreads);
+            parsed.comparison.participants.push_back({Engine::MPI,hybridThreads,hybridProcesses});
+        }
         if(draft.cuda && !blocks.empty())parsed.comparison.participants.push_back({Engine::CUDA,{},{},blocks.front()});
     } else {
         if(draft.parallelEngine<0 || draft.parallelEngine>2)
@@ -227,6 +238,9 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
             const auto samples=checkedMultiply(configs,static_cast<std::size_t>(parsed.comparison.repetitions));
             auto bytes=checkedAdd(inputCapacity,checkedMultiply(6,padded));
             bytes=checkedAdd(bytes,checkedMultiply(samples,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
+            if(usesHybrid)
+                bytes=checkedAdd(bytes,checkedMultiply(checkedAdd(static_cast<std::size_t>(parsed.comparison.repetitions),1),
+                    checkedMultiply(hybridProcesses,sizeof(mpi::RankThreads))));
             if(usesMPI) {
                 std::size_t maximum=1;
                 if(scaling) for(auto p:parsed.scaling.requestedProcesses) maximum=std::max(maximum,static_cast<std::size_t>(p));

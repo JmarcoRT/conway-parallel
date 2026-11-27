@@ -182,9 +182,10 @@ namespace {
 void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,const ExperimentInputIdentity& input) {
     validateStudy(study);
     const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
+    const bool hasHybrid=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.isHybrid();});
     for(auto& field:metadata.fields) {
-        if(field.key=="csv.schema_version") field.value=hasCUDA?"3":"2";
-        if(field.key=="protocol.version") field.value=hasCUDA?"conway-experimental-v3":"conway-experimental-v2";
+        if(field.key=="csv.schema_version") field.value=hasHybrid?"4":hasCUDA?"3":"2";
+        if(field.key=="protocol.version") field.value=hasHybrid?"conway-experimental-v4":hasCUDA?"conway-experimental-v3":"conway-experimental-v2";
     }
     auto& f=metadata.fields;
     auto put=[&](std::string key,std::string value) {add(f,std::move(key),std::move(value),MetadataSource::Result);};
@@ -245,6 +246,7 @@ void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,con
             put(prefix+"empty_ranks",integer(*c.requestedProcesses>input.height?*c.requestedProcesses-input.height:0));
             put(prefix+"partition","contiguous balanced rows; remainder assigned to lowest ranks; rank 0 computes");
         }
+        if(c.isHybrid()) put(prefix+"threads_per_rank",integer(*c.requestedThreads));
     }
     for(std::size_t i=0;i<study.sessions.size();++i) {
         const auto& session=study.sessions[i]; const auto prefix="session."+integer(i)+".";

@@ -12,6 +12,7 @@ struct ExecutionConfiguration {
     std::optional<int> requestedThreads;
     std::optional<int> requestedProcesses;
     std::optional<core::CudaBlockSize> cudaBlock;
+    bool isHybrid() const noexcept { return engine==Engine::MPI && requestedThreads.has_value(); }
     bool operator==(const ExecutionConfiguration&) const = default;
 };
 struct StudySample {
@@ -24,6 +25,7 @@ struct StudySample {
     std::optional<double> loadMs, snapshotMs, requestMs;
     bool equivalent{}, valid{};
     std::optional<CudaMeasurement> cuda;
+    std::vector<mpi::RankThreads> threadsByRank;
 };
 struct StudySession {
     std::size_t configurationIndex{};
@@ -40,6 +42,7 @@ struct StudySummary {
     std::optional<int> minimumResources, maximumResources;
     std::optional<double> speedup, efficiency;
     bool equivalent{}, valid{};
+    std::vector<mpi::RankThreads> threadsByRank;
 };
 struct ExperimentalStudy {
     std::vector<ExecutionConfiguration> configurations;

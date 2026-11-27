@@ -33,8 +33,9 @@ public:
         sequential_=Checkbox("Secuencial",&draft_.sequential,check);
         openmp_=Checkbox("OpenMP",&draft_.openmp,check);
         mpi_=Checkbox("MPI",&draft_.mpi,check);
+        hybrid_=Checkbox("MPI + OpenMP",&draft_.hybrid,check);
         cuda_=Checkbox("CUDA",&draft_.cuda,check);
-        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_,cuda_});
+        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_,hybrid_,cuda_});
         const std::array<std::string,8> labels{"Ancho","Alto","Densidad (%)","Semilla","Generaciones","Calentamientos","Repeticiones","Hilos OpenMP"};
         Components generated,measurement;
         for(std::size_t i=0;i<8;++i) {
@@ -45,6 +46,11 @@ public:
         fields_[idx(ExperimentField::Processes)]=makeField(idx(ExperimentField::Processes),"Procesos MPI");
         measurement.push_back(Maybe(fields_[7],[this]{return (scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp);}));
         measurement.push_back(Maybe(fields_[idx(ExperimentField::Processes)],[this]{return !scaling_ && draft_.mpi;}));
+        for(const auto& [field,label]:{std::pair{ExperimentField::HybridProcesses,"Procesos híbridos"},
+                                      std::pair{ExperimentField::HybridThreads,"Hilos por rank"}}) {
+            fields_[idx(field)]=makeField(idx(field),label);
+            measurement.push_back(Maybe(fields_[idx(field)],[this]{return !scaling_ && draft_.hybrid;}));
+        }
         fields_[idx(ExperimentField::CudaBlocks)]=makeField(idx(ExperimentField::CudaBlocks),scaling_?"Bloques CUDA":"Bloque CUDA");
         measurement.push_back(Maybe(fields_[idx(ExperimentField::CudaBlocks)],[this]{return scaling_?draft_.parallelEngine==2:draft_.cuda;}));
         generated_=Maybe(Container::Vertical(generated),[this]{return draft_.source==1;});
@@ -61,7 +67,8 @@ public:
             if(!validation.config) {
                 if(!errors_[idx(ExperimentField::Source)].empty()) source_->TakeFocus();
                 else if(!errors_[idx(ExperimentField::Participants)].empty()) (scaling_?parallel_:sequential_)->TakeFocus();
-                else for(auto i:{0u,1u,2u,3u,4u,5u,6u,7u,9u,11u}) if(!errors_[i].empty()) {fields_[i]->TakeFocus();break;}
+                else for(std::size_t i=0;i<fields_.size();++i)
+                    if(fields_[i] && !errors_[i].empty()) {fields_[i]->TakeFocus();break;}
             }
         },buttons);
         root_=Container::Vertical({source_,generated_,participants_,measurement_,restore_,execute_});Add(root_);
@@ -71,11 +78,15 @@ public:
             Components order{source_};
             if(draft_.source==1) for(std::size_t i=0;i<4;++i) order.push_back(fields_[i]);
             if(scaling_) order.push_back(parallel_);
-            else {order.push_back(sequential_);order.push_back(openmp_);order.push_back(mpi_);order.push_back(cuda_);}
+            else order.insert(order.end(),{sequential_,openmp_,mpi_,hybrid_,cuda_});
             for(std::size_t i=4;i<7;++i) order.push_back(fields_[i]);
             if((scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp)) order.push_back(fields_[7]);
             if(scaling_?draft_.parallelEngine==2:draft_.cuda)order.push_back(fields_[idx(ExperimentField::CudaBlocks)]);
             if(!scaling_ && draft_.mpi) order.push_back(fields_[idx(ExperimentField::Processes)]);
+            if(!scaling_ && draft_.hybrid) {
+                order.push_back(fields_[idx(ExperimentField::HybridProcesses)]);
+                order.push_back(fields_[idx(ExperimentField::HybridThreads)]);
+            }
             order.push_back(restore_);order.push_back(execute_);
             std::size_t position=0;
             for(std::size_t i=0;i<order.size();++i) if(order[i]->Focused()) position=i;
@@ -112,7 +123,7 @@ public:
         }
         measure.push_back(text(" "));
         measure.push_back(text("MEDICIÓN")|bold);measure.push_back(measurement_->Render());
-        if((scaling_ && draft_.parallelEngine==1) || (!scaling_ && draft_.mpi))
+        if((scaling_ && draft_.parallelEngine==1) || (!scaling_ && (draft_.mpi || draft_.hybrid)))
             measure.push_back(paragraph("MPI: calentamientos por sesión nueva antes de cada muestra; sin sobresuscripción.")|dim);
         auto a=vbox(std::move(entry)),b=vbox(std::move(measure));
         const int columns=static_cast<int>(controls::terminalSize().columns);
@@ -145,7 +156,7 @@ private:
     std::array<Component,kExperimentFieldCount> fields_;
     CudaUiInfo cudaInfo_;
     Component cuda_;
-    Component source_,parallel_,sequential_,openmp_,mpi_,participants_,generated_,measurement_,restore_,execute_,root_;
+    Component source_,parallel_,sequential_,openmp_,mpi_,hybrid_,participants_,generated_,measurement_,restore_,execute_,root_;
 };
 }
 ftxui::Component makeExperimentFormView(bool scaling,std::function<const InputData*()> input,

@@ -18,7 +18,7 @@ double maximum_rank_milliseconds(double local,MPI_Comm comm) {
 namespace {
 
 void validate_step(const GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
-                   const mpi::RankStepTrace* trace) {
+                   const mpi::RankStepTrace* trace,bool hybrid) {
     // Validate collectively before any point-to-point exchange. Allocation and
     // complete input validation belong to initialization, not the step loop.
     int rank = 0, size = 0;
@@ -36,7 +36,7 @@ void validate_step(const GameState& s, const mpi::RowPartition& part, MPI_Comm c
         s.next.size() == s.current.size() && s.generation < maximum;
     if(trace) {
         try {mpi::validate_prepared_rank_trace(*trace,s.width);} catch(const std::exception&) {valid=0;}
-        valid=valid && trace->partition.rank==part.rank && trace->partition.size==part.size &&
+        valid=valid && trace->team.has_value()==hybrid && trace->partition.rank==part.rank && trace->partition.size==part.size &&
             trace->partition.globalHeight==part.globalHeight && trace->partition.firstRow==part.firstRow &&
             trace->partition.rowCount==part.rowCount && trace->generationBefore==s.generation;
     }
@@ -83,29 +83,56 @@ std::size_t global_population(const GameState& state, MPI_Comm comm) {
 
 } // namespace
 
-std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm, mpi::RankStepTrace* trace) {
-    validate_step(s, part, comm, trace);
-    const auto* currentAddress=s.current.data();const auto* nextAddress=s.next.data();
+namespace {
+class RankTeamSink final : public StepTraceSink {
+public:
+    explicit RankTeamSink(mpi::RankTeam& team) : team_(team) {}
+    void onStepComplete(StepTrace&& trace) override {
+        team_.effective=trace.effective_threads;
+        team_.workers.clear();
+        for(const auto& worker:trace.workers)
+            team_.workers.push_back({worker.thread_id,worker.first_row,worker.end_row});
+        std::sort(team_.workers.begin(),team_.workers.end(),[](const auto& a,const auto& b) {return a.first<b.first;});
+    }
+private:
+    mpi::RankTeam& team_;
+};
+
+template<bool hybrid>
+std::size_t step_partition(GameState& s,const mpi::RowPartition& part,MPI_Comm comm,mpi::RankStepTrace* trace) {
+    validate_step(s,part,comm,trace,hybrid);
+    const auto* currentAddress=s.current.data();
+    const auto* nextAddress=s.next.data();
     if(trace) {
         std::copy(s.current.begin(),s.current.end(),trace->currentBefore.begin());
         trace->aliveBefore=s.aliveCount;
     }
-    exchange_halos(s, part, comm, trace);
+    exchange_halos(s,part,comm,trace);
     if(trace) std::copy(s.current.begin(),s.current.end(),trace->currentWithHalos.begin());
-    step_sequential(s, kNoTrace, trace && trace->cell ? &*trace->cell : nullptr);
+    if constexpr(hybrid) {
+        if(trace) {
+            RankTeamSink sink(*trace->team);
+            step_openmp(s,&sink);
+        } else step_openmp(s);
+    } else {
+        step_sequential(s,kNoTrace,trace && trace->cell?&*trace->cell:nullptr);
+    }
     if(trace) {
         std::copy(s.current.begin(),s.current.end(),trace->currentAfter.begin());
-        trace->generationAfter=s.generation;trace->aliveAfter=s.aliveCount;
+        trace->generationAfter=s.generation;
+        trace->aliveAfter=s.aliveCount;
         trace->buffersSwapped=s.current.data()==nextAddress && s.next.data()==currentAddress;
     }
-    return global_population(s, comm);
+    return global_population(s,comm);
+}
 }
 
-std::size_t step_mpi_openmp(GameState& state, const mpi::RowPartition& part, MPI_Comm comm) {
-    validate_step(state, part, comm, nullptr);
-    exchange_halos(state, part, comm, nullptr);
-    step_openmp(state);
-    return global_population(state, comm);
+std::size_t step_mpi(GameState& s,const mpi::RowPartition& part,MPI_Comm comm,mpi::RankStepTrace* trace) {
+    return step_partition<false>(s,part,comm,trace);
+}
+
+std::size_t step_mpi_openmp(GameState& s,const mpi::RowPartition& part,MPI_Comm comm,mpi::RankStepTrace* trace) {
+    return step_partition<true>(s,part,comm,trace);
 }
 
 } // namespace conway::core
