@@ -16,9 +16,11 @@ Prueba local sin ZeroTier:
 
 import argparse
 import getpass
+import http.client
 import ipaddress
 import json
 import os
+import secrets
 import selectors
 import shutil
 import socket
@@ -44,7 +46,9 @@ DEFAULT_BINARY = Path(
 ZT_API = os.environ.get("CONWAY_ZT_API", "https://my.zerotier.com/api/v1")
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_TIMEOUT = 300
-INTERACTIVE_PROTOCOL = 2
+INTERACTIVE_PROTOCOL = 3
+HEALTH_INTERVAL = 2
+HEALTH_TIMEOUT = 12
 
 
 class ClusterError(Exception):
@@ -575,7 +579,8 @@ def interactive_client(args) -> int:
         "http_port": args.http_port,
     }
     plan = wait_plan(config, timeout=DEFAULT_TIMEOUT, direct=True)
-    if plan.get("interactive") != INTERACTIVE_PROTOCOL:
+    session_id = plan.get("session_id")
+    if plan.get("interactive") != INTERACTIVE_PROTOCOL or not isinstance(session_id, str) or len(session_id) != 32:
         raise ClusterError("El servidor no ofrece el protocolo interactivo compatible.",
                            "Compila conway_cluster con la misma versión en ambos equipos.")
     try:
@@ -583,7 +588,6 @@ def interactive_client(args) -> int:
     except KeyError as exc:
         raise ClusterError(f"El plan no contiene el nodo {args.node_id}.") from exc
     binary = ensure_binary(args.binary)
-    # The join has a deadline, but a confirmed group may remain idle.
     with subprocess.Popen(
         [str(binary), "--client", "--interactive", "--id", str(args.node_id),
          "--clients", str(int(plan["nodes"]) - 1), "--port-name", port_name,
@@ -591,42 +595,82 @@ def interactive_client(args) -> int:
         stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, bufsize=0,
     ) as child:
         try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(child.stdout, selectors.EVENT_READ)
-                deadline = time.monotonic() + DEFAULT_TIMEOUT
-                while deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not selector.select(remaining):
-                        raise ClusterError("Plazo agotado conectando por MPI.")
-                    line = child.stdout.readline()
-                    if not line:
-                        return child.wait()
-                    sys.stdout.buffer.write(line)
-                    sys.stdout.buffer.flush()
-                    if line.startswith(b"Grupo listo:"):
-                        deadline = None
-            shutil.copyfileobj(child.stdout, sys.stdout.buffer)
-            sys.stdout.buffer.flush()
-            return child.wait()
+            return monitor_client(child, f"http://{address}:{args.http_port}/health", session_id)
         finally:
             stop_child(child)
 
 
+def monitor_client(child, health_url, session_id):
+    """Monitor the server out of band, even while the local rank is blocked in MPI."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    last_contact = next_probe = time.monotonic()
+    join_deadline = last_contact + DEFAULT_TIMEOUT
+    pending = b""
+    joined = closed = False
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout, selectors.EVENT_READ)
+        while True:
+            now = time.monotonic()
+            wake = next_probe if joined else min(join_deadline, next_probe)
+            if selector.select(max(0, wake - now)):
+                chunk = os.read(child.stdout.fileno(), 4096)
+                if not chunk:
+                    code = child.wait(timeout=1)
+                    if code or not closed:
+                        raise ClusterError(f"El proceso MPI del cliente terminó ({code}). Cierre colectivo no confirmado.")
+                    return code
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if line.startswith(b"Grupo listo:"):
+                        joined = True
+                    elif line == "Sesión cerrada".encode():
+                        closed = True
+                if len(pending) > 8192:
+                    pending = pending[-8192:]
+            now = time.monotonic()
+            if not joined and now >= join_deadline:
+                raise ClusterError("Plazo agotado conectando por MPI. Cierre colectivo no confirmado.")
+            if now >= next_probe and not closed:
+                try:
+                    with opener.open(health_url, timeout=1) as response:
+                        if response.read(64) == session_id.encode():
+                            last_contact = time.monotonic()
+                except (OSError, http.client.HTTPException):
+                    pass
+                next_probe = time.monotonic() + HEALTH_INTERVAL
+                if time.monotonic() - last_contact >= HEALTH_TIMEOUT:
+                    raise ClusterError("Se perdió la sesión del servidor. Se detuvo el MPI local. Cierre colectivo no confirmado.")
+            elif closed:
+                next_probe = now + HEALTH_INTERVAL
+
+
 class InteractivePlanHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/plan.json":
-            self.send_error(404)
-            return
-        try:
-            plan = self.server.plan_path.read_bytes()
-        except FileNotFoundError:
+        if self.path == "/health":
+            worker = self.server.worker
+            if worker is None or worker.poll() is not None:
+                self.send_error(503)
+                return
+            payload = self.server.session_id.encode()
+            content_type = "text/plain"
+        elif self.path == "/plan.json":
+            try:
+                payload = self.server.plan_path.read_bytes()
+            except FileNotFoundError:
+                self.send_error(404)
+                return
+            content_type = "application/json"
+        else:
             self.send_error(404)
             return
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(plan)))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(plan)
+        self.wfile.write(payload)
 
     def log_message(self, *args):
         pass
@@ -642,19 +686,21 @@ def stop_child(child):
             child.wait()
 
 
-def relay_session(child, url, diagnostics, nodes):
+def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
     phase = "Publicando plan"
     ready = closing = closed = False
     deadline = time.monotonic() + DEFAULT_TIMEOUT
     pending = b""
     commands = b""
+    interrupted = ""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with selectors.DefaultSelector() as selector:
         selector.register(sys.stdin.buffer, selectors.EVENT_READ, "ui")
         selector.register(child.stdout, selectors.EVENT_READ, "mpi")
         while True:
             if deadline is not None and time.monotonic() >= deadline:
-                raise ClusterError(f"{phase}: plazo agotado.")
+                suffix = f" durante {interrupted}" if interrupted else ""
+                raise ClusterError(f"{phase}: plazo agotado{suffix}.")
             for key, _ in selector.select(0.1):
                 if key.data == "ui":
                     chunk = os.read(key.fd, 4096)
@@ -666,6 +712,8 @@ def relay_session(child, url, diagnostics, nodes):
                             if not ready:
                                 return "CANCELLED", f"{phase}: se cerró el servidor local. Cierre de clientes no confirmado."
                             closing = True
+                            if phase in ("Carga MPI", "Captura MPI"):
+                                interrupted = phase
                             phase = "Cerrando sesión"
                             deadline = time.monotonic() + 5
                         elif ready and command.startswith((b"LOAD ", b"RESET ", b"STEP ")):
@@ -689,8 +737,8 @@ def relay_session(child, url, diagnostics, nodes):
                     code = child.wait(timeout=1)
                     if closing and closed and code == 0:
                         return "CLOSED", "Cierre confirmado por el grupo MPI."
-                    diagnostics.seek(max(0, diagnostics.tell() - 2048))
-                    detail = diagnostics.read().decode(errors="replace").strip()
+                    tail = max(0, os.fstat(diagnostics.fileno()).st_size - 2048)
+                    detail = os.pread(diagnostics.fileno(), 2048, tail).decode(errors="replace").strip()
                     raise ClusterError(f"{phase}: el proceso MPI terminó ({code}). {detail}")
                 pending += data
                 while b"\n" in pending:
@@ -702,7 +750,8 @@ def relay_session(child, url, diagnostics, nodes):
                                 plan = json.load(response)
                         except (OSError, ValueError) as exc:
                             raise ClusterError(f"{phase}: no se pudo leer el plan HTTP. {exc}") from exc
-                        if (plan.get("interactive") != INTERACTIVE_PROTOCOL or plan["nodes"] != nodes or
+                        if (plan.get("interactive") != INTERACTIVE_PROTOCOL or plan.get("session_id") != session_id or
+                            plan["nodes"] != nodes or
                             set(plan["clients"]) != {str(i) for i in range(1, nodes)} or
                             any(not item["port_name"] for item in plan["clients"].values())):
                             raise ClusterError("Publicando plan: el plan está incompleto.")
@@ -720,6 +769,8 @@ def relay_session(child, url, diagnostics, nodes):
                         ui_message(*decoded.split("\t"))
                     elif decoded.startswith(("JOIN\t", "MEMBER\t")):
                         ui_message(*decoded.split("\t"))
+                    elif keep_diagnostics:
+                        diagnostics.write(line + b"\n")
                 if len(pending) > 8192:
                     raise ClusterError(f"{phase}: respuesta MPI demasiado larga.")
 
@@ -735,18 +786,24 @@ def ui_server(args) -> int:
         plan = args.work_dir / "plan.json"
         with ThreadingHTTPServer((ip, args.http_port), InteractivePlanHandler) as server:
             server.plan_path = plan
+            server.session_id = secrets.token_hex(16)
+            server.worker = None
             http = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
             http.start()
             try:
-                with tempfile.TemporaryFile() as diagnostics, subprocess.Popen(
+                log_path = os.environ.get("CONWAY_CLUSTER_DIAGNOSTICS")
+                log = open(log_path, "a+b", buffering=0) if log_path else tempfile.TemporaryFile(buffering=0)
+                with log as diagnostics, subprocess.Popen(
                     [str(binary), "--server", "--interactive", "--clients", str(args.nodes - 1),
-                     "--plan", str(plan), "--hostname", socket.gethostname(), "--address", ip],
+                     "--plan", str(plan), "--hostname", socket.gethostname(), "--address", ip,
+                     "--session-id", server.session_id],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=diagnostics,
                 ) as child:
                     launched = True
+                    server.worker = child
                     try:
                         url = plan_url({"server_ip": ip, "http_port": args.http_port})
-                        status, detail = relay_session(child, url, diagnostics, args.nodes)
+                        status, detail = relay_session(child, url, diagnostics, args.nodes, server.session_id, bool(log_path))
                     finally:
                         stop_child(child)
             finally:

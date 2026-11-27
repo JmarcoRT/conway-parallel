@@ -304,6 +304,11 @@ void ClusterSession::close() {
     worker_.request_stop();
 }
 
+void ClusterSession::limitPendingWait() {
+    std::lock_guard lock(mutex_);
+    if (outstanding_ && !drainDeadline_) drainDeadline_ = Clock::now() + 5s;
+}
+
 std::optional<std::uint64_t> ClusterSession::submit(Operation operation) {
     std::lock_guard lock(mutex_);
     if (state_.phase != ClusterPhase::Ready || outstanding_) return {};
@@ -328,6 +333,7 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
             {
                 std::lock_guard lock(mutex_);
                 outstanding_ = false;
+                drainDeadline_.reset();
                 state_ = state;
             }
             inFlight.reset();
@@ -335,7 +341,12 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
         };
         const auto defaultsDeadline = Clock::now() + 5s;
         for (;;) {
-            if (stop.stop_requested() && !closing) {
+            bool drainExpired;
+            {
+                std::lock_guard lock(mutex_);
+                drainExpired = drainDeadline_ && Clock::now() >= *drainDeadline_;
+            }
+            if ((stop.stop_requested() || drainExpired) && !closing) {
                 process.requestClose();
                 if (!defaults) {
                     state.phase = ClusterPhase::Closing;
@@ -433,6 +444,7 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
     {
         std::lock_guard lock(mutex_);
         queued_.reset();
+        drainDeadline_.reset();
         outstanding_ = false;
         state_ = state;
     }

@@ -6,6 +6,7 @@
 #include "mpi/window_trace.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -16,6 +17,8 @@ namespace {
 using namespace conway;
 constexpr auto windowCells = mpi::windowRows * mpi::windowColumns;
 constexpr auto packetSize = 2 * windowCells + 2 * mpi::windowColumns + 11;
+constexpr std::size_t distributionBlockBytes = 4096;
+constexpr int distributionDataTag = 20, distributionAckTag = 21;
 enum Operation : std::uint64_t { Close, Load, Reset, Step };
 
 InputData read_input(const std::filesystem::path& path) {
@@ -38,30 +41,69 @@ bool all_ready(bool valid, MPI_Comm comm) {
     return global != 0;
 }
 
+void trace_distribution(const char* phase, const mpi::RowPartition& part, std::size_t width,
+                        std::size_t sendSize, std::size_t receiveSize, MPI_Comm comm) {
+    if (!std::getenv("CONWAY_CLUSTER_TRACE_TRANSFER")) return;
+    int inter = 0, typeSize = 0;
+    MPI_Comm_test_inter(comm, &inter);
+    MPI_Type_size(MPI_UINT8_T, &typeSize);
+    std::clog << "[reparto " << phase << "] rank=" << part.rank << " P=" << part.size
+              << " comm=" << (inter ? "inter" : "intra") << " root=0"
+              << " MPI_UINT8_T=" << typeSize << "B ancho=" << width << " alto=" << part.globalHeight
+              << " filas=" << part.rowCount << " offset=" << part.firstRow * width
+              << " origen=" << sendSize << "B destino=" << receiveSize << "B bloque="
+              << distributionBlockBytes << "B";
+    if (part.rank == 0) {
+        for (int peer = 0; peer < part.size; ++peer) {
+            const auto slice = mpi::partition_rows(part.globalHeight, part.size, peer);
+            std::clog << " R" << peer << '=' << slice.firstRow * width << '+' << slice.rowCount * width;
+        }
+    }
+    std::clog << std::endl;
+}
+
+void transfer_rows(const InputData& input, std::vector<std::uint8_t>& rows,
+                   const mpi::RowPartition& part, std::size_t width, MPI_Comm comm) {
+    trace_distribution("inicio", part, width, input.cells.size(), rows.size(), comm);
+    if (part.rank == 0) {
+        std::copy_n(input.cells.data(), rows.size(), rows.data());
+        for (int peer = 1; peer < part.size; ++peer) {
+            const auto slice = mpi::partition_rows(part.globalHeight, part.size, peer);
+            const auto* data = input.cells.data() + slice.firstRow * width;
+            const auto bytes = slice.rowCount * width;
+            for (std::size_t offset = 0; offset < bytes; offset += distributionBlockBytes) {
+                const auto count = static_cast<int>(std::min(distributionBlockBytes, bytes - offset));
+                // Keep at most one data block outstanding, even with eager sends.
+                MPI_Sendrecv(data + offset, count, MPI_UINT8_T, peer, distributionDataTag,
+                             nullptr, 0, MPI_UINT8_T, peer, distributionAckTag, comm, MPI_STATUS_IGNORE);
+            }
+        }
+    } else {
+        for (std::size_t offset = 0; offset < rows.size(); offset += distributionBlockBytes) {
+            const auto count = static_cast<int>(std::min(distributionBlockBytes, rows.size() - offset));
+            MPI_Status status;
+            MPI_Recv(rows.data() + offset, count, MPI_UINT8_T, 0, distributionDataTag, comm, &status);
+            int received = 0;
+            MPI_Get_count(&status, MPI_UINT8_T, &received);
+            if (received != count) throw std::runtime_error("Bloque de reparto MPI incompleto.");
+            MPI_Send(nullptr, 0, MPI_UINT8_T, 0, distributionAckTag, comm);
+        }
+    }
+    trace_distribution("fin", part, width, input.cells.size(), rows.size(), comm);
+}
+
 bool distribute(const InputData& input, MPI_Comm comm, int rank, int size,
                 mpi::RowPartition& partition, core::GameState& state, std::size_t& population) {
     std::array<std::uint64_t, 2> shape{input.width, input.height};
     MPI_Bcast(shape.data(), shape.size(), MPI_UINT64_T, 0, comm);
     const auto [width, height] = shape;
     auto part = mpi::partition_rows(height, size, rank);
-    std::vector<int> counts, offsets;
     std::vector<std::uint8_t> rows;
     bool ready = true;
-    try {
-        rows.resize(part.rowCount * width);
-        if (rank == 0) {
-            counts.resize(size);
-            offsets.resize(size);
-            for (int r = 0; r < size; ++r) {
-                const auto slice = mpi::partition_rows(height, size, r);
-                counts[r] = static_cast<int>(slice.rowCount * width);
-                offsets[r] = static_cast<int>(slice.firstRow * width);
-            }
-        }
-    } catch (const std::exception&) { ready = false; }
+    try { rows.resize(part.rowCount * width); }
+    catch (const std::exception&) { ready = false; }
     if (!all_ready(ready, comm)) return false;
-    MPI_Scatterv(input.cells.data(), counts.data(), offsets.data(), MPI_UINT8_T,
-                 rows.data(), static_cast<int>(rows.size()), MPI_UINT8_T, 0, comm);
+    transfer_rows(input, rows, part, width, comm);
 
     core::GameState replacement{};
     try { replacement = mpi::make_local_state_from_rows(width, part, rows); }

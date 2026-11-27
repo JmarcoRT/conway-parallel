@@ -46,6 +46,7 @@ struct Options {
     std::string board_path;
     std::string hostname;
     std::string address;
+    std::string session_id;
     int steps{30};
 };
 
@@ -77,6 +78,7 @@ Options parse_options(int argc, char** argv) {
     o.board_path = get_arg(argc, argv, "--board");
     o.hostname = get_arg(argc, argv, "--hostname");
     o.address = get_arg(argc, argv, "--address");
+    o.session_id = get_arg(argc, argv, "--session-id");
     const auto steps = get_arg(argc, argv, "--steps");
     if (!steps.empty()) o.steps = std::atoi(steps.c_str());
     if (o.clients <= 0 || o.clients == std::numeric_limits<int>::max() ||
@@ -115,9 +117,9 @@ MPI_Comm server_comm(const Options& o) {
     const auto temporary = o.plan + ".tmp";
     std::ofstream plan(temporary);
     plan << "{\n  \"nodes\": " << o.clients + 1;
-    // Version 1 clients expect the first collective to be a one-int CLOSE.
-    // Their bootstrap rejects this version before entering an incompatible communicator.
-    if (o.interactive) plan << ",\n  \"interactive\": 2";
+    // Version 3 changes the collective sequence during load and reset.
+    if (o.interactive) plan << ",\n  \"interactive\": 3,\n  \"session_id\": \""
+                            << json_string(o.session_id) << "\"";
     plan << ",\n  \"clients\": {\n";
     for (int i = 0; i < o.clients; ++i)
         plan << "    \"" << i + 1 << "\": {\"port_name\": \""

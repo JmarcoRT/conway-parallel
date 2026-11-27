@@ -2293,6 +2293,7 @@ private:
     void pollClusterDidactic() {
         auto& playback = clusterPlayback_;
         const auto group = clusterSession_->snapshot();
+        if (group.phase == ClusterPhase::Closing) return;
         if (group.phase != ClusterPhase::Ready) {
             playback.ticket.reset();
             playback.playing = false;
@@ -2345,10 +2346,15 @@ private:
 
     void leaveClusterDidactic() {
         auto& playback = clusterPlayback_;
+        if (playback.leaving) {
+            clusterSession_->close();
+            return;
+        }
         playbackTimer_.request_stop();
         pendingEvents_.fetch_and(~kPlaybackEvent, std::memory_order_acq_rel);
         playback.leaving = true;
         playback.playing = false;
+        if (playback.ticket) clusterSession_->limitPendingWait();
         pollClusterDidactic();
     }
 
@@ -2426,7 +2432,9 @@ private:
         const auto visible = playback.trace ? playback.trace->selection.generation +
             (stage == DidacticStage::GenerationResult) : playback.generation;
         const bool preparingBoard = playback.restart || playback.loading;
-        const auto label = playback.leaving ? "Volviendo a la sesión · esperando confirmación" :
+        const bool closing = playback.leaving && clusterSession_->snapshot().phase == ClusterPhase::Closing;
+        const auto label = closing ? "Cerrando sesión · esperando confirmación" :
+            playback.leaving ? "Volviendo a la sesión · esperando confirmación" :
             preparingBoard ? "Preparando G0" :
             playback.ticket ? "Capturando" : playback.playing ? "Reproduciendo" : "En pausa";
         const auto generation = std::string("Visible: ") + (preparingBoard ? "—" : "G" + std::to_string(visible)) +
@@ -3454,6 +3462,9 @@ private:
 
     std::string footerText() const {
         if (state_.page == Page::ClusterSetup) return "Tab campos · Enter · Esc sesión";
+        if (state_.page == Page::ClusterDidactic && clusterPlayback_.leaving)
+            return clusterSession_->snapshot().phase == ClusterPhase::Closing
+                ? "Esperando cierre colectivo" : "Esc otra vez · cerrar sesión";
         if (state_.page == Page::ClusterDidactic)
             return controls::terminalSize().columns < 50
                 ? "V/D vistas · [/] · N · Esp · R · Esc"

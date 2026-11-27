@@ -102,24 +102,27 @@ def didactic(terminal):
     visible(terminal, "Sesión del clúster", "Grupo listo · P=2")
 
 
-def generated(terminal, directory):
+def generated(terminal, directory, side=256):
     terminal.send("\r")
     visible(terminal, "Entrada · Visualización didáctica")
     terminal.send("\t")
-    change = "\x1b[H" + "\x1b[3~" * 8 + "256\t"
+    change = "\x1b[H" + "\x1b[3~" * 8 + f"{side}\t"
     terminal.send(change + change + "\t\t\r")
-    visible(terminal, "Tablero 256 × 256", "Visible: G0 · Capturada: G1", "Ventana filas")
+    dimensions = f"Tablero {side} × {side}"
+    visible(terminal, dimensions, "Visible: G0 · Capturada: G1", "Ventana filas")
     # The test owns TMPDIR. Retain the actual bytes emitted by the generator
     # so the independent full-board check uses precisely the same input.
     board, = directory.glob("conway-cluster-*/entrada.bin")
     source = board.read_bytes()
-    assert source.startswith(b"256 256\n")
+    assert source.startswith(f"{side} {side}\n".encode())
     terminal.send("\x1b[C")
-    visible(terminal, "Ventana sin captura", "Tablero 256 × 256", "col. [1, 17)")
-    terminal.send("nnnnnn")
+    visible(terminal, "Ventana sin captura", dimensions, "col. [1, 17)")
+    terminal.send("nnnnn")
+    visible(terminal, "Ver resultado", "Visible: G1 · Capturada: G1")
+    terminal.send("n")
     visible(terminal, "Visible: G1 · Capturada: G2", "col. [1, 17)")
     resize(terminal, 50, 24)
-    visible(terminal, "DIDÁCTICA MPI · CLÚSTER", "Paso 1 de 6", "Tablero 256 × 256")
+    visible(terminal, "DIDÁCTICA MPI · CLÚSTER", "Paso 1 de 6", dimensions)
     terminal.assert_fits()
     terminal.send(ESC)
     visible(terminal, "Grupo listo · P=2")
@@ -149,7 +152,8 @@ def session(binary, repo, config, port):
         visible(terminal, "Conectando por MPI", "Plan disponible", "Falta cliente")
         assert "Grupo listo" not in screen(terminal)
         plan = read_plan(port)
-        assert plan["interactive"] == 2 and plan["nodes"] == 2 and plan["clients"]["1"]["port_name"]
+        assert plan["interactive"] == 3 and plan["nodes"] == 2 and plan["clients"]["1"]["port_name"]
+        assert plan["session_id"]
 
         terminal.send(ESC)
         visible(terminal, "Sesión cancelada", "Cierre de clientes no confirmado")
@@ -183,6 +187,10 @@ def session(binary, repo, config, port):
         assert client.poll() is None
         source = generated(terminal, config.parent)
         assert client.poll() is None
+        resize(terminal, 132, 42)
+        generated(terminal, config.parent, 1000)
+        assert client.poll() is None
+        print("PASS FTXUI 256×256 y 1000×1000: G0, G1, vuelta al grupo", flush=True)
 
         terminal.send(ESC)
         visible(terminal, "Sesión cerrada")
@@ -194,6 +202,47 @@ def session(binary, repo, config, port):
         terminal.send("q")
         assert terminal.process.wait(timeout=5) == 0
         return source
+    finally:
+        stop(client)
+        terminal.close()
+
+
+def stalled_load(binary, repo, port):
+    terminal = Terminal(str(binary), str(repo), 132, 42)
+    client = None
+    rank = None
+    try:
+        terminal.send("\t\r")
+        visible(terminal, "Iniciar sesión")
+        terminal.send("\t\t\t\r")
+        visible(terminal, "Plan disponible")
+        client = subprocess.Popen(
+            ["python3", "scripts/cluster/cluster.py", "client", "--interactive", "--server-ip", LOOPBACK,
+             "--http-port", str(port), "--node-id", "1"], cwd=repo, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, start_new_session=True,
+        )
+        visible(terminal, "Grupo listo · P=2")
+        # Stop only the MPI child. The client's Python supervisor must keep
+        # running and notice when the server disappears during the load.
+        children = Path(f"/proc/{client.pid}/task/{client.pid}/children")
+        rank, = map(int, children.read_text().split())
+        os.kill(rank, signal.SIGSTOP)
+        terminal.send("\r")
+        visible(terminal, "Tablero generado")
+        terminal.send("\t\t\t\t\t\r")
+        visible(terminal, "Esperando la entrada del grupo MPI")
+        terminal.send(ESC)
+        visible(terminal, "Volviendo a la sesión · esperando confirmación")
+        visible(terminal, "Cerrando sesión · esperando confirmación")
+        visible(terminal, "Error de sesión", "plazo agotado durante Carga MPI", "Cierre de clientes no confirmado")
+        output = client.communicate(timeout=18)[0]
+        assert client.returncode == 2 and "Se perdió la sesión del servidor" in output, output
+        assert "Cierre colectivo no confirmado" in output and "Sesión cerrada" not in output, output
+        assert not Path(f"/proc/{rank}").exists()
+        terminal.send(ESC)
+        terminal.send("q")
+        assert terminal.process.wait(timeout=5) == 0
+        print("PASS carga bloqueada: Esc acotado, error visible y cliente recogido tras perder servidor", flush=True)
     finally:
         stop(client)
         terminal.close()
@@ -327,5 +376,6 @@ if __name__ == "__main__":
         source = session(conway, repo, config, port)
         print("PASS FTXUI: session, six stages, real halos, reset, reentry and collective close", flush=True)
         full_board(repo, directory, port, source)
+        stalled_load(conway, repo, port)
         legacy(repo, config, directory, port)
         print("PASS CLI: glider, P=2, 20 generations, 4 live cells and both output files")
