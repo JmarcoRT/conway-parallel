@@ -1,8 +1,10 @@
 #include "core/engines/mpi.hpp"
+#include "core/engines/openmp.hpp"
 #include "core/engines/sequential.hpp"
 
 #include <algorithm>
 #include <climits>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 
@@ -13,8 +15,10 @@ double maximum_rank_milliseconds(double local,MPI_Comm comm) {
     return maximum;
 }
 
+namespace {
 
-std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm, mpi::RankStepTrace* trace) {
+void validate_step(const GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
+                   const mpi::RankStepTrace* trace) {
     // Validate collectively before any point-to-point exchange. Allocation and
     // complete input validation belong to initialization, not the step loop.
     int rank = 0, size = 0;
@@ -39,19 +43,17 @@ std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
     int allValid = 0;
     MPI_Allreduce(&valid, &allValid, 1, MPI_INT, MPI_MIN, comm);
     if (!allValid) throw std::invalid_argument("step_mpi: estado o particion incompatible");
+}
 
-    const auto* currentAddress=s.current.data();const auto* nextAddress=s.next.data();
-    if(trace) {
-        std::copy(s.current.begin(),s.current.end(),trace->currentBefore.begin());
-        trace->aliveBefore=s.aliveCount;
-    }
+void exchange_halos(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
+                    mpi::RankStepTrace* trace) {
     // MPI_PROC_NULL leaves receive buffers untouched: explicitly clear them on
     // every step, including after swapping buffers from earlier generations.
     std::fill_n(s.current.data(), s.stride, 0);
     std::fill_n(s.current.data() + (s.height + 1) * s.stride, s.stride, 0);
     if (!part.empty()) {
-        const int above = part.firstRow == 0 ? MPI_PROC_NULL : rank - 1;
-        const int below = part.endRow() == part.globalHeight ? MPI_PROC_NULL : rank + 1;
+        const int above = part.firstRow == 0 ? MPI_PROC_NULL : part.rank - 1;
+        const int below = part.endRow() == part.globalHeight ? MPI_PROC_NULL : part.rank + 1;
         const int count = static_cast<int>(s.width);
         for(int tag=0;tag<2;++tag) {
             auto* send=s.current.data()+(tag==0?1:s.height)*s.stride+1;
@@ -70,6 +72,25 @@ std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
             }
         }
     }
+}
+
+std::size_t global_population(const GameState& state, MPI_Comm comm) {
+    const unsigned long long local = state.aliveCount;
+    unsigned long long global = 0;
+    MPI_Allreduce(&local, &global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+    return static_cast<std::size_t>(global);
+}
+
+} // namespace
+
+std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm, mpi::RankStepTrace* trace) {
+    validate_step(s, part, comm, trace);
+    const auto* currentAddress=s.current.data();const auto* nextAddress=s.next.data();
+    if(trace) {
+        std::copy(s.current.begin(),s.current.end(),trace->currentBefore.begin());
+        trace->aliveBefore=s.aliveCount;
+    }
+    exchange_halos(s, part, comm, trace);
     if(trace) std::copy(s.current.begin(),s.current.end(),trace->currentWithHalos.begin());
     step_sequential(s, kNoTrace, trace && trace->cell ? &*trace->cell : nullptr);
     if(trace) {
@@ -77,10 +98,14 @@ std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
         trace->generationAfter=s.generation;trace->aliveAfter=s.aliveCount;
         trace->buffersSwapped=s.current.data()==nextAddress && s.next.data()==currentAddress;
     }
-    const unsigned long long local = s.aliveCount;
-    unsigned long long global = 0;
-    MPI_Allreduce(&local, &global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-    return static_cast<std::size_t>(global);
+    return global_population(s, comm);
+}
+
+std::size_t step_mpi_openmp(GameState& state, const mpi::RowPartition& part, MPI_Comm comm) {
+    validate_step(state, part, comm, nullptr);
+    exchange_halos(state, part, comm, nullptr);
+    step_openmp(state);
+    return global_population(state, comm);
 }
 
 } // namespace conway::core

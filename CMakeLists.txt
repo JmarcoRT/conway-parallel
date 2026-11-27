@@ -121,11 +121,12 @@ add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.c
 target_include_directories(conway_mpi_protocol PUBLIC include)
 add_library(conway_mpi STATIC
     src/core/engines/mpi.cpp
+    src/core/engines/openmp.cpp
     src/core/engines/sequential.cpp
     src/core/bs23.cpp
     src/mpi/local_state.cpp)
 target_include_directories(conway_mpi PUBLIC include)
-target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX conway_mpi_protocol)
+target_link_libraries(conway_mpi PUBLIC MPI::MPI_CXX conway_mpi_protocol PRIVATE OpenMP::OpenMP_CXX)
 
 add_library(conway_mpi_client STATIC src/mpi/client.cpp)
 target_link_libraries(conway_mpi_client PUBLIC conway_mpi_protocol)
@@ -144,7 +145,7 @@ add_executable(mpi_partition_prototype
     src/input/input.cpp
 )
 target_include_directories(mpi_partition_prototype PRIVATE include)
-target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
+target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi OpenMP::OpenMP_CXX)
 
 
 include(CTest)
@@ -247,6 +248,11 @@ if(BUILD_TESTING)
         set_tests_properties(mpi_prototype_evolution_${processes} PROPERTIES
             TIMEOUT 45 PROCESSORS ${processes} RUN_SERIAL TRUE)
     endforeach()
+    add_test(NAME mpi_openmp_prototype
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:mpi_partition_prototype>
+            ${MPIEXEC_POSTFLAGS} "${CMAKE_CURRENT_SOURCE_DIR}/patterns/blinker.txt" --steps 30 --threads 2)
+    set_tests_properties(mpi_openmp_prototype PROPERTIES TIMEOUT 45 PROCESSORS 4 RUN_SERIAL TRUE)
     add_executable(experimental_study_view_tests tests/experimental_study_view_tests.cpp
         src/app/experimental_study_view.cpp src/app/comparison_view.cpp src/app/scaling_view.cpp)
     target_include_directories(experimental_study_view_tests PRIVATE include)
