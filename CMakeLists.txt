@@ -120,7 +120,7 @@ target_link_libraries(conway PRIVATE
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 # Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
 # Portable protocol/capture contract shared by client and worker (no MPI runtime).
-add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/partition.cpp)
+add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/window_trace.cpp src/mpi/partition.cpp)
 target_include_directories(conway_mpi_protocol PUBLIC include)
 add_library(conway_mpi STATIC
     src/core/engines/mpi.cpp
@@ -151,6 +151,7 @@ target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
 add_executable(conway_cluster
     scripts/cluster/conway_cluster.cpp
+    scripts/cluster/cluster_didactic.cpp
     src/input/input.cpp
 )
 target_include_directories(conway_cluster PRIVATE include)

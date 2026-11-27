@@ -1,3 +1,4 @@
+#include "cluster_didactic.hpp"
 // Prueba de integracion: forma el cluster sin SSH y ejecuta la evolucion
 // MPI de Conway sobre el comunicador resultante.
 //
@@ -114,7 +115,9 @@ MPI_Comm server_comm(const Options& o) {
     const auto temporary = o.plan + ".tmp";
     std::ofstream plan(temporary);
     plan << "{\n  \"nodes\": " << o.clients + 1;
-    if (o.interactive) plan << ",\n  \"interactive\": true";
+    // Version 1 clients expect the first collective to be a one-int CLOSE.
+    // Their bootstrap rejects this version before entering an incompatible communicator.
+    if (o.interactive) plan << ",\n  \"interactive\": 2";
     plan << ",\n  \"clients\": {\n";
     for (int i = 0; i < o.clients; ++i)
         plan << "    \"" << i + 1 << "\": {\"port_name\": \""
@@ -207,15 +210,8 @@ void interactive_session(const Options& o, MPI_Comm comm) {
         std::cout << "Grupo listo: nodo " << o.id << ", rank " << rank << ", P=" << size << std::endl;
     }
 
-    // Only rank 0 reads the private control pipe. EOF requests shutdown too.
-    // Every rank receives the same command before releasing the communicator.
-    std::string command;
-    if (rank == 0) {
-        while (std::getline(std::cin, command) && command != "CLOSE") {}
-    }
-    int close = rank == 0;
-    MPI_Bcast(&close, 1, MPI_INT, 0, comm);
-    MPI_Barrier(comm);
+    const auto input_path = std::filesystem::path(o.plan).parent_path() / "entrada.bin";
+    run_cluster_didactic(comm, input_path);
 }
 
 int check_conway(const Options& o, MPI_Comm comm) {

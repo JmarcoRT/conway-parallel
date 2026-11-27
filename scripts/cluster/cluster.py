@@ -44,6 +44,7 @@ DEFAULT_BINARY = Path(
 ZT_API = os.environ.get("CONWAY_ZT_API", "https://my.zerotier.com/api/v1")
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_TIMEOUT = 300
+INTERACTIVE_PROTOCOL = 2
 
 
 class ClusterError(Exception):
@@ -500,7 +501,7 @@ def cmd_client(args) -> int:
         print(f"ZeroTier listo: {ip}")
 
     plan = wait_plan(config)
-    if plan.get("interactive") is True:
+    if plan.get("interactive"):
         raise ClusterError("Usa el comando interactivo que muestra la sesión del clúster.")
     node_id = str(config["node_id"])
     try:
@@ -574,8 +575,9 @@ def interactive_client(args) -> int:
         "http_port": args.http_port,
     }
     plan = wait_plan(config, timeout=DEFAULT_TIMEOUT, direct=True)
-    if plan.get("interactive") is not True:
-        raise ClusterError("El servidor no ofrece una sesión interactiva.")
+    if plan.get("interactive") != INTERACTIVE_PROTOCOL:
+        raise ClusterError("El servidor no ofrece el protocolo interactivo compatible.",
+                           "Compila conway_cluster con la misma versión en ambos equipos.")
     try:
         port_name = plan["clients"][str(args.node_id)]["port_name"]
     except KeyError as exc:
@@ -645,6 +647,7 @@ def relay_session(child, url, diagnostics, nodes):
     ready = closing = closed = False
     deadline = time.monotonic() + DEFAULT_TIMEOUT
     pending = b""
+    commands = b""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with selectors.DefaultSelector() as selector:
         selector.register(sys.stdin.buffer, selectors.EVENT_READ, "ui")
@@ -654,19 +657,31 @@ def relay_session(child, url, diagnostics, nodes):
                 raise ClusterError(f"{phase}: plazo agotado.")
             for key, _ in selector.select(0.1):
                 if key.data == "ui":
-                    # The UI sends only one command. EOF also cancels the session.
-                    os.read(key.fd, 4096)
-                    selector.unregister(key.fileobj)
-                    if not ready:
-                        return "CANCELLED", f"{phase}: se cerró el servidor local. Cierre de clientes no confirmado."
-                    closing = True
-                    phase = "Cerrando sesión"
-                    deadline = time.monotonic() + 5
-                    try:
-                        child.stdin.write(b"CLOSE\n")
-                        child.stdin.flush()
-                    except OSError as exc:
-                        raise ClusterError(f"{phase}: se perdió el canal MPI.") from exc
+                    chunk = os.read(key.fd, 4096)
+                    commands = commands + chunk if chunk else b"CLOSE\n"
+                    while b"\n" in commands:
+                        command, commands = commands.split(b"\n", 1)
+                        if command == b"CLOSE":
+                            selector.unregister(key.fileobj)
+                            if not ready:
+                                return "CANCELLED", f"{phase}: se cerró el servidor local. Cierre de clientes no confirmado."
+                            closing = True
+                            phase = "Cerrando sesión"
+                            deadline = time.monotonic() + 5
+                        elif ready and command.startswith((b"LOAD ", b"RESET ", b"STEP ")):
+                            phase = "Captura MPI" if command.startswith(b"STEP ") else "Carga MPI"
+                            deadline = time.monotonic() + DEFAULT_TIMEOUT
+                        else:
+                            raise ClusterError(f"{phase}: orden local inválida.")
+                        try:
+                            child.stdin.write(command + b"\n")
+                            child.stdin.flush()
+                        except OSError as exc:
+                            raise ClusterError(f"{phase}: se perdió el canal MPI.") from exc
+                        if closing:
+                            break
+                    if len(commands) > 4096:
+                        raise ClusterError(f"{phase}: orden local demasiado larga.")
                     continue
 
                 data = os.read(key.fd, 4096)
@@ -687,7 +702,7 @@ def relay_session(child, url, diagnostics, nodes):
                                 plan = json.load(response)
                         except (OSError, ValueError) as exc:
                             raise ClusterError(f"{phase}: no se pudo leer el plan HTTP. {exc}") from exc
-                        if (plan.get("interactive") is not True or plan["nodes"] != nodes or
+                        if (plan.get("interactive") != INTERACTIVE_PROTOCOL or plan["nodes"] != nodes or
                             set(plan["clients"]) != {str(i) for i in range(1, nodes)} or
                             any(not item["port_name"] for item in plan["clients"].values())):
                             raise ClusterError("Publicando plan: el plan está incompleto.")
@@ -699,6 +714,10 @@ def relay_session(child, url, diagnostics, nodes):
                         ui_message("READY")
                     elif decoded == "CLOSED":
                         closed = True
+                    elif decoded.startswith(("TRACE\t", "LOADED\t", "REJECT\t")):
+                        if not closing:
+                            phase, deadline = "Grupo listo", None
+                        ui_message(*decoded.split("\t"))
                     elif decoded.startswith(("JOIN\t", "MEMBER\t")):
                         ui_message(*decoded.split("\t"))
                 if len(pending) > 8192:
@@ -735,7 +754,8 @@ def ui_server(args) -> int:
                 http.join()
     except ClusterError as exc:
         detail = exc.message
-        if not detail.startswith(("Publicando plan:", "Conectando por MPI:", "Grupo listo:", "Cerrando sesión:")):
+        if not detail.startswith(("Publicando plan:", "Conectando por MPI:", "Grupo listo:",
+                                  "Cerrando sesión:", "Captura MPI:", "Carga MPI:")):
             detail = "Publicando plan: " + detail
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         phase = "Sesión MPI" if launched else "Publicando plan"

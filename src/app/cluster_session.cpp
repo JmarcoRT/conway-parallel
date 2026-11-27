@@ -1,4 +1,5 @@
 #include "app/cluster_session.hpp"
+#include "mpi/counts.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -14,6 +15,8 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -25,8 +28,9 @@ namespace {
 using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
 
-std::optional<int> number(std::string_view text) {
-    int value;
+template<class T = int>
+std::optional<T> number(std::string_view text) {
+    T value;
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
     if (error != std::errc{} || end != text.data() + text.size()) return {};
     return value;
@@ -90,6 +94,20 @@ public:
 
     int fd() const { return fd_; }
 
+    void sendCommand(std::string_view command) const {
+        const auto deadline = Clock::now() + 2s;
+        while (!command.empty()) {
+            const auto count = send(fd_, command.data(), command.size(), MSG_NOSIGNAL);
+            if (count > 0) command.remove_prefix(count);
+            else {
+                if (Clock::now() >= deadline || (errno != EINTR && errno != EAGAIN))
+                    throw std::runtime_error("No se pudo enviar la orden al clúster.");
+                pollfd writer{fd_, POLLOUT, 0};
+                poll(&writer, 1, 20);
+            }
+        }
+    }
+
     void requestClose() const {
         static constexpr std::string_view command = "CLOSE\n";
         // Shutdown also delivers EOF if the command could not be written.
@@ -135,6 +153,7 @@ public:
         path_ = std::move(path);
         return path_;
     }
+    std::filesystem::path inputPath() const { return std::filesystem::path(path_) / "entrada.bin"; }
 
 private:
     std::string path_;
@@ -195,6 +214,38 @@ std::filesystem::path clusterBinary() {
     return std::filesystem::read_symlink("/proc/self/exe").parent_path() / "conway_cluster";
 }
 
+void writeInput(const InputData& input, const std::filesystem::path& path) {
+    const auto count = mpi::checked_cell_count(input.width, input.height);
+    if (count > mpi::windowInputCells || count != input.cells.size())
+        throw std::runtime_error("La entrada supera el límite MPI o tiene dimensiones inválidas.");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << input.height << ' ' << input.width << '\n';
+    out.write(reinterpret_cast<const char*>(input.cells.data()), input.cells.size());
+    out.close();
+    if (!out) throw std::runtime_error("No se pudo preparar la entrada del clúster.");
+}
+
+std::string prepareCommand(ClusterSession::Operation& operation, std::uint64_t id,
+                           const std::filesystem::path& path) {
+    std::ostringstream command;
+    if (const auto* selection = std::get_if<mpi::WindowRequest>(&operation)) {
+        command << "STEP " << id << ' ' << selection->generation << ' ' << selection->rank
+                << ' ' << selection->row << ' ' << selection->column;
+    } else if (std::holds_alternative<ClusterSession::Reset>(operation)) {
+        command << "RESET " << id;
+    } else {
+        if (const auto* board = std::get_if<InputData>(&operation)) writeInput(*board, path);
+        else {
+            const auto& config = std::get<input::GenerationConfig>(operation);
+            if (mpi::checked_cell_count(config.width, config.height) > mpi::windowInputCells)
+                throw std::runtime_error("El tablero supera el límite de entrada MPI.");
+            writeInput(input::generateInput(config).input, path);
+        }
+        command << "LOAD " << id;
+    }
+    return command.str() + '\n';
+}
+
 }  // namespace
 
 bool ClusterState::active() const {
@@ -253,6 +304,14 @@ void ClusterSession::close() {
     worker_.request_stop();
 }
 
+std::optional<std::uint64_t> ClusterSession::submit(Operation operation) {
+    std::lock_guard lock(mutex_);
+    if (state_.phase != ClusterPhase::Ready || outstanding_) return {};
+    queued_.emplace(Job{++nextId_, std::move(operation)});
+    outstanding_ = true;
+    return nextId_;
+}
+
 void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> args, bool defaults) {
     auto state = snapshot();
     ClusterPhase terminal = ClusterPhase::Error;
@@ -263,6 +322,17 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
         Process process(args);
         std::string pending;
         std::optional<Clock::time_point> closing;
+        std::optional<std::uint64_t> inFlight;
+        const auto complete = [&](ClusterResult result) {
+            state.result = std::make_shared<const ClusterResult>(std::move(result));
+            {
+                std::lock_guard lock(mutex_);
+                outstanding_ = false;
+                state_ = state;
+            }
+            inFlight.reset();
+            notify_();
+        };
         const auto defaultsDeadline = Clock::now() + 5s;
         for (;;) {
             if (stop.stop_requested() && !closing) {
@@ -276,6 +346,26 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
             if ((closing && Clock::now() >= *closing) || (defaults && Clock::now() >= defaultsDeadline))
                 throw std::runtime_error("Plazo de limpieza local agotado.");
 
+            std::optional<Job> job;
+            if (!closing && state.phase == ClusterPhase::Ready) {
+                std::lock_guard lock(mutex_);
+                job = std::move(queued_);
+                queued_.reset();
+            }
+            if (job) {
+                std::string command;
+                try { command = prepareCommand(job->operation, job->id, directory.inputPath()); }
+                catch (const std::exception& error) {
+                    ClusterResult result{};
+                    result.id = job->id;
+                    result.error = error.what();
+                    complete(std::move(result));
+                }
+                if (!command.empty()) {
+                    process.sendCommand(command);
+                    inFlight = job->id;
+                }
+            }
             pollfd reader{process.fd(), POLLIN, 0};
             const auto events = poll(&reader, 1, 50);
             if (events < 0 && errno != EINTR)
@@ -292,6 +382,25 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
                             terminal = data[1] == "CLOSED" ? ClusterPhase::Closed :
                                 data[1] == "CANCELLED" ? ClusterPhase::Cancelled : ClusterPhase::Error;
                             state.message = data[2];
+                        } else if (data[0] == "TRACE" || data[0] == "LOADED" || data[0] == "REJECT") {
+                            const auto id = data.size() > 1 ? number<std::uint64_t>(data[1]) : std::nullopt;
+                            if (!inFlight || id != inFlight)
+                                throw std::runtime_error("Respuesta de una operación desconocida.");
+                            ClusterResult result{};
+                            result.id = *id;
+                            if (data[0] == "TRACE") {
+                                result.trace = mpi::decodeWindowTrace({data.begin() + 2, data.end()});
+                            } else if (data[0] == "LOADED" && data.size() == 5) {
+                                result.width = number<std::size_t>(data[2]).value_or(0);
+                                result.height = number<std::size_t>(data[3]).value_or(0);
+                                const auto count = mpi::checked_cell_count(result.width, result.height);
+                                result.population = number<std::size_t>(data[4]).value_or(count + 1);
+                                if (count > mpi::windowInputCells || result.population > count)
+                                    throw std::runtime_error("Confirmación de entrada inválida.");
+                            } else if (data[0] == "REJECT" && data.size() == 3) {
+                                result.error = data[2];
+                            } else throw std::runtime_error("Respuesta incompleta del clúster.");
+                            complete(std::move(result));
                         } else if (applyMessage(state, data)) {
                             publish(state);
                         }
@@ -321,7 +430,13 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
         if (!defaults) state.message += " Cierre de clientes no confirmado.";
     }
     state.phase = terminal;
-    publish(state);
+    {
+        std::lock_guard lock(mutex_);
+        queued_.reset();
+        outstanding_ = false;
+        state_ = state;
+    }
+    notify_();
 }
 
 std::string clusterClientCommand(const ClusterSettings& settings, int node) {

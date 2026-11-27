@@ -14,7 +14,8 @@ double maximum_rank_milliseconds(double local,MPI_Comm comm) {
 }
 
 
-std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm, mpi::RankStepTrace* trace) {
+std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
+                     mpi::RankStepTrace* trace, MpiWindowProbe* window) {
     // Validate collectively before any point-to-point exchange. Allocation and
     // complete input validation belong to initialization, not the step loop.
     int rank = 0, size = 0;
@@ -35,6 +36,14 @@ std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
         valid=valid && trace->partition.rank==part.rank && trace->partition.size==part.size &&
             trace->partition.globalHeight==part.globalHeight && trace->partition.firstRow==part.firstRow &&
             trace->partition.rowCount==part.rowCount && trace->generationBefore==s.generation;
+    }
+    if (window) {
+        valid = valid && !trace && !part.empty() && window->column < s.width;
+        for (const auto halo : window->received)
+            valid = valid && halo.size() <= s.width - std::min(window->column, s.width);
+        if (window->cell)
+            valid = valid && window->cell->row > 0 && window->cell->row <= s.height &&
+                window->cell->column > 0 && window->cell->column <= s.width;
     }
     int allValid = 0;
     MPI_Allreduce(&valid, &allValid, 1, MPI_INT, MPI_MIN, comm);
@@ -68,10 +77,13 @@ std::size_t step_mpi(GameState& s, const mpi::RowPartition& part, MPI_Comm comm,
                     throw std::runtime_error("MPI trace: unexpected receive status");
                 std::copy_n(receive,count,event->received.begin());
             }
+            if (window && !window->received[tag].empty())
+                std::copy_n(receive + window->column, window->received[tag].size(),
+                            window->received[tag].begin());
         }
     }
     if(trace) std::copy(s.current.begin(),s.current.end(),trace->currentWithHalos.begin());
-    step_sequential(s, kNoTrace, trace && trace->cell ? &*trace->cell : nullptr);
+    step_sequential(s, kNoTrace, window ? window->cell : trace && trace->cell ? &*trace->cell : nullptr);
     if(trace) {
         std::copy(s.current.begin(),s.current.end(),trace->currentAfter.begin());
         trace->generationAfter=s.generation;trace->aliveAfter=s.aliveCount;
