@@ -84,9 +84,9 @@ def raster_rows(terminal):
 def check(binary,root,size,no_color=False):
     t=Terminal(binary,root,*size)
     try:
-        for label in ['MODOS PRINCIPALES','EXPLORAR PATRONES','CONFIGURACIÓN','Visualización didáctica','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']:
+        for label in ['MODOS PRINCIPALES','EXPLORAR PATRONES','CONFIGURACIÓN','Visualización didáctica','Clúster','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']:
             assert label in text(t),text(t)
-        for label in ['Visualización didáctica','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']:
+        for label in ['Visualización didáctica','Clúster','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']:
             assert '> '+label in text(t),text(t)
             t.send('\t')
         t.send('r');assert 'sin recursos configurables' in ' '.join(row.strip('│ ') for row in t.screen().values());t.send('\x1b')

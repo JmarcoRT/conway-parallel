@@ -76,9 +76,9 @@ StoredExperiment execute(const ExecutionRequest& request, const ExperimentExecut
     return {d, std::move(context), std::move(result)};
 }
 } // namespace
-ExperimentExecution::ExperimentExecution(std::function<void()> notify, Backend backend)
+ExperimentExecution::ExperimentExecution(std::function<void()> notify, Backend backend, bool notifyEachAttempt)
     : notify_(std::move(notify)), backend_(backend ? std::move(backend) : execute),
-      worker_([this] { loop(); }) {}
+      notifyEachAttempt_(notifyEachAttempt), worker_([this] { loop(); }) {}
 ExperimentExecution::~ExperimentExecution() { shutdown(); }
 ExecutionSnapshot ExperimentExecution::snapshot() const {
     std::lock_guard lock(mutex_);
@@ -136,6 +136,7 @@ bool ExperimentExecution::publishProgress(std::uint64_t id,std::size_t completed
     };
     const auto previous=percent(state_.completedWork,state_.totalWork);
     state_.completedWork=completed;state_.totalWork=total;
+    if (notifyEachAttempt_) return true;
     const auto now=std::chrono::steady_clock::now();
     // Store every completion, but limit redraw requests to ten per second.
     if(percent(completed,total)==previous || now-lastProgressNotice_<std::chrono::milliseconds(100)) return false;

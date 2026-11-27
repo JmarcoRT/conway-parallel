@@ -27,6 +27,9 @@ struct ExperimentFormValidation {
     std::optional<ExperimentFormConfig> config;
 };
 ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, bool hasPattern);
+input::GenerationConfig parseGeneratedBoard(
+    const std::array<std::string, kExperimentFieldCount>& values,
+    std::array<std::string, kExperimentFieldCount>& errors);
 // Pure validation: no generation, Game construction, measurements or OpenMP changes.
 ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft, bool scaling,
                                                 const InputData* loaded);

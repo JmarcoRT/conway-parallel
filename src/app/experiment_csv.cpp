@@ -279,7 +279,9 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
     const bool hasCUDA=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::CUDA;});
     const std::string schema=hasCUDA?"3":"2";
     auto engineName=[](Engine engine){return engine==Engine::CUDA?"cuda":engine==Engine::MPI?"mpi":engine==Engine::OpenMP?"openmp":"sequential";};
-    auto scope=[](Engine engine){return engine==Engine::CUDA?"cuda_resident_batch_wall":engine==Engine::MPI?"mpi_rank_max_batch":"local_batch";};
+    const bool distributed = !study.distributedRanks.empty();
+    auto scope=[distributed](Engine engine){return engine==Engine::CUDA?"cuda_resident_batch_wall":
+        engine==Engine::MPI?(distributed?"mpi_distributed_rank_max_batch":"mpi_rank_max_batch"):"local_batch";};
     Row sampleHeader{"schema_version","study_id","experiment_type","configuration_id","engine","requested_threads",
         "requested_processes","effective_threads_min","effective_threads_max","observed_processes",
         "round","position","execution_order","sequential_reference_sample","generations","elapsed_ms",
@@ -291,13 +293,14 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
     if(hasCUDA) {summaryHeader.push_back("cuda_block_x");summaryHeader.push_back("cuda_block_y");}
     row(summary,summaryHeader);
     row(meta,{"study_id","key","value","source","detail"});
+    std::vector<std::string> references((study.samples.size()+study.configurations.size()-1)/study.configurations.size());
+    for (std::size_t i=0; i<study.samples.size(); ++i)
+        if (study.configurations[study.samples[i].configurationIndex].engine==Engine::Sequential)
+            references[study.samples[i].round] = integer(i);
     for(const auto& sample:study.samples) {
         const auto& c=study.configurations[sample.configurationIndex];
-        std::string reference;
-        for(std::size_t i=0;i<study.samples.size();++i)
-            if(study.samples[i].round==sample.round && study.configurations[study.samples[i].configurationIndex].engine==Engine::Sequential)
-                {reference=integer(i);break;}
-        Row sampleRow{schema,metadata.studyId,metadata.experimentType,configurationName(c),
+        const auto& reference = references[sample.round];
+        Row sampleRow{schema,metadata.studyId,metadata.experimentType,configurationName(c,distributed),
             engineName(c.engine),
             optionalInt(c.requestedThreads),optionalInt(c.requestedProcesses),
             optionalInt(sample.minEffectiveThreads),optionalInt(sample.maxEffectiveThreads),optionalInt(sample.observedProcesses),
@@ -322,7 +325,7 @@ void serializeStudy(const ExperimentalStudy& study,const ExperimentMetadata& met
         const auto& config=study.configurations[s.configurationIndex];
         const auto speedupStatus=studySpeedupStatus(study,s);
         const auto efficiencyStatus=config.engine==Engine::CUDA?"not_applicable_cuda":s.efficiency?"available":speedupStatus!="available"?speedupStatus:"variable_effective_resources";
-        Row summaryRow{schema,metadata.studyId,metadata.experimentType,configurationName(config),
+        Row summaryRow{schema,metadata.studyId,metadata.experimentType,configurationName(config,distributed),
             engineName(config.engine),
             optionalInt(config.requestedThreads),optionalInt(config.requestedProcesses),
             scope(config.engine),integer(s.sampleCount),v?number(v->minimumMs):"",v?number(v->maximumMs):"",v?number(v->meanMs):"",

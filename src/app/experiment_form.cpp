@@ -47,6 +47,26 @@ ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, boo
     return draft;
 }
 
+input::GenerationConfig parseGeneratedBoard(
+    const std::array<std::string, kExperimentFieldCount>& values,
+    std::array<std::string, kExperimentFieldCount>& errors) {
+    const auto error = [&](ExperimentField field, std::string message) {
+        errors[index(field)] = std::move(message);
+    };
+    input::GenerationConfig generated{};
+    if (!integer(values[index(ExperimentField::Width)], generated.width) || !generated.width)
+        error(ExperimentField::Width, "Ancho entero positivo representable.");
+    if (!integer(values[index(ExperimentField::Height)], generated.height) || !generated.height)
+        error(ExperimentField::Height, "Alto entero positivo representable.");
+    if (!density(values[index(ExperimentField::Density)], generated.density))
+        error(ExperimentField::Density, "Entre 0 y 100 %, precisión exacta de 0,01 %. Use punto o coma.");
+    if (!integer(values[index(ExperimentField::Seed)], generated.seed))
+        error(ExperimentField::Seed, "Semilla entera entre 0 y 4294967295.");
+    if (generated.height >= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()))
+        error(ExperimentField::Height, "Alto fuera del rango seguro de índices del motor.");
+    return generated;
+}
+
 ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft, bool scaling,
                                                 const InputData* loaded) {
     ExperimentFormValidation result{};
@@ -129,17 +149,7 @@ ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft
         error(ExperimentField::Generations,"MPI admite entre 1 y 100000 generaciones por lote.");
     std::size_t width = 0, height = 0, inputCapacity = 0;
     if (draft.source == 1) {
-        input::GenerationConfig generated{};
-        if (!integer(draft.values[index(ExperimentField::Width)], generated.width) || !generated.width)
-            error(ExperimentField::Width, "Ancho entero positivo representable.");
-        if (!integer(draft.values[index(ExperimentField::Height)], generated.height) || !generated.height)
-            error(ExperimentField::Height, "Alto entero positivo representable.");
-        if (!density(draft.values[index(ExperimentField::Density)], generated.density))
-            error(ExperimentField::Density, "Entre 0 y 100 %, precisión exacta de 0,01 %. Use punto o coma.");
-        if (!integer(draft.values[index(ExperimentField::Seed)], generated.seed))
-            error(ExperimentField::Seed, "Semilla entera entre 0 y 4294967295.");
-        if (generated.height >= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()))
-            error(ExperimentField::Height, "Alto fuera del rango seguro de índices del motor.");
+        const auto generated = parseGeneratedBoard(draft.values, result.errors);
         width = generated.width;
         height = result.errors[index(ExperimentField::Height)].empty() ? generated.height : 0;
         parsed.generated = generated;

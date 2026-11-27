@@ -87,6 +87,8 @@ add_executable(conway
     src/ui/menu.cpp
     src/app/app.cpp
     src/app/controls.cpp
+    src/app/cluster_session.cpp
+    src/app/cluster_benchmark.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
     src/app/pattern_preview.cpp
@@ -104,6 +106,8 @@ add_executable(conway
 )
 
 target_include_directories(conway PRIVATE include)
+set_source_files_properties(src/app/cluster_session.cpp PROPERTIES
+    COMPILE_DEFINITIONS "CONWAY_CLUSTER_SCRIPT=\"${CMAKE_CURRENT_SOURCE_DIR}/scripts/cluster/cluster.py\"")
 
 target_link_libraries(conway PRIVATE
     conway_experiment_export conway_generated_input
@@ -117,7 +121,7 @@ target_link_libraries(conway PRIVATE
 # Prototipo MPI aislado (Semana 6): procesos + reparto horizontal de filas.
 # Ejecutar con: mpirun -np P ./mpi_partition_prototype  (ver docs/MPI_PROTOTYPE.md)
 # Portable protocol/capture contract shared by client and worker (no MPI runtime).
-add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/partition.cpp)
+add_library(conway_mpi_protocol STATIC src/mpi/protocol.cpp src/mpi/step_trace.cpp src/mpi/window_trace.cpp src/mpi/partition.cpp)
 target_include_directories(conway_mpi_protocol PUBLIC include)
 add_library(conway_mpi STATIC
     src/core/engines/mpi.cpp
@@ -146,6 +150,14 @@ add_executable(mpi_partition_prototype
 target_include_directories(mpi_partition_prototype PRIVATE include)
 target_link_libraries(mpi_partition_prototype PRIVATE conway_mpi)
 
+add_executable(conway_cluster
+    scripts/cluster/conway_cluster.cpp
+    scripts/cluster/cluster_didactic.cpp
+    src/input/input.cpp
+)
+target_include_directories(conway_cluster PRIVATE include)
+target_link_libraries(conway_cluster PRIVATE conway_mpi)
+
 
 include(CTest)
 include(cmake/CudaBackend.cmake)
@@ -173,6 +185,27 @@ if(BUILD_TESTING)
     add_test(NAME pty_state_wait COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pty_state_wait.py")
     set_tests_properties(pty_state_wait PROPERTIES TIMEOUT 5)
+
+    # Exercise independent processes with the same MPICH device as the cluster.
+    if(EXISTS "${MPI_CXX_HEADER_DIR}/mpi.h")
+        file(STRINGS "${MPI_CXX_HEADER_DIR}/mpi.h" conway_mpich
+            REGEX "^#define[ \t]+MPICH_VERSION[ \t]")
+        if(conway_mpich)
+            get_filename_component(conway_mpi_bin "${MPI_CXX_COMPILER}" DIRECTORY)
+            execute_process(COMMAND "${conway_mpi_bin}/mpichversion"
+                OUTPUT_VARIABLE conway_mpich_version ERROR_QUIET)
+        endif()
+        if(conway_mpich AND conway_mpich_version MATCHES "MPICH Device:[ \t]+ch4:ofi")
+            add_test(NAME ftxui_cluster_loopback COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_cluster.py"
+                $<TARGET_FILE:conway> $<TARGET_FILE:conway_cluster> "${CMAKE_CURRENT_SOURCE_DIR}")
+            add_test(NAME ftxui_cluster_benchmark_loopback COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_cluster_benchmark.py"
+                $<TARGET_FILE:conway> $<TARGET_FILE:conway_cluster> "${CMAKE_CURRENT_SOURCE_DIR}")
+            set_tests_properties(ftxui_cluster_loopback ftxui_cluster_benchmark_loopback
+                PROPERTIES TIMEOUT 75 RUN_SERIAL TRUE)
+        endif()
+    endif()
 
     add_test(NAME mpi_error_message_pty COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpi_error_message.py"
@@ -618,7 +651,7 @@ foreach(session_target IN ITEMS app_runtime_tests didactic_layout_tests ftxui_ex
         target_link_libraries(${session_target} PRIVATE conway_simulation)
     endif()
 endforeach()
-add_dependencies(conway conway_mpi_worker)
+add_dependencies(conway conway_mpi_worker conway_cluster)
 
 if(BUILD_TESTING)
     add_executable(cuda_launch_tests tests/cuda_launch_tests.cpp)
