@@ -13,9 +13,10 @@ class ExperimentFormView final : public ComponentBase {
 public:
     ExperimentFormView(bool scaling,std::function<const InputData*()> input,
         std::function<std::string()> name,std::function<int()> threads,
-        std::function<Element(Element)> style,std::function<std::string(bool,ExperimentFormConfig)> submit)
+        std::function<Element(Element)> style,std::function<std::string(bool,ExperimentFormConfig)> submit,
+        std::function<int()> confirmedProcesses, std::function<void()> choosePattern)
         :scaling_(scaling),input_(std::move(input)),name_(std::move(name)),threads_(std::move(threads)),
-         style_(std::move(style)),submit_(std::move(submit)) {
+         style_(std::move(style)),submit_(std::move(submit)),confirmedProcesses_(std::move(confirmedProcesses)) {
         MenuOption menu=MenuOption::Vertical();
         menu.entries_option.transform=[this](const EntryState& entry) {
             auto row=text(std::string(entry.active?"(*) ":"( ) ")+entry.label);
@@ -33,8 +34,9 @@ public:
         sequential_=Checkbox("Secuencial",&draft_.sequential,check);
         openmp_=Checkbox("OpenMP",&draft_.openmp,check);
         mpi_=Checkbox("MPI",&draft_.mpi,check);
+        hybrid_=Checkbox("MPI + OpenMP",&draft_.hybrid,check);
         cuda_=Checkbox("CUDA",&draft_.cuda,check);
-        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_,cuda_});
+        participants_=scaling_?parallel_:Container::Vertical({sequential_,openmp_,mpi_,hybrid_,cuda_});
         const std::array<std::string,8> labels{"Ancho","Alto","Densidad (%)","Semilla","Generaciones","Calentamientos","Repeticiones","Hilos OpenMP"};
         Components generated,measurement;
         for(std::size_t i=0;i<8;++i) {
@@ -44,7 +46,12 @@ public:
         }
         fields_[idx(ExperimentField::Processes)]=makeField(idx(ExperimentField::Processes),"Procesos MPI");
         measurement.push_back(Maybe(fields_[7],[this]{return (scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp);}));
-        measurement.push_back(Maybe(fields_[idx(ExperimentField::Processes)],[this]{return !scaling_ && draft_.mpi;}));
+        measurement.push_back(Maybe(fields_[idx(ExperimentField::Processes)],[this]{return !confirmedProcesses_ && !scaling_ && draft_.mpi;}));
+        for(const auto& [field,label]:{std::pair{ExperimentField::HybridProcesses,"Procesos híbridos"},
+                                      std::pair{ExperimentField::HybridThreads,"Hilos por rank"}}) {
+            fields_[idx(field)]=makeField(idx(field),label);
+            measurement.push_back(Maybe(fields_[idx(field)],[this]{return !confirmedProcesses_ && !scaling_ && draft_.hybrid;}));
+        }
         fields_[idx(ExperimentField::CudaBlocks)]=makeField(idx(ExperimentField::CudaBlocks),scaling_?"Bloques CUDA":"Bloque CUDA");
         measurement.push_back(Maybe(fields_[idx(ExperimentField::CudaBlocks)],[this]{return scaling_?draft_.parallelEngine==2:draft_.cuda;}));
         generated_=Maybe(Container::Vertical(generated),[this]{return draft_.source==1;});
@@ -53,29 +60,47 @@ public:
         buttons.transform=[this](const EntryState& entry) {
             auto row=text("[ "+entry.label+" ]");return entry.focused?style_(row):row;
         };
+        if (choosePattern) catalog_=Button("Catálogo de patrones / ruta manual",
+            [this, choose=std::move(choosePattern)] { draft_.source=0; choose(); },buttons);
         restore_=Button("Restaurar valores estándar",[this]{restore();},buttons);
         execute_=Button("Ejecutar experimento",[this] {
             if((scaling_?draft_.parallelEngine==2:draft_.cuda) && !cudaInfo_.available) {message_=cudaInfo_.diagnostic;return;}
+            if (confirmedProcesses_) {
+                const auto processes = confirmedProcesses_();
+                if (processes < 2) { message_="El grupo MPI ya no está disponible."; return; }
+                draft_.values[idx(ExperimentField::Processes)] = std::to_string(processes);
+            }
             auto validation=validateExperimentForm(draft_,scaling_,input_());errors_=validation.errors;
             message_=validation.config?submit_(scaling_,*validation.config):"Revisa los campos señalados.";
             if(!validation.config) {
                 if(!errors_[idx(ExperimentField::Source)].empty()) source_->TakeFocus();
                 else if(!errors_[idx(ExperimentField::Participants)].empty()) (scaling_?parallel_:sequential_)->TakeFocus();
-                else for(auto i:{0u,1u,2u,3u,4u,5u,6u,7u,9u,11u}) if(!errors_[i].empty()) {fields_[i]->TakeFocus();break;}
+                else for(std::size_t i=0;i<fields_.size();++i)
+                    if(fields_[i] && !errors_[i].empty()) {fields_[i]->TakeFocus();break;}
             }
         },buttons);
-        root_=Container::Vertical({source_,generated_,participants_,measurement_,restore_,execute_});Add(root_);
+        Components layout{source_};
+        if (catalog_) layout.push_back(catalog_);
+        layout.push_back(generated_);
+        if (!confirmedProcesses_) layout.push_back(participants_);
+        layout.insert(layout.end(), {measurement_,restore_,execute_});
+        root_=Container::Vertical(layout);Add(root_);
     }
     bool OnEvent(Event event) override {
         if(event==Event::Tab || event==Event::TabReverse) {
             Components order{source_};
+            if (catalog_) order.push_back(catalog_);
             if(draft_.source==1) for(std::size_t i=0;i<4;++i) order.push_back(fields_[i]);
             if(scaling_) order.push_back(parallel_);
-            else {order.push_back(sequential_);order.push_back(openmp_);order.push_back(mpi_);order.push_back(cuda_);}
+            else if(!confirmedProcesses_) order.insert(order.end(),{sequential_,openmp_,mpi_,hybrid_,cuda_});
             for(std::size_t i=4;i<7;++i) order.push_back(fields_[i]);
             if((scaling_ && draft_.parallelEngine!=2) || (!scaling_ && draft_.openmp)) order.push_back(fields_[7]);
             if(scaling_?draft_.parallelEngine==2:draft_.cuda)order.push_back(fields_[idx(ExperimentField::CudaBlocks)]);
-            if(!scaling_ && draft_.mpi) order.push_back(fields_[idx(ExperimentField::Processes)]);
+            if(!confirmedProcesses_ && !scaling_ && draft_.mpi) order.push_back(fields_[idx(ExperimentField::Processes)]);
+            if(!confirmedProcesses_ && !scaling_ && draft_.hybrid) {
+                order.push_back(fields_[idx(ExperimentField::HybridProcesses)]);
+                order.push_back(fields_[idx(ExperimentField::HybridThreads)]);
+            }
             order.push_back(restore_);order.push_back(execute_);
             std::size_t position=0;
             for(std::size_t i=0;i<order.size();++i) if(order[i]->Focused()) position=i;
@@ -98,12 +123,17 @@ public:
         }
         sources_[0]=loaded?"Patrón cargado":"Patrón cargado (no disponible)";
         Elements entry{text("ENTRADA")|bold,source_->Render()};
+        if (catalog_) entry.push_back(catalog_->Render());
         if(draft_.source==0) entry.push_back(paragraph(loaded?
             name+" · "+std::to_string(loaded->width)+" × "+std::to_string(loaded->height)+" (ancho × alto)":
             "Sin patrón cargado: esta opción no está disponible.")|dim);
         if(!errors_[idx(ExperimentField::Source)].empty()) entry.push_back(paragraph(errors_[idx(ExperimentField::Source)])|color(Color::Red));
         entry.push_back(generated_->Render());
-        Elements measure{text(scaling_?"MOTOR PARALELO":"PARTICIPANTES · Espacio selecciona")|bold,participants_->Render()};
+        Elements measure{text(scaling_?"MOTOR PARALELO":confirmedProcesses_?"PARTICIPANTES":"PARTICIPANTES · Espacio selecciona")|bold};
+        if (confirmedProcesses_) {
+            measure.push_back(text("Secuencial en la PC"));
+            measure.push_back(text("MPI distribuido · P=" + std::to_string(confirmedProcesses_())));
+        } else measure.push_back(participants_->Render());
         if(!errors_[idx(ExperimentField::Participants)].empty()) measure.push_back(paragraph(errors_[idx(ExperimentField::Participants)])|color(Color::Red));
         if(!scaling_ && !draft_.sequential) measure.push_back(paragraph("Sin Secuencial: speedup y eficiencia respecto de él serán N/D.")|dim);
         if(scaling_?draft_.parallelEngine==2:draft_.cuda) {
@@ -112,7 +142,7 @@ public:
         }
         measure.push_back(text(" "));
         measure.push_back(text("MEDICIÓN")|bold);measure.push_back(measurement_->Render());
-        if((scaling_ && draft_.parallelEngine==1) || (!scaling_ && draft_.mpi))
+        if(!confirmedProcesses_ && ((scaling_ && draft_.parallelEngine==1) || (!scaling_ && (draft_.mpi || draft_.hybrid))))
             measure.push_back(paragraph("MPI: calentamientos por sesión nueva antes de cada muestra; sin sobresuscripción.")|dim);
         auto a=vbox(std::move(entry)),b=vbox(std::move(measure));
         const int columns=static_cast<int>(controls::terminalSize().columns);
@@ -134,10 +164,17 @@ private:
             return vbox(std::move(rows));
         });
     }
-    void restore() {cudaInfo_=inspectCuda(1,1);draft_=standardExperimentForm(scaling_,threads_(),input_()!=nullptr);errors_={};message_.clear();}
+    void restore() {
+        if (!confirmedProcesses_) cudaInfo_=inspectCuda(1,1);
+        draft_=standardExperimentForm(scaling_,threads_(),input_()!=nullptr);
+        draft_.mpi=bool(confirmedProcesses_);
+        errors_={};
+        message_.clear();
+    }
     bool scaling_,initialized_{false};
     std::function<const InputData*()> input_;std::function<std::string()> name_;std::function<int()> threads_;
     std::function<Element(Element)> style_;std::function<std::string(bool,ExperimentFormConfig)> submit_;
+    std::function<int()> confirmedProcesses_;
     const InputData* previousInput_{nullptr};std::size_t previousWidth_{},previousHeight_{};
     std::string previousName_,message_;
     ExperimentFormDraft draft_;std::array<std::string,kExperimentFieldCount> errors_;
@@ -145,12 +182,13 @@ private:
     std::array<Component,kExperimentFieldCount> fields_;
     CudaUiInfo cudaInfo_;
     Component cuda_;
-    Component source_,parallel_,sequential_,openmp_,mpi_,participants_,generated_,measurement_,restore_,execute_,root_;
+    Component catalog_,source_,parallel_,sequential_,openmp_,mpi_,hybrid_,participants_,generated_,measurement_,restore_,execute_,root_;
 };
 }
 ftxui::Component makeExperimentFormView(bool scaling,std::function<const InputData*()> input,
     std::function<std::string()> patternName,std::function<int()> currentThreads,
-    std::function<ftxui::Element(ftxui::Element)> focusedStyle,std::function<std::string(bool,ExperimentFormConfig)> submit) {
-    return ftxui::Make<ExperimentFormView>(scaling,std::move(input),std::move(patternName),std::move(currentThreads),std::move(focusedStyle),std::move(submit));
+    std::function<ftxui::Element(ftxui::Element)> focusedStyle,std::function<std::string(bool,ExperimentFormConfig)> submit,
+    std::function<int()> confirmedProcesses, std::function<void()> choosePattern) {
+    return ftxui::Make<ExperimentFormView>(scaling,std::move(input),std::move(patternName),std::move(currentThreads),std::move(focusedStyle),std::move(submit),std::move(confirmedProcesses),std::move(choosePattern));
 }
 }

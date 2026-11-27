@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "app/simulation.hpp"
 #include <signal.h>
 #include <unistd.h>
@@ -41,7 +42,7 @@ int main(int argc,char** argv) {
         InputData input{5,5,std::vector<std::uint8_t>(25)};
         input.cells[11]=input.cells[12]=input.cells[13]=1;
         auto options=defaultMPIOptions(2); options.launcher=argv[1]; options.worker=argv[2];
-        options.launcherArguments={"--oversubscribe"}; // Test policy, never application default.
+        options.launcherArguments=conway::test::mpiTestFlags(); // Test policy, never application default.
         options.operationTimeout=std::chrono::milliseconds(250);
         const auto uiThread=std::this_thread::get_id(); std::atomic<bool> workerNotify{false};
         SimulationSession session(input,Engine::MPI,options,[&]{workerNotify=std::this_thread::get_id()!=uiThread;});

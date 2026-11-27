@@ -37,7 +37,7 @@ public:
         if(q.reset) {
             close();
             if(q.engine==Engine::MPI) {
-                (void)mpi::trace_payload_size(q.initial->width,q.initial->height,q.mpiOptions.processes,q.selection);
+                (void)mpi::trace_payload_size(q.initial->width,q.initial->height,q.mpiOptions.processes,q.selection,q.mpiOptions.openMPThreads);
                 try {client_=std::make_unique<mpi::Client>(q.mpiOptions);}
                 catch(const mpi::ClientError& e) {uncertain_=!e.cleanupConfirmed;throw;}
                 client_->load(*q.initial);
@@ -194,8 +194,8 @@ void DidacticController::setStageDuration(std::chrono::nanoseconds duration) {
     stageDuration_=static_cast<std::uint64_t>(duration.count());
 }
 std::vector<DidacticStage> DidacticController::stages() const {
-    if(configuration_.engine==Engine::MPI) return {DidacticStage::MPIState,DidacticStage::MPIExchangeFirst,
-        DidacticStage::MPIExchangeSecond,DidacticStage::MPICell,DidacticStage::MPIBuffers,DidacticStage::GenerationResult};
+    if(usesMPI()) return {DidacticStage::MPIState,DidacticStage::MPIExchangeFirst,
+        DidacticStage::MPIExchangeSecond,isHybrid()?DidacticStage::MPIThreadWork:DidacticStage::MPICell,DidacticStage::MPIBuffers,DidacticStage::GenerationResult};
     return {DidacticStage::LocalWork,DidacticStage::GenerationResult};
 }
 void DidacticController::nextCapture() {
@@ -237,8 +237,8 @@ const core::StepTrace* DidacticController::stepTrace() const {return capture_ &&
 DidacticFrame DidacticController::snapshot() const {
     DidacticFrame f;f.phase=phase_;f.is_preparing=isPreparing();f.playing=playing_;f.closing=phase_==Phase::Closing;f.closed=closed();
     f.owns_mpi=mpiActive_;f.cleanup_confirmed=cleanupConfirmed_;f.error_message=error_;f.speed=speed_;
-    f.engine_name=configuration_.engine==Engine::MPI?"MPI":configuration_.engine==Engine::OpenMP?"OpenMP":"Secuencial";
-    f.requested_threads=configuration_.engine==Engine::MPI?0:configuration_.threads;f.logical_processors=std::max(1,omp_get_num_procs());
+    f.engine_name=isHybrid()?"MPI + OpenMP":usesMPI()?"MPI":configuration_.engine==Engine::OpenMP?"OpenMP":"Secuencial";
+    f.requested_threads=usesMPI()?configuration_.mpiOptions.openMPThreads:configuration_.threads;f.logical_processors=std::max(1,omp_get_num_procs());
     f.requested_processes=configuration_.engine==Engine::MPI?configuration_.mpiOptions.processes:0;
     f.stages=stages();f.stage_index=stage_;f.stage_duration_ns=stageDuration_;f.stage_elapsed_ns=stageElapsed_;
     f.total_playback_ns=stageDuration_*f.stages.size();f.current_playback_ns=stage_*stageDuration_+stageElapsed_;

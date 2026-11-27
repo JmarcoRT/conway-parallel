@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "app/experiment_runner.hpp"
 #include "app/scaling_study.hpp"
 #include "app/experiment_csv.hpp"
@@ -30,7 +31,7 @@ int main(int argc,char** argv) {
     try {
         check(argc==5,"launcher, worker, Python and guard required");
         mpi::ClientOptions options; options.launcher=argv[1];options.worker=argv[2]; options.processes=2;
-        options.launcherArguments={"--oversubscribe"};
+        options.launcherArguments=conway::test::mpiTestFlags();
         InputData input{5,3,std::vector<std::uint8_t>(15)};input.cells[6]=input.cells[7]=input.cells[8]=1;
         Game reference(input); for(int i=0;i<3;++i) reference.step();
         {
@@ -49,7 +50,9 @@ int main(int argc,char** argv) {
         }
         // This wrapper rejects overlap at each subsequent launch, without timing assumptions.
         auto guarded=options;
-        guarded.launcher=argv[3];guarded.launcherArguments={argv[4],argv[1],"--oversubscribe"};
+        guarded.launcher=argv[3];guarded.launcherArguments={argv[4],argv[1]};
+        guarded.launcherArguments.insert(guarded.launcherArguments.end(),
+            options.launcherArguments.begin(),options.launcherArguments.end());
         ExperimentConfig config; config.generations=3;config.warmups=1;config.repetitions=3;config.mpiOptions=guarded;
         config.participants={{Engine::Sequential,{},{}},{Engine::OpenMP,2,{}},{Engine::MPI,{},2}};
         auto comparison=runExperiment(input,config);verify(*comparison.study);
@@ -96,7 +99,20 @@ int main(int argc,char** argv) {
         rejects([&]{std::ostringstream x,y,z;writeExperimentCsv(inconsistent,context,x,y,z);});
         auto constrained=config;constrained.maxMemoryBytes=1;rejects([&]{runExperiment(input,constrained);});
         auto invalid=config;invalid.participants.push_back(invalid.participants.back());rejects([&]{runExperiment(input,invalid);});
-        invalid=config;invalid.participants.back().requestedThreads=2;rejects([&]{runExperiment(input,invalid);});
+        invalid=config;invalid.participants.back().requestedThreads=0;rejects([&]{runExperiment(input,invalid);});
+        auto hybrid=config;
+        hybrid.repetitions=1;
+        hybrid.participants.push_back({Engine::MPI,2,2});
+        auto hybridResult=runExperiment(input,hybrid);
+        verify(*hybridResult.study);
+        const auto& sample=hybridResult.study->samples.back();
+        check(sample.observedProcesses==2 && sample.threadsByRank.size()==2 &&
+              hybridResult.study->summaries.back().threadsByRank==sample.threadsByRank,
+              "missing hybrid team observations");
+        std::ostringstream ha,hb,hc;writeExperimentCsv(hybridResult,context,ha,hb,hc);
+        check(ha.str().find("mpi_openmp:2x2,mpi_openmp,2,2")!=std::string::npos &&
+              ha.str().find("effective_threads_by_rank")!=std::string::npos &&
+              hc.str().find("csv.schema_version,4")!=std::string::npos,"CSV v4 missing hybrid audit");
         invalid=config;invalid.generations=100001;rejects([&]{runExperiment(input,invalid);});
         auto duplicate=scaling;duplicate.requestedProcesses={2,2};rejects([&]{runScalingStudy(input,duplicate);});
         auto broken=config;broken.mpiOptions.launcher="/no/such/mpi-launcher";

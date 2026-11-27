@@ -1,3 +1,4 @@
+#include "mpi_test_launch.hpp"
 #include "app/experiment_runner.hpp"
 #include "app/scaling_study.hpp"
 #include "app/experiment_csv.hpp"
@@ -73,7 +74,7 @@ int main(int argc,char** argv) {
         require(substantial.study->complete && std::all_of(substantial.study->summaries.begin(),substantial.study->summaries.end(),[](const auto& s){return s.valid && s.equivalent;}),"larger CUDA campaign failed equivalence");
         if(argc>2) {
             config.maxMemoryBytes=256u*1024u*1024u;config.participants.insert(config.participants.begin(),{Engine::Sequential,{},{}});
-            config.participants.push_back({Engine::MPI,{},2});config.mpiOptions.launcher=argv[1];config.mpiOptions.worker=argv[2];config.mpiOptions.launcherArguments={"--oversubscribe"};
+            config.participants.push_back({Engine::MPI,{},2});config.mpiOptions.launcher=argv[1];config.mpiOptions.worker=argv[2];config.mpiOptions.launcherArguments=conway::test::mpiTestFlags();
             auto all=runExperiment(input,config);validateStudy(*all.study);require(all.study->complete,"four-engine study incomplete");
         }
         std::cout<<"PASS CUDA comparison, warmups, rotation, metrics, CSV, block study and unavailable behavior\n";

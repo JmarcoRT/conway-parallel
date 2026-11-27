@@ -5,8 +5,14 @@
 #include "mpi/step_trace.hpp"
 #include <mpi.h>
 #include <cstddef>
+#include <span>
 
 namespace conway::core {
+struct MpiWindowProbe {
+    std::size_t column{}; // Zero-based global column.
+    std::array<std::span<std::uint8_t>, 2> received;
+    CellProbe* cell{};
+};
 // Collective timing aggregation, result defined on rank 0; outside batch interval.
 double maximum_rank_milliseconds(double local, MPI_Comm comm);
 
@@ -21,6 +27,12 @@ double maximum_rank_milliseconds(double local, MPI_Comm comm);
 // No capture allocation or transport occurs when trace is null.
 // Uses a dedicated communicator (or otherwise exclusively owned message tags).
 std::size_t step_mpi(GameState& state, const mpi::RowPartition& part,
-                     MPI_Comm comm, mpi::RankStepTrace* trace = nullptr);
+                     MPI_Comm comm, mpi::RankStepTrace* trace = nullptr,
+                     MpiWindowProbe* window = nullptr);
+
+// Same collective contract as step_mpi. OpenMP computes each local stripe.
+// Call from the MPI initializing thread with at least MPI_THREAD_FUNNELED.
+std::size_t step_mpi_openmp(GameState& state, const mpi::RowPartition& part, MPI_Comm comm,
+                            mpi::RankStepTrace* trace = nullptr);
 
 } // namespace conway::core

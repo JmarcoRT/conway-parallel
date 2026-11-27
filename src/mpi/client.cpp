@@ -55,6 +55,7 @@ struct SpawnSettings {
 Client::Client(ClientOptions options) : options_(std::move(options)) {
     try {
         require(options_.processes>0 && options_.processes<=1024, "MPI client: P must be in 1..1024");
+        require(options_.openMPThreads>=0, "MPI client: invalid OpenMP thread count");
         require(!options_.launcher.empty() && !options_.worker.empty(), "MPI client: missing executable path");
         require(options_.startupTimeout.count()>0 && options_.operationTimeout.count()>0 &&
                 options_.closeTimeout.count()>0, "MPI client: invalid timeout");
@@ -78,10 +79,18 @@ Client::Client(ClientOptions options) : options_(std::move(options)) {
         cpu_set_t allowed; CPU_ZERO(&allowed);
         const int slots=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
         declaredSlots_=slots;
-        // Open MPI treats a bare --host localhost as one slot. Declare actual
-        // permitted logical CPUs; P above this still fails without opt-in.
-        args.insert(args.end(),{"--host","localhost:"+std::to_string(slots),"-np",std::to_string(options_.processes),options_.worker,
+        // Keep all ranks local. Open MPI needs explicit slot counts and would
+        // normally bind a small job to one core per rank.
+#ifdef CONWAY_MPI_USES_HYDRA
+        require(options_.processes<=slots,"MPI client: not enough local slots");
+        args.insert(args.end(),{"-launcher","fork","-hosts","localhost"});
+#else
+        args.insert(args.end(),{"--host","localhost:"+std::to_string(slots)});
+        if(options_.openMPThreads>0) args.insert(args.end(),{"--bind-to","none"});
+#endif
+        args.insert(args.end(),{"-np",std::to_string(options_.processes),options_.worker,
                                 "--socket",socket_,"--session",std::to_string(session_)});
+        if(options_.openMPThreads>0) args.insert(args.end(),{"--threads",std::to_string(options_.openMPThreads)});
         std::vector<char*> argv;
         for (auto& a:args) argv.push_back(a.data());
         argv.push_back(nullptr);
@@ -211,7 +220,7 @@ void Client::cleanup() noexcept {
     if(!directory_.empty()) { const bool removed=rmdir(directory_.c_str())==0; gone=gone && removed; directory_.clear(); }
     cleanupConfirmed_=gone;
 }
-wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint64_t expected, wire::Deadline deadline) {
+wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint64_t expected, wire::Deadline deadline,std::size_t expectedBytes) {
     require(fd_>=0,"MPI client: session closed");
     try {
         const auto progress=[this,type]{tick(type==wire::Close);};
@@ -219,7 +228,9 @@ wire::Frame Client::exchange(std::uint64_t type, wire::Bytes payload, std::uint6
         auto reply=wire::receive(fd_,deadline,progress,[&](const auto& header,auto size){
             require(header.session==session_ && header.request==request_,"MPI client: response ID mismatch");
             require(header.type==expected || header.type==wire::Error,"MPI client: unexpected response type");
-            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : type==wire::TraceStep ? size>=72 && size<=maxTraceBytes : type==wire::RunBatch ? size>=32 && size<=8224 : size==0),
+            require(!expectedBytes || header.type==wire::Error || size==expectedBytes,"MPI client: trace size mismatch");
+            const auto rankBytes=options_.openMPThreads>0?16u*options_.processes:0u;
+            require(header.type==wire::Error || (type==wire::Snapshot ? size>=33 : (type==wire::TraceStep || type==wire::HybridTraceStep) ? size>=72 && size<=maxTraceBytes : type==wire::RunBatch ? size>=32+rankBytes && size<=8224+rankBytes : size==0),
                     "MPI client: invalid response length");
         });
         progress();
@@ -260,25 +271,38 @@ BatchMetrics Client::runBatch(std::size_t steps,std::size_t expectedGeneration) 
         result.maximumMs=std::bit_cast<double>(wire::get(reply.payload,offset));
         result.generation=wire::get(reply.payload,offset);
         const auto processes=wire::get(reply.payload,offset), length=wire::get(reply.payload,offset);
+        const auto rankBytes=options_.openMPThreads>0?16u*options_.processes:0u;
         require(std::isfinite(result.maximumMs) && result.maximumMs>=0 &&
                 result.generation==expectedGeneration+steps && processes==static_cast<std::uint64_t>(options_.processes) &&
-                length>0 && length<=8192 && length==reply.payload.size()-offset,"MPI client: invalid batch metrics");
+                length>0 && length<=8192 && length+rankBytes==reply.payload.size()-offset,"MPI client: invalid batch metrics");
         result.processes=static_cast<int>(processes);
-        result.runtime.assign(reply.payload.begin()+offset,reply.payload.end());
+        result.runtime.assign(reply.payload.begin()+offset,reply.payload.begin()+offset+length);
         require(result.runtime.find('\0')==std::string::npos,"MPI client: invalid runtime identity");
+        offset+=length;
+        if(options_.openMPThreads>0) {
+            result.threadsByRank.reserve(result.processes);
+            for(int rank=0;rank<result.processes;++rank) {
+                const auto minimum=wire::get(reply.payload,offset);
+                const auto maximum=wire::get(reply.payload,offset);
+                require(minimum>0 && maximum>=minimum && maximum<=static_cast<std::uint64_t>(options_.openMPThreads),
+                        "MPI client: invalid OpenMP team size");
+                result.threadsByRank.push_back({static_cast<int>(minimum),static_cast<int>(maximum)});
+            }
+        }
         return result;
     } catch(...) {cleanup();throw;}
 }
 MpiStepTrace Client::traceStep(const TraceRequest& request) {
     std::unique_lock lock(mutex_,std::try_to_lock);
     require(lock.owns_lock(),"MPI client: request already in flight");
-    const auto expectedSize=trace_payload_size(loadedWidth_,loadedHeight_,options_.processes,request);
+    const auto expectedSize=trace_payload_size(loadedWidth_,loadedHeight_,options_.processes,request,options_.openMPThreads);
     const auto deadline=Clock::now()+options_.operationTimeout;
     wire::Bytes data;wire::put(data,request.expectedGeneration);wire::put(data,request.row);wire::put(data,request.column);
-    const auto reply=exchange(wire::TraceStep,std::move(data),wire::TraceResult,deadline);
+    const bool hybrid=options_.openMPThreads>0;
+    const auto reply=exchange(hybrid?wire::HybridTraceStep:wire::TraceStep,std::move(data),
+        hybrid?wire::HybridTraceResult:wire::TraceResult,deadline,expectedSize);
     try {
-        require(reply.payload.size()==expectedSize,"MPI client: trace size mismatch");
-        auto trace=decode_step_trace(reply.payload);
+        auto trace=decode_step_trace(reply.payload,options_.openMPThreads);
         require(trace.width==loadedWidth_ && trace.height==loadedHeight_ && trace.ranks.size()==static_cast<std::size_t>(options_.processes) &&
             trace.generationBefore==request.expectedGeneration && trace.selection.row==request.row && trace.selection.column==request.column,
             "MPI client: trace identity mismatch");

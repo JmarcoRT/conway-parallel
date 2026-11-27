@@ -12,6 +12,7 @@ struct ExecutionConfiguration {
     std::optional<int> requestedThreads;
     std::optional<int> requestedProcesses;
     std::optional<core::CudaBlockSize> cudaBlock;
+    bool isHybrid() const noexcept { return engine==Engine::MPI && requestedThreads.has_value(); }
     bool operator==(const ExecutionConfiguration&) const = default;
 };
 struct StudySample {
@@ -24,6 +25,7 @@ struct StudySample {
     std::optional<double> loadMs, snapshotMs, requestMs;
     bool equivalent{}, valid{};
     std::optional<CudaMeasurement> cuda;
+    std::vector<mpi::RankThreads> threadsByRank;
 };
 struct StudySession {
     std::size_t configurationIndex{};
@@ -40,6 +42,11 @@ struct StudySummary {
     std::optional<int> minimumResources, maximumResources;
     std::optional<double> speedup, efficiency;
     bool equivalent{}, valid{};
+    std::vector<mpi::RankThreads> threadsByRank;
+};
+struct DistributedRank {
+    std::string hostname;
+    std::string ip;
 };
 struct ExperimentalStudy {
     std::vector<ExecutionConfiguration> configurations;
@@ -52,6 +59,8 @@ struct ExperimentalStudy {
     mpi::ClientOptions mpiOptions;
     std::string diagnostic;
     std::size_t estimatedDeviceBytes{}, width{}, height{};
+    // Confirmed rank order in a persistent group. Empty for locally launched workers.
+    std::vector<DistributedRank> distributedRanks;
 };
 // Empty launcher/worker resolved from the configured runtime and sibling worker.
 mpi::ClientOptions experimentalMPIOptions();
@@ -62,5 +71,5 @@ ExperimentalStudy runExperimentalStudy(const InputData&, std::vector<ExecutionCo
     mpi::ClientOptions options={}, std::size_t maxMemoryBytes=256u*1024u*1024u, const BenchmarkProgressCallback& progress = {});
 std::vector<StudySummary> summarizeStudy(const ExperimentalStudy&);
 void validateStudy(const ExperimentalStudy&);
-std::string configurationName(const ExecutionConfiguration&);
+std::string configurationName(const ExecutionConfiguration&, bool distributed = false);
 } // namespace conway::app

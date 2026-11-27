@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 
@@ -24,7 +25,7 @@ void validateConfiguration(const ExecutionConfiguration& c) {
     if(c.engine==Engine::CUDA && c.cudaBlock && !c.requestedThreads && !c.requestedProcesses) {core::validateCudaBlock(*c.cudaBlock);return;}
     if(c.engine==Engine::Sequential && !c.requestedThreads && !c.requestedProcesses) return;
     if(c.engine==Engine::OpenMP && c.requestedThreads && *c.requestedThreads>0 && !c.requestedProcesses) return;
-    if(c.engine==Engine::MPI && !c.requestedThreads && c.requestedProcesses &&
+    if(c.engine==Engine::MPI && (!c.requestedThreads || *c.requestedThreads>0) && c.requestedProcesses &&
        *c.requestedProcesses>0 && *c.requestedProcesses<=1024) return;
     throw std::invalid_argument("Invalid engine/resource configuration");
 }
@@ -36,8 +37,14 @@ bool equivalent(const mpi::RemoteSnapshot& snapshot,const Game& reference) {
             if(snapshot.input.cells[r*reference.width()+c]!=reference.isAlive(r,c)) return false;
     return true;
 }
-bool validSample(const StudySample& s,const ExecutionConfiguration& c,std::size_t width=0,std::size_t height=0) {
+bool validSample(const StudySample& s,const ExecutionConfiguration& c,std::size_t width=0,std::size_t height=0,bool distributed=false) {
     if(!s.equivalent || !timeValid(s.elapsedMs)) return false;
+    if(c.isHybrid()) {
+        if(s.threadsByRank.size()!=static_cast<std::size_t>(*c.requestedProcesses) ||
+           !std::all_of(s.threadsByRank.begin(),s.threadsByRank.end(),[&](const auto& threads) {
+               return threads.minimum>0 && threads.maximum>=threads.minimum && threads.maximum<=*c.requestedThreads;
+           })) return false;
+    } else if(!s.threadsByRank.empty()) return false;
     if(c.engine==Engine::CUDA) {
         if(!s.cuda || s.minEffectiveThreads || s.maxEffectiveThreads || s.observedProcesses || s.sessionIndex || s.loadMs || s.snapshotMs || s.requestMs)return false;
         if(!width || !height)return false;
@@ -51,7 +58,7 @@ bool validSample(const StudySample& s,const ExecutionConfiguration& c,std::size_
     }
     if(s.cuda)return false;
     if(c.engine==Engine::MPI) return !s.minEffectiveThreads && !s.maxEffectiveThreads &&
-        s.observedProcesses==c.requestedProcesses && s.sessionIndex && s.loadMs && s.snapshotMs && s.requestMs &&
+        s.observedProcesses==c.requestedProcesses && (distributed ? !s.sessionIndex : s.sessionIndex.has_value()) && s.loadMs && s.snapshotMs && s.requestMs &&
         timeValid(*s.loadMs) && timeValid(*s.snapshotMs) && timeValid(*s.requestMs);
     if(s.observedProcesses || s.sessionIndex || s.loadMs || s.snapshotMs || s.requestMs ||
        !s.minEffectiveThreads || !s.maxEffectiveThreads || *s.minEffectiveThreads<1 ||
@@ -70,6 +77,30 @@ bool validSession(const ExperimentalStudy& study,const StudySample& sample) {
         sample.completedWarmups==session.completedWarmups;
 }
 
+void mergeRankThreads(std::vector<mpi::RankThreads>& merged,const std::vector<mpi::RankThreads>& observed) {
+    if(merged.empty()) merged=observed;
+    else if(merged.size()==observed.size()) {
+        for(std::size_t rank=0;rank<merged.size();++rank) {
+            merged[rank].minimum=std::min(merged[rank].minimum,observed[rank].minimum);
+            merged[rank].maximum=std::max(merged[rank].maximum,observed[rank].maximum);
+        }
+    }
+}
+
+std::optional<double> efficiencyResources(const StudySummary& summary,const ExecutionConfiguration& config) {
+    if(config.engine==Engine::CUDA) return std::nullopt;
+    if(!config.isHybrid()) {
+        if(summary.minimumResources==summary.maximumResources) return summary.minimumResources;
+        return std::nullopt;
+    }
+    if(summary.threadsByRank.empty() ||
+       std::any_of(summary.threadsByRank.begin(),summary.threadsByRank.end(),[](const auto& threads) {
+           return threads.minimum!=threads.maximum;
+       })) return std::nullopt;
+    return std::accumulate(summary.threadsByRank.begin(),summary.threadsByRank.end(),0.0,
+        [](double total,const auto& threads) {return total+threads.minimum;});
+}
+
 }
 mpi::ClientOptions experimentalMPIOptions() {
     mpi::ClientOptions options;
@@ -79,11 +110,12 @@ mpi::ClientOptions experimentalMPIOptions() {
     options.worker=(error?std::filesystem::path("conway_mpi_worker"):executable.parent_path()/"conway_mpi_worker").string();
     return options;
 }
-std::string configurationName(const ExecutionConfiguration& c) {
+std::string configurationName(const ExecutionConfiguration& c, bool distributed) {
     validateConfiguration(c);
     if(c.engine==Engine::CUDA)return "cuda:"+std::to_string(c.cudaBlock->x)+"x"+std::to_string(c.cudaBlock->y);
     if(c.engine==Engine::Sequential) return "sequential";
-    return c.engine==Engine::OpenMP?"openmp:"+std::to_string(*c.requestedThreads):"mpi:"+std::to_string(*c.requestedProcesses);
+    if(c.isHybrid()) return "mpi_openmp:"+std::to_string(*c.requestedProcesses)+"x"+std::to_string(*c.requestedThreads);
+    return c.engine==Engine::OpenMP?"openmp:"+std::to_string(*c.requestedThreads):(distributed?"mpi-distributed:":"mpi:")+std::to_string(*c.requestedProcesses);
 }
 ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<ExecutionConfiguration> configurations,
         int generations,int warmups,int repetitions,bool right,mpi::ClientOptions options,std::size_t budget,const BenchmarkProgressCallback& progress) {
@@ -112,6 +144,9 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
     const auto padded=detail::checkedMultiply(detail::checkedAdd(input.width,2),detail::checkedAdd(input.height,2));
     auto bytes=detail::checkedAdd(input.cells.capacity(),detail::checkedMultiply(6,padded));
     bytes=detail::checkedAdd(bytes,detail::checkedMultiply(count,sizeof(StudySample)+sizeof(StudySession)+8192+1024*sizeof(int)));
+    for(const auto& c:configurations) if(c.isHybrid())
+        bytes=detail::checkedAdd(bytes,detail::checkedMultiply(detail::checkedAdd(repetitions,1),
+            detail::checkedMultiply(*c.requestedProcesses,sizeof(mpi::RankThreads))));
     // Worker double buffers include halos on empty ranks too. Runtime/allocator
     // overhead remains outside this payload policy; sessions never overlap.
     if(hasMPI) {
@@ -188,6 +223,7 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                 const auto startupStart=Clock::now();
                 try {
                     auto launch=options; launch.processes=*c.requestedProcesses;
+                    launch.openMPThreads=c.requestedThreads.value_or(0);
                     auto start=Clock::now(); client=std::make_unique<mpi::Client>(launch); session.startupMs=elapsed(start);
                     session.workerPids=client->workerPids(); session.declaredSlots=client->declaredSlots();
                     for(std::size_t attempt=0;attempt<=static_cast<std::size_t>(warmups);++attempt) {
@@ -203,8 +239,10 @@ ExperimentalStudy runExperimentalStudy(const InputData& input,std::vector<Execut
                         } else {
                             sample.executionIndex=execution++; sample.completedWarmups=session.completedWarmups;
                             sample.elapsedMs=batch.maximumMs; sample.observedProcesses=batch.processes;
+                            sample.threadsByRank=std::move(batch.threadsByRank);
                             sample.sessionIndex=sessionIndex; sample.loadMs=load; sample.requestMs=request; sample.snapshotMs=snapshotTime;
-                            sample.equivalent=same; sample.valid=validSample(sample,c,input.width,input.height); study.samples.push_back(sample);
+                            sample.equivalent=same; sample.valid=validSample(sample,c,input.width,input.height);
+                            study.samples.push_back(std::move(sample));
                         }
                     }
                     start=Clock::now(); client->close(); session.closeMs=elapsed(start);
@@ -245,8 +283,9 @@ std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
         if(c.engine==Engine::Sequential) sequential=index;
         for(const auto& s:study.samples) if(s.configurationIndex==index) {
             ++summary.sampleCount; summary.equivalent=summary.equivalent && s.equivalent;
-            summary.valid=summary.valid && s.valid && validSample(s,c,study.width,study.height);
-            if(c.engine==Engine::MPI) summary.valid=summary.valid && validSession(study,s);
+            summary.valid=summary.valid && s.valid && validSample(s,c,study.width,study.height,!study.distributedRanks.empty());
+            if(c.engine==Engine::MPI && study.distributedRanks.empty()) summary.valid=summary.valid && validSession(study,s);
+            if(c.isHybrid()) mergeRankThreads(summary.threadsByRank,s.threadsByRank);
             validTimes=validTimes && timeValid(s.elapsedMs); times.push_back(s.elapsedMs);
             const auto minimum=c.engine==Engine::MPI?s.observedProcesses:s.minEffectiveThreads;
             const auto maximum=c.engine==Engine::MPI?s.observedProcesses:s.maxEffectiveThreads;
@@ -265,8 +304,9 @@ std::vector<StudySummary> summarizeStudy(const ExperimentalStudy& study) {
             if(summary.valid && ref.statistics && summary.statistics && ref.statistics->medianMs>0 && summary.statistics->medianMs>0) {
                 const double speedup=ref.statistics->medianMs/summary.statistics->medianMs;
                 if(std::isfinite(speedup) && speedup>0) summary.speedup=speedup;
-                if(study.configurations[summary.configurationIndex].engine!=Engine::CUDA && summary.speedup && summary.minimumResources && summary.minimumResources==summary.maximumResources) {
-                    const double efficiency=speedup / *summary.minimumResources;
+                const auto effective=efficiencyResources(summary,study.configurations[summary.configurationIndex]);
+                if(summary.speedup && effective && *effective>0) {
+                    const double efficiency=speedup / *effective;
                     if(std::isfinite(efficiency) && efficiency>0) summary.efficiency=efficiency;
                 }
             }
@@ -288,10 +328,19 @@ void validateStudy(const ExperimentalStudy& study) {
     std::set<std::string> names;
     for(const auto& c:study.configurations) if(!names.insert(configurationName(c)).second)
         throw std::invalid_argument("Duplicate study configuration");
-    std::size_t previous=0, execution=1+study.completedLocalWarmups;
+    const bool distributed = !study.distributedRanks.empty();
+    if (distributed && (study.distributedRanks.size()<2 || !study.sessions.empty() ||
+        study.configurations != std::vector<ExecutionConfiguration>{{Engine::Sequential},
+            {Engine::MPI, {}, static_cast<int>(study.distributedRanks.size())}} ||
+        study.completedLocalWarmups > static_cast<std::size_t>(study.warmups) ||
+        study.completedWarmupRuns < study.completedLocalWarmups ||
+        study.completedWarmupRuns - study.completedLocalWarmups > static_cast<std::size_t>(study.warmups) ||
+        (study.complete && study.completedWarmupRuns != 2u * static_cast<std::size_t>(study.warmups))))
+        throw std::invalid_argument("Invalid distributed study topology or warmups");
+    std::size_t previous=0, execution=1+(distributed?study.completedWarmupRuns:study.completedLocalWarmups);
     std::size_t completed=study.completedLocalWarmups, nextSession=0;
     for(const auto& session:study.sessions) completed+=session.completedWarmups;
-    if(completed!=study.completedWarmupRuns) throw std::invalid_argument("Invalid study warmup count");
+    if(!distributed && completed!=study.completedWarmupRuns) throw std::invalid_argument("Invalid study warmup count");
     const auto locals=std::count_if(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine!=Engine::MPI;});
     if(study.complete && study.completedLocalWarmups!=static_cast<std::size_t>(locals)*study.warmups)
         throw std::invalid_argument("Invalid local warmup count");
@@ -300,12 +349,14 @@ void validateStudy(const ExperimentalStudy& study) {
         const auto round=i/study.configurations.size(),position=i%study.configurations.size();
         if(sample.round!=static_cast<int>(round) || sample.position!=static_cast<int>(position) ||
            round>=static_cast<std::size_t>(study.repetitions) || sample.configurationIndex!=at(study.rotateRight,round,position,study.configurations.size()) ||
-           sample.executionIndex<=previous || sample.valid!=validSample(sample,study.configurations[sample.configurationIndex],study.width,study.height))
+           sample.executionIndex<=previous || sample.valid!=validSample(sample,study.configurations[sample.configurationIndex],study.width,study.height,distributed))
             throw std::invalid_argument("Study acquisition audit is inconsistent");
         const bool mpi=study.configurations[sample.configurationIndex].engine==Engine::MPI;
-        if(mpi!=sample.sessionIndex.has_value())
+        if((mpi && !distributed)!=sample.sessionIndex.has_value())
             throw std::invalid_argument("Sample session does not match its engine");
-        if(mpi) execution+=study.warmups;
+        if(mpi && !distributed) execution+=study.warmups;
+        if(distributed && mpi && sample.completedWarmups!=static_cast<std::size_t>(study.warmups))
+            throw std::invalid_argument("Invalid distributed sample warmup count");
         if(sample.executionIndex!=execution++) throw std::invalid_argument("Invalid sample execution order");
         previous=sample.executionIndex;
         if(sample.sessionIndex) {
@@ -336,7 +387,7 @@ void validateStudy(const ExperimentalStudy& study) {
         const auto& a=expected[i];const auto& b=study.summaries[i];
         if(a.configurationIndex!=b.configurationIndex || a.sampleCount!=b.sampleCount ||
            a.equivalent!=b.equivalent || a.valid!=b.valid || a.minimumResources!=b.minimumResources ||
-           a.maximumResources!=b.maximumResources || a.speedup!=b.speedup || a.efficiency!=b.efficiency ||
+           a.maximumResources!=b.maximumResources || a.speedup!=b.speedup || a.efficiency!=b.efficiency || a.threadsByRank!=b.threadsByRank ||
            !sameStatistics(a.statistics,b.statistics)) throw std::invalid_argument("Stale study summary");
     }
 

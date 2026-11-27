@@ -100,7 +100,7 @@ void step_openmp(GameState& s, StepTraceSink* sink) {
             }
         }
 
-        if (tracing) {
+        if (tracing && first_row_observed != kUnset) {
             // El reloj final se toma despues del for y su espera de barrera;
             // no representa exclusivamente computo activo del trabajador.
             // workers[tid] es único: omp_get_thread_num() es único en el
@@ -138,15 +138,11 @@ void step_openmp(GameState& s, StepTraceSink* sink) {
         trace.generation_after  = s.generation;
         trace.step_duration     = step_duration;
 
-        // Filtramos los workers que no recibieron iteración (active=false
-        // implícito: first_row == kUnset => end_row == 0+1 == 1, no
-        // añaden cobertura). Conservamos el orden por thread_id.
-        trace.workers.reserve(workers.size());
-        for (auto& w : workers) {
-            if (w.first_row != static_cast<std::size_t>(-1)) {
-                trace.workers.push_back(w);
-            }
-        }
+        // Keep only slots filled by threads that actually visited a row.
+        std::erase_if(workers, [](const WorkerRecord& worker) {
+            return worker.thread_id < 0;
+        });
+        trace.workers = std::move(workers);
 
         // Fuera de la región paralela: solo el hilo original ejecuta.
         sink->onStepComplete(std::move(trace));

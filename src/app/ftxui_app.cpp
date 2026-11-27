@@ -1,6 +1,10 @@
 #include "app/ftxui_app.hpp"
 
 #include "app/benchmark.hpp"
+#include "app/cluster_benchmark.hpp"
+#include "app/experiment_csv.hpp"
+#include "app/cluster_session.hpp"
+#include "app/cluster_didactic_view.hpp"
 #include "app/experiment_form_view.hpp"
 #include "app/experiment_execution.hpp"
 #include "app/comparison_view.hpp"
@@ -21,6 +25,7 @@
 #include "app/thread_config.hpp"
 #include "core/engines/openmp.hpp"
 #include "input/input.hpp"
+#include "mpi/counts.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_base.hpp>
@@ -121,6 +126,9 @@ Element renderDidacticBoardPanel(
 
 enum class Page {
     Main,
+    Cluster,
+    ClusterSetup,
+    ClusterDidactic,
     Simulation,
     CudaBlocks,
     CudaDidactic,
@@ -130,6 +138,7 @@ enum class Page {
     PathInput,
     ThreadInput,
     MPIInput,
+    HybridInput,
     ExperimentExecution,
     ComparisonConfig,
     BenchmarkMenu,
@@ -138,6 +147,8 @@ enum class Page {
     Benchmark,
     Didactic
 };
+
+enum class MainItem { Didactic, Cluster, Benchmark, Catalog, Engine, Resources, Exit };
 
 struct InteractiveState {
     std::optional<InputData> input;
@@ -333,6 +344,8 @@ std::string fitContextLabel(const std::string& label, std::size_t columns) {
 
 // Una barra secundaria, derivada del estado compartido en cada render.
 Element renderContextBar(const InteractiveState& state, std::size_t width) {
+    if (state.page == Page::Cluster || state.page == Page::ClusterSetup || state.page == Page::ClusterDidactic)
+        return ftxui::text("Clúster · MPI") | ftxui::dim;
     const bool compact = width < 64;
     std::string label = compact ? "" : "Patrón: ";
     std::string dimensions;
@@ -344,18 +357,19 @@ Element renderContextBar(const InteractiveState& state, std::size_t width) {
     } else {
         label += "Sin cargar";
     }
-    const std::string engine = width < 44
+    const bool hybrid=state.page==Page::Didactic && state.didactic && state.didactic->isHybrid();
+    const std::string engine = hybrid?"MPI + OpenMP":width < 44
         ? (state.engine == Engine::Sequential ? "Sec." : state.engine == Engine::OpenMP ? "OMP" : state.engine==Engine::CUDA ? "CUDA" : "MPI")
         : engineName(state.engine);
     const bool experiment = state.page == Page::ComparisonConfig || state.page == Page::BenchmarkScaling ||
         state.page == Page::ExperimentExecution || state.page == Page::BenchmarkResults || state.page == Page::BenchmarkMenu;
     std::string suffix = dimensions + " · " + (experiment ? "Simulación: " : (compact ? "" : "Motor: ")) + engine;
-    if (state.engine == Engine::OpenMP) {
+    if (!hybrid && state.engine == Engine::OpenMP) {
         suffix += width < 44 ? " · H:" : compact ? " · Hilos: " : " · Hilos solicitados: ";
         suffix += std::to_string(state.requestedThreads);
     }
-    if (state.engine == Engine::CUDA) suffix += " · B:"+std::to_string(state.cudaBlock.x)+"x"+std::to_string(state.cudaBlock.y);
-    if (state.engine == Engine::MPI) suffix += " · P:" + std::to_string(state.mpiProcesses);
+    if (!hybrid && state.engine == Engine::CUDA) suffix += " · B:"+std::to_string(state.cudaBlock.x)+"x"+std::to_string(state.cudaBlock.y);
+    if (!hybrid && state.engine == Engine::MPI) suffix += " · P:" + std::to_string(state.mpiProcesses);
     const auto suffixWidth = static_cast<std::size_t>(ftxui::string_width(suffix));
     const auto labelWidth = width > suffixWidth ? width - suffixWidth : 0;
     return ftxui::text(fitContextLabel(label, labelWidth) + suffix) | ftxui::dim;
@@ -873,15 +887,21 @@ public:
         Add(patternMenu_);
         Add(patternActionsMenu_);
         Add(engineMenu_);
+        didacticEngineMenu_=makeMenu(didacticEngineItems_,didacticEngineSelection_,[this]{selectEngine();});
+        Add(didacticEngineMenu_);
         Add(threadMenu_);
         Add(blockMenu_);
         Add(pathInput_);
         Add(threadInput_);
         Add(mpiInput_);
+        hybridProcessesInput_=ftxui::Input(&hybridProcessesDraft_,"");
+        hybridThreadsInput_=ftxui::Input(&hybridThreadsDraft_,"");
+        hybridInput_=ftxui::Container::Vertical({hybridProcessesInput_,hybridThreadsInput_});
+        Add(hybridInput_);
         Add(passiveView_);
         Add(benchmarkView_);
         Add(didacticView_);
-        mainItems_ = {"Visualización didáctica", "Benchmark", "Catálogo de patrones",
+        mainItems_ = {"Visualización didáctica", "Clúster", "Benchmark", "Catálogo de patrones",
                       "Seleccionar motor", "Configurar recursos", "Salir"};
         benchmarkItems_ = {
             "Comparación de motores", "Escalabilidad",
@@ -910,11 +930,24 @@ public:
         };
         comparisonForm_ = makeExperimentFormView(false, input, name, threads, style, submit);
         scalingForm_ = makeExperimentFormView(true, input, name, threads, style, submit);
+        clusterBenchmarkForm_ = makeExperimentFormView(false, input, name, threads, style, submit,
+            [this] {
+                const auto group = clusterSession_->snapshot();
+                return group.phase == ClusterPhase::Ready ? static_cast<int>(group.members.size()) : 0;
+            }, [this] { openCatalog(Page::ComparisonConfig); });
+        Add(clusterBenchmarkForm_);
         Add(comparisonForm_);
         Add(scalingForm_);
+        makeClusterForm();
     }
 
     ~InteractiveApp() override {
+        if (clusterBenchmark_) {
+            cancelClusterBenchmark_ = true;
+            clusterSession_->close();
+            clusterBenchmark_->shutdown();
+        }
+        clusterSession_.reset();
         catalogPreview_.close();
         benchmarkCompletionTimer_.request_stop();
         experiment_->shutdown();
@@ -957,6 +990,15 @@ public:
             case Page::Main:
                 content = renderMain();
                 break;
+            case Page::Cluster:
+                content = renderCluster();
+                break;
+            case Page::ClusterSetup:
+                content = renderClusterSetup();
+                break;
+            case Page::ClusterDidactic:
+                content = renderClusterDidactic();
+                break;
             case Page::Patterns:
                 content = renderPatterns(size.columns, layoutHeight, compact);
                 break;
@@ -975,6 +1017,8 @@ public:
                     "P entre 1 y 1024 · Recomendados: " + std::to_string(recommendedMPIProcesses(state_.input ? state_.input->height : 1024)) +
                     " según afinidad/filas; slots del runtime pueden diferir. Sin sobresuscripción.");
                 break;
+            case Page::HybridInput:
+                content=renderHybridInput();break;
             case Page::ThreadInput:
                 content = renderInput("HILOS OPENMP", threadInput_,
                                       "Número entero entre 1 y " +
@@ -987,7 +1031,12 @@ public:
                 content = renderExperiment(false);
                 break;
             case Page::ComparisonConfig:
-                content = panel("COMPARACIÓN DE MOTORES", comparisonForm_->Render());
+                if (clusterBenchmarkMode_ && clusterSession_->snapshot().phase != ClusterPhase::Ready) {
+                    const auto group = clusterSession_->snapshot();
+                    content = panel("BENCHMARK DEL CLÚSTER",
+                        ftxui::paragraph("Grupo MPI no disponible. " + group.message));
+                } else content = panel(clusterBenchmarkMode_ ? "BENCHMARK DEL CLÚSTER" : "COMPARACIÓN DE MOTORES",
+                    (clusterBenchmarkMode_ ? clusterBenchmarkForm_ : comparisonForm_)->Render());
                 break;
             case Page::BenchmarkScaling:
                 content = panel("ESCALABILIDAD · OpenMP / MPI", scalingForm_->Render());
@@ -1046,7 +1095,25 @@ public:
     bool OnEvent(Event event) override {
         if(state_.page==Page::Main && (event==Event::Tab || event==Event::TabReverse))return mainMenu_->OnEvent(event==Event::Tab?Event::ArrowDown:Event::ArrowUp);
         if (event == Event::Custom) {
-            const auto execution=experiment_->snapshot();
+            if (state_.page == Page::ClusterDidactic) pollClusterDidactic();
+            if (clusterSession_ && state_.page == Page::Cluster) {
+                const auto cluster = clusterSession_->snapshot();
+                if (cluster.phase != clusterDisplayPhase_) {
+                    clusterScroll_ = 0;
+                    clusterDisplayPhase_ = cluster.phase;
+                    if (cluster.phase == ClusterPhase::Ready) clusterDidacticButton_->TakeFocus();
+                }
+                if (!clusterDefaultsApplied_ && !cluster.active()) {
+                    if (cluster.defaults) clusterDraft_ = *cluster.defaults;
+                    clusterDefaultsApplied_ = true;
+                }
+            }
+            const auto execution=experiment().snapshot();
+            if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution && cancelClusterBenchmark_ &&
+                !execution.active()) {
+                const auto group = clusterSession_->snapshot().phase;
+                if (group == ClusterPhase::Ready || group == ClusterPhase::Closed) returnToCluster();
+            }
             if(execution.phase==ExecutionPhase::Error || (execution.phase==ExecutionPhase::Finished &&
                state_.page!=Page::ExperimentExecution && state_.page!=Page::BenchmarkResults)) completionPendingId_=0;
             catalogPreview_.poll();
@@ -1058,12 +1125,13 @@ public:
             if(state_.didactic) {
                 const bool preparing=state_.didactic->isPreparing();state_.didactic->poll();
                 didacticBecameReady=preparing && state_.didactic->isReady();
-                if(!state_.didactic->errorMessage().empty()) state_.message=state_.engine==Engine::MPI
+                if(!state_.didactic->errorMessage().empty()) state_.message=state_.didactic->usesMPI()
                     ? "Error: captura MPI detenida." : state_.didactic->errorMessage();
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
-            if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
-                catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
+            if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment().snapshot().active() &&
+                catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
+                (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1072,7 +1140,10 @@ public:
                 receiveBenchmarkResult();
             }
             if ((pending & kPlaybackEvent) != 0) {
-                if(state_.page==Page::Simulation && normalSession_ && normalSession_->isRunning()) {
+                if (state_.page == Page::ClusterDidactic && clusterPlayback_.playing && !clusterPlayback_.ticket) {
+                    advanceClusterStage();
+                    armClusterPlayback();
+                } else if(state_.page==Page::Simulation && normalSession_ && normalSession_->isRunning()) {
                     normalSession_->advanceIfRunning();
                     if(!normalSession_->error().empty())state_.message=normalSession_->error();
                     if(normalSession_->isRunning())schedulePlaybackTick();
@@ -1093,6 +1164,15 @@ public:
             }
             return true;
         }
+        if (state_.page == Page::Cluster) return handleClusterEvent(event);
+        if (state_.page == Page::ClusterDidactic) return handleClusterDidactic(event);
+        if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution && event.is_character() &&
+            (event.character() == "e" || event.character() == "E")) {
+            exportClusterBenchmark();
+            return true;
+        }
+        if (clusterBenchmarkMode_ && state_.page == Page::ComparisonConfig &&
+            clusterSession_->snapshot().phase != ClusterPhase::Ready && event != Event::Escape) return true;
         if(state_.page==Page::CudaDidactic) {
             if(event==Event::Escape || (event.is_character() && (event.character()=="x"||event.character()=="X"||event.character()=="q"||event.character()=="Q"))) {
                 stopCudaPlayback();state_.page=Page::Main;return true;
@@ -1118,6 +1198,7 @@ public:
                 else {selection=false;
                     if(k=="v"||k=="V") {cudaDetail_=!cudaDetail_;cudaDetailRow_=0;}
                     if(k=="a"||k=="A")cudaCoverage_=!cudaCoverage_;
+                    if(k=="m"||k=="M") {stopCudaPlayback();openEngines(Page::CudaDidactic);return true;}
                     if(k=="b"||k=="B") {stopCudaPlayback();openResources(Page::CudaDidactic);return true;}
                     if(k=="g"||k=="G") {stopCudaPlayback();cudaDidactic_.advance(*normalSession_);cudaFollow_=true;state_.message=normalSession_->error();}
                     if(k=="u"||k=="U") {stopCudaPlayback();cudaDidactic_.recover(*normalSession_);state_.message=normalSession_->error();}
@@ -1186,7 +1267,8 @@ public:
             resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
             return true;
         }
-        if (state_.page == Page::Didactic && state_.engine == Engine::MPI) {
+        if (state_.page == Page::Didactic && state_.didactic && state_.didactic->usesMPI()) {
+            if (handleHybridSelection(event)) return true;
             if(event.is_character()) {
                 const auto k=event.character();
                 if(k=="d"||k=="D") {
@@ -1195,11 +1277,20 @@ public:
                     else {mpiDidacticHelpReturn_=mpiDidacticView_;mpiDidacticView_=2;}
                     mpiDidacticRow_=0;return true;
                 }
-                if(k=="v"||k=="V"||k=="t"||k=="T") {mpiDidacticView_=(mpiDidacticView_+1)%3;mpiDidacticRow_=0;return true;}
+                if(k=="v"||k=="V"||k=="t"||k=="T") {
+                    mpiDidacticView_=state_.didactic->isHybrid()?(mpiDidacticView_==0?1:0):(mpiDidacticView_+1)%3;
+                    mpiDidacticRow_=0;return true;
+                }
                 if(k=="["||k=="]") {
                     const auto capture=state_.didactic->capture();
                     const auto count=capture&&capture->mpiTrace?static_cast<int>(capture->mpiTrace->ranks.size()):state_.mpiProcesses;
-                    mpiDidacticRank_=(mpiDidacticRank_+count+(k=="]"?1:-1))%count;mpiDidacticRow_=0;return true;
+                    mpiDidacticRank_=(mpiDidacticRank_+count+(k=="]"?1:-1))%count;
+                    if(state_.didactic->isHybrid() && capture && capture->mpiTrace) {
+                        const auto& p=capture->mpiTrace->ranks[mpiDidacticRank_].partition;
+                        if(!p.empty() && (mpiSelectedRow_<p.firstRow || mpiSelectedRow_>=p.endRow()))
+                            mpiSelectedRow_=p.firstRow;
+                    }
+                    mpiDidacticRow_=0;return true;
                 }
             }
             if(event==Event::ArrowLeft||event==Event::ArrowRight) {
@@ -1283,6 +1374,11 @@ public:
                 goBack();
                 return true;
             }
+            if (key == "m" || key == "M") {
+                if(state_.didactic) state_.didactic->pause();
+                openEngines(Page::Didactic);
+                return true;
+            }
             if (key == "n" || key == "N") {
                 if (state_.didactic) state_.didactic->stepStage();
                 return true;
@@ -1301,6 +1397,10 @@ public:
             if (key == "r" || key == "R") {
                 if (state_.didactic) {
                     playbackTimer_.request_stop();
+                    if(state_.didactic->isHybrid()) {
+                        state_.didactic->pause();
+                        resetMPIView();
+                    }
                     state_.didactic->resetToInitial();
                 }
                 return true;
@@ -1326,6 +1426,9 @@ public:
         if (event == Event::Return && state_.page == Page::ThreadInput) {
             applyThreadDraft();
             return true;
+        }
+        if(event==Event::Return && state_.page==Page::HybridInput) {
+            applyHybridDraft();return true;
         }
         if (event == Event::Return && state_.page == Page::MPIInput) {
             applyMPIDraft(); return true;
@@ -1420,17 +1523,22 @@ private:
             case Page::Simulation: return passiveView_;
             case Page::CudaBlocks: return blockMenu_;
             case Page::Main: return mainMenu_;
+            case Page::Cluster:
+                return clusterSession_->snapshot().phase == ClusterPhase::Ready ? clusterReadyActions_ : clusterForm_;
+            case Page::ClusterSetup: return clusterSetupForm_;
+            case Page::ClusterDidactic: return passiveView_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
             case Page::ExperimentExecution: return benchmarkView_;
-            case Page::ComparisonConfig: return comparisonForm_;
+            case Page::ComparisonConfig: return clusterBenchmarkMode_ ? clusterBenchmarkForm_ : comparisonForm_;
             case Page::BenchmarkScaling: return scalingForm_;
             case Page::BenchmarkResults: return benchmarkView_;
             case Page::Patterns:
                 return state_.patternActionsFocused
                     ? patternActionsMenu_ : patternMenu_;
-            case Page::Engines: return engineMenu_;
+            case Page::Engines: return isDidacticEngineMenu()?didacticEngineMenu_:engineMenu_;
             case Page::Threads: return state_.engine==Engine::Sequential?passiveView_:threadMenu_;
             case Page::MPIInput: return mpiInput_;
+            case Page::HybridInput: return hybridInput_;
             case Page::PathInput: return pathInput_;
             case Page::ThreadInput: return threadInput_;
             case Page::Benchmark: return benchmarkView_;
@@ -1534,7 +1642,7 @@ private:
     }
 
     void openCatalog(Page destination=Page::Main) {
-        if(experiment_->snapshot().active()) {state_.message="Catálogo disponible al finalizar el experimento.";return;}
+        if(experiment().snapshot().active()) {state_.message="Catálogo disponible al finalizar el experimento.";return;}
         state_.returnAfterCatalog=destination;refreshPatterns();state_.page=Page::Patterns;
     }
     void leaveCatalog() {
@@ -1544,6 +1652,9 @@ private:
         auto info=inspectCuda(state_.input?state_.input->width:1,state_.input?state_.input->height:1,block);
         if(!info.available && normalSession_) {info.gpu=state_.cudaInfo.gpu;info.geometry=state_.cudaInfo.geometry;}
         state_.cudaInfo=std::move(info);
+    }
+    bool isDidacticEngineMenu() const {
+        return configReturn_==Page::Didactic || configReturn_==Page::CudaDidactic;
     }
     void openEngines(Page destination=Page::Main) {
         configReturn_=destination;
@@ -1576,7 +1687,7 @@ private:
         }
     }
     void startNormal() {
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de simular.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de simular.";return;}
         if(!state_.input) {openCatalog(Page::Simulation);return;}
         try {
             if(state_.engine==Engine::CUDA && !normalSession_) {refreshCuda(state_.cudaBlock);if(!state_.cudaInfo.available) {state_.message="Error: "+state_.cudaInfo.diagnostic;return;}}
@@ -1586,7 +1697,7 @@ private:
         } catch(const std::exception& e) {state_.message="Error al abrir simulación: "+std::string(e.what());}
     }
     void startCudaDidactic() {
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de explorar CUDA.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de explorar CUDA.";return;}
         playbackTimer_.request_stop();pendingEvents_.fetch_and(~kPlaybackEvent,std::memory_order_acq_rel);
         if(normalSession_)normalSession_->pause();
         if(!state_.input) {openCatalog(Page::CudaDidactic);return;}
@@ -1646,13 +1757,14 @@ private:
         else state_.page=Page::Threads;
     }
     void selectMain() {
-        switch(state_.mainSelection) {
-            case 0:startDidactic();break;
-            case 1:state_.page=Page::BenchmarkMenu;break;
-            case 2:openCatalog();break;
-            case 3:openEngines();break;
-            case 4:openResources();break;
-            case 5:requestExit();break;
+        switch(static_cast<MainItem>(state_.mainSelection)) {
+            case MainItem::Didactic:startDidactic();break;
+            case MainItem::Cluster:openCluster();break;
+            case MainItem::Benchmark:state_.page=Page::BenchmarkMenu;break;
+            case MainItem::Catalog:openCatalog();break;
+            case MainItem::Engine:openEngines();break;
+            case MainItem::Resources:openResources();break;
+            case MainItem::Exit:requestExit();break;
         }
     }
 
@@ -1669,7 +1781,7 @@ private:
 
     void usePattern() {
         if(!catalogPreview_.initial() || !catalogPreview_.entry()) {state_.message="Selecciona una entrada válida antes de usarla.";return;}
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
         // Confirm the immutable validated initial input, never the current frame.
         state_.input=*catalogPreview_.initial();state_.path=catalogPreview_.entry()->path;
         normalSession_.reset();normalViewport_={};cudaDidactic_={};cudaViewport_={};cudaDetail_=false;cudaCoverage_=false;cudaDetailRow_=0;
@@ -1677,6 +1789,8 @@ private:
         state_.message="Patrón confirmado: "+catalogPreview_.entry()->name+" · entrada inicial";
         leaveCatalog();state_.page=state_.returnAfterCatalog;
         if(state_.page==Page::Didactic)createDidactic();
+        if (state_.page == Page::ClusterSetup)
+            startClusterDidactic(*state_.input, std::filesystem::path(state_.path).filename().string());
         if(state_.page==Page::Simulation)startNormal();
         if(state_.page==Page::CudaDidactic)startCudaDidactic();
     }
@@ -1690,12 +1804,51 @@ private:
     }
 
     void selectEngine() {
-        if(state_.engineSelection==4) {state_.page=configReturn_;return;}
+        const auto selection=isDidacticEngineMenu()?didacticEngineSelection_:state_.engineSelection;
+        if(selection==4) {state_.page=configReturn_;return;}
         const Engine engines[]={Engine::Sequential,Engine::OpenMP,Engine::MPI,Engine::CUDA};
-        if(applyNormalConfiguration(engines[state_.engineSelection],state_.cudaBlock)) {
+        if(isDidacticEngineMenu()) {
+            if(selection==3) {
+                hybridProcessesDraft_=std::to_string(hybridProcesses_);
+                hybridThreadsDraft_=std::to_string(hybridThreads_);
+                hybridInputError_.clear();
+                state_.page=Page::HybridInput;
+                hybridProcessesInput_->TakeFocus();
+            } else createDidactic(engines[selection],state_.mpiProcesses);
+            return;
+        }
+        if(applyNormalConfiguration(engines[selection],state_.cudaBlock)) {
             state_.message="Motor seleccionado: "+engineName(state_.engine);
             state_.page=configReturn_;
         }
+    }
+
+    void applyHybridDraft() {
+        if(!state_.input) {
+            hybridInputError_="Confirma un patrón para iniciar la captura.";
+            return;
+        }
+        const auto processes=parseMPIProcesses(hybridProcessesDraft_);
+        const auto threads=parseOpenMPThreadCount(hybridThreadsDraft_);
+        if(!processes || *processes>mpi::maxTraceProcesses) {
+            hybridInputError_="Procesos MPI entre 1 y "+std::to_string(mpi::maxTraceProcesses)+".";
+            hybridProcessesInput_->TakeFocus();
+            return;
+        }
+        if(!threads) {
+            hybridInputError_="Hilos por rank entre 1 y "+std::to_string(kMaxOpenMPThreads)+".";
+            hybridThreadsInput_->TakeFocus();
+            return;
+        }
+        try {
+            (void)mpi::trace_payload_size(state_.input->width,state_.input->height,*processes,{0,0,0},*threads);
+        } catch(const std::exception& e) {
+            hybridInputError_=e.what();return;
+        }
+        hybridProcesses_=*processes;
+        hybridThreads_=*threads;
+        createDidactic(Engine::MPI,*processes,*threads);
+        state_.didactic->pause();
     }
 
     void applyMPIDraft() {
@@ -1757,7 +1910,7 @@ private:
 
     void startDidactic() {
         if(state_.engine==Engine::CUDA) {startCudaDidactic();return;}
-        if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
+        if (experiment().snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
             refreshPatterns();
@@ -1767,14 +1920,21 @@ private:
         createDidactic();
     }
 
-    void createDidactic() {
+    void resetMPIView() {
+        mpiDidacticHelpReturn_=0; mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0;
+        mpiErrorDetails_=false;mpiSelectedRow_=0;mpiFollowRow_=false;
+    }
+    void createDidactic() {createDidactic(state_.engine,state_.mpiProcesses);}
+    void createDidactic(Engine engine,int processes,int threadsPerRank=0) {
         didacticViewport_ = {};
-        mpiDidacticHelpReturn_=0; mpiDidacticView_=0; mpiDidacticRank_=0; mpiDidacticRow_=0; mpiDidacticCol_=0; mpiErrorDetails_=false;
+        resetMPIView();
         state_.message.clear();
         if (!state_.input) return;
         if(!state_.didactic) state_.didactic=std::make_unique<DidacticController>([this]{screen_.PostEvent(Event::Custom);});
-        state_.didactic->startPreparation(*state_.input,state_.engine,state_.requestedThreads,defaultMPIOptions(state_.mpiProcesses),
-            state_.engine==Engine::MPI ? (state_.input->height+state_.mpiProcesses-1)/state_.mpiProcesses-1 : 0,
+        auto options=defaultMPIOptions(processes);
+        options.openMPThreads=threadsPerRank;
+        state_.didactic->startPreparation(*state_.input,engine,state_.requestedThreads,std::move(options),
+            engine==Engine::MPI ? (state_.input->height+processes-1)/processes-1 : 0,
             state_.input->width/2);
         state_.page = Page::Didactic;
     }
@@ -1783,7 +1943,7 @@ private:
         if(!catalogPreview_.drained()) {state_.message="Espera al cierre de la vista previa antes de medir.";return;}
         if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de medir.";return;}
         if(state_.didactic && state_.didactic->busy()) {state_.message="Espera al cierre o captura didáctica antes de medir.";return;}
-        if (experiment_->snapshot().active()) return;
+        if (experiment().snapshot().active()) return;
         if (state_.benchmarkRunning) {
             state_.page = Page::Benchmark;
             return;
@@ -1848,7 +2008,7 @@ private:
                 return true;
             }
             if (key == "c" || key == "C") {
-                if (experiment_->snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; return true; }
+                if (experiment().snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; return true; }
                 state_.returnAfterCatalog = Page::Main;
                 refreshPatterns();
                 state_.page = Page::Patterns;
@@ -1878,16 +2038,17 @@ private:
             state_.blockSelection=key=="1"?0:key=="2"?1:2;selectCudaBlock();return true;
         }
         if (state_.page == Page::Engines) {
-            if(key=="g"||key=="G") {state_.engineSelection=3;selectEngine();return true;}
-            if (key == "m" || key == "M") { state_.engineSelection = 2; selectEngine(); return true; }
+            auto& selection=isDidacticEngineMenu()?didacticEngineSelection_:state_.engineSelection;
+            if(!isDidacticEngineMenu() && (key=="g"||key=="G")) {selection=3;selectEngine();return true;}
+            if (key == "m" || key == "M") { selection = 2; selectEngine(); return true; }
 
             if (key == "s" || key == "S") {
-                state_.engineSelection = 0;
+                selection = 0;
                 selectEngine();
                 return true;
             }
             if (key == "o" || key == "O") {
-                state_.engineSelection = 1;
+                selection = 1;
                 selectEngine();
                 return true;
             }
@@ -1918,6 +2079,16 @@ private:
             case Page::Main:
                 requestExit();
                 break;
+            case Page::Cluster:
+                if (clusterSession_->snapshot().active()) clusterSession_->close();
+                else state_.page = Page::Main;
+                break;
+            case Page::ClusterSetup:
+                state_.page = Page::Cluster;
+                break;
+            case Page::ClusterDidactic:
+                leaveClusterDidactic();
+                break;
             case Page::Patterns:
                 if(catalogDetail_) {catalogDetail_=false;return;}
                 leaveCatalog();state_.page = state_.returnAfterCatalog;break;
@@ -1932,11 +2103,19 @@ private:
                 state_.page = Page::Main;
                 break;
             case Page::ExperimentExecution:
-                state_.page = experiment_->snapshot().description.scaling
+                if (clusterBenchmarkMode_) {
+                    if (experiment().snapshot().active()) {
+                        if (cancelClusterBenchmark_.exchange(true)) clusterSession_->close();
+                    } else returnToCluster();
+                    break;
+                }
+                state_.page = experiment().snapshot().description.scaling
                     ? Page::BenchmarkScaling : Page::ComparisonConfig;
                 break;
-            case Page::Benchmark:
             case Page::ComparisonConfig:
+                if (clusterBenchmarkMode_) { returnToCluster(); break; }
+                [[fallthrough]];
+            case Page::Benchmark:
             case Page::BenchmarkScaling:
             case Page::BenchmarkResults:
                 state_.page = Page::BenchmarkMenu;
@@ -1946,6 +2125,8 @@ private:
                 break;
             case Page::MPIInput:
                 state_.page = configReturn_; break;
+            case Page::HybridInput:
+                state_.page=Page::Engines;break;
             case Page::ThreadInput:
                 state_.page = Page::Threads;
                 break;
@@ -1959,6 +2140,528 @@ private:
         }
     }
 
+    void makeClusterForm() {
+        ftxui::InputOption input;
+        input.multiline = false;
+        clusterFields_ = {ftxui::Input(&clusterDraft_.ip, input), ftxui::Input(&clusterDraft_.port, input),
+                          ftxui::Input(&clusterDraft_.nodes, input)};
+        ftxui::ButtonOption button = ftxui::ButtonOption::Simple();
+        button.transform = [](const ftxui::EntryState& entry) {
+            auto label = ftxui::text("[ " + entry.label + " ]") | ftxui::bold;
+            if (!entry.focused) return label;
+            return colorsEnabled() ? label | ftxui::bgcolor(identityCyan()) |
+                ftxui::color(ftxui::Color::RGB(25, 32, 38)) : label | ftxui::inverted;
+        };
+        clusterButton_ = ftxui::Button("Iniciar sesión", [this] {
+            clusterScroll_ = 0;
+            clusterInputError_ = clusterSession_->start(clusterDraft_);
+        }, button);
+        clusterForm_ = ftxui::Container::Vertical({clusterFields_[0], clusterFields_[1],
+                                                   clusterFields_[2], clusterButton_});
+        Add(clusterForm_);
+
+        clusterDidacticButton_ = ftxui::Button("Visualización didáctica", [this] {
+            clusterSetupError_.clear();
+            state_.page = Page::ClusterSetup;
+            clusterCatalogButton_->TakeFocus();
+        }, button);
+        clusterBenchmarkButton_ = ftxui::Button("Benchmark", [this] {
+            if (clusterSession_->snapshot().phase != ClusterPhase::Ready) return;
+            if (experiment_->snapshot().active()) {
+                clusterInputError_ = "Espera a que termine el Benchmark local.";
+                return;
+            }
+            clusterInputError_.clear();
+            if (!clusterBenchmark_) {
+                clusterBenchmark_ = std::make_unique<ExperimentExecution>([this] { screen_.PostEvent(Event::Custom); },
+                    [this](const ExecutionRequest& request, const ExperimentExecution::PhasePublisher& phase) {
+                        return runClusterBenchmark(*clusterSession_, request, phase, [this] {
+                            return cancelClusterBenchmark_.load();
+                        });
+                    }, true);
+            }
+            clusterBenchmarkMode_ = true;
+            state_.page = Page::ComparisonConfig;
+            clusterBenchmarkForm_->TakeFocus();
+        }, button);
+        clusterReadyActions_ = ftxui::Container::Horizontal({clusterDidacticButton_, clusterBenchmarkButton_});
+        Add(clusterReadyActions_);
+        clusterCatalogButton_ = ftxui::Button("Catálogo de patrones / ruta manual", [this] {
+            openCatalog(Page::ClusterSetup);
+        }, button);
+        ftxui::Components setup{clusterCatalogButton_};
+        for (std::size_t i = 0; i < clusterGeneratorFields_.size(); ++i) {
+            clusterGeneratorFields_[i] = ftxui::Input(&clusterGenerator_.values[i], input);
+            setup.push_back(clusterGeneratorFields_[i]);
+        }
+        clusterGenerateButton_ = ftxui::Button("Generar e iniciar", [this] {
+            std::array<std::string, kExperimentFieldCount> errors;
+            const auto generated = parseGeneratedBoard(clusterGenerator_.values, errors);
+            for (const auto& error : errors) {
+                if (!error.empty()) {
+                    clusterSetupError_ = error;
+                    return;
+                }
+            }
+            try {
+                if (mpi::checked_cell_count(generated.width, generated.height) > mpi::windowInputCells)
+                    throw std::runtime_error("El tablero supera el límite de entrada MPI.");
+                startClusterDidactic(generated, "Tablero generado");
+            } catch (const std::exception& error) {
+                clusterSetupError_ = error.what();
+            }
+        }, button);
+        setup.push_back(clusterGenerateButton_);
+        clusterSetupForm_ = ftxui::Container::Vertical(std::move(setup));
+        Add(clusterSetupForm_);
+    }
+
+    void openCluster() {
+        if (!clusterSession_) {
+            clusterSession_ = std::make_unique<ClusterSession>([this] { screen_.PostEvent(Event::Custom); });
+            clusterSession_->loadDefaults();
+        }
+        clusterScroll_ = 0;
+        state_.message.clear();
+        state_.page = Page::Cluster;
+        clusterFields_.front()->TakeFocus();
+    }
+
+    int lastClusterClient() const {
+        // The form is editable, including empty and partially entered values.
+        unsigned value = 0;
+        for (char digit : clusterDraft_.nodes) {
+            if (digit < '0' || digit > '9' || value > 1024) return 1;
+            value = value * 10 + (digit - '0');
+        }
+        return value >= 2 && value <= 1024 ? static_cast<int>(value) - 1 : 1;
+    }
+
+    bool handleClusterEvent(const Event& event) {
+        const auto state = clusterSession_->snapshot();
+        if (event == Event::Escape) {
+            goBack();
+            return true;
+        }
+        if (state.phase == ClusterPhase::Ready) {
+            if (event == Event::Tab || event == Event::TabReverse) {
+                (clusterBenchmarkButton_->Focused() ? clusterDidacticButton_ : clusterBenchmarkButton_)->TakeFocus();
+                return true;
+            }
+            if (event == Event::Return || event == Event::ArrowLeft || event == Event::ArrowRight)
+                return clusterReadyActions_->OnEvent(event);
+        }
+        if (event == Event::PageUp || event == Event::PageDown || (state.active() &&
+            (event == Event::ArrowUp || event == Event::ArrowDown))) {
+            const int page = std::max(1, clusterPageRows_ - 1);
+            const int delta = event == Event::PageUp ? -page : event == Event::PageDown ? page :
+                event == Event::ArrowUp ? -1 : 1;
+            clusterScroll_ = std::max(0, clusterScroll_ + delta);
+            return true;
+        }
+        if (event.is_character() && (event.character() == "[" || event.character() == "]")) {
+            const auto last = lastClusterClient();
+            clusterCommandNode_ = std::clamp(clusterCommandNode_, 1, last);
+            clusterCommandNode_ = (clusterCommandNode_ - 1 + last + (event.character() == "[" ? -1 : 1)) % last + 1;
+            clusterScroll_ = 0;
+            return true;
+        }
+        if (state.active()) return true;
+        const auto before = clusterDraft_;
+        const bool handled = clusterForm_->OnEvent(event);
+        if (before.ip != clusterDraft_.ip || before.port != clusterDraft_.port ||
+            before.nodes != clusterDraft_.nodes) clusterInputError_.clear();
+        return handled;
+    }
+
+    static std::string clusterPhaseLabel(ClusterPhase phase) {
+        switch (phase) {
+            case ClusterPhase::Setup: return {};
+            case ClusterPhase::Loading: return "Cargando configuración";
+            case ClusterPhase::Publishing: return "Publicando plan";
+            case ClusterPhase::Connecting: return "Conectando por MPI";
+            case ClusterPhase::Ready: return "Grupo listo";
+            case ClusterPhase::Closing: return "Cerrando sesión";
+            case ClusterPhase::Closed: return "Sesión cerrada";
+            case ClusterPhase::Cancelled: return "Sesión cancelada";
+            case ClusterPhase::Error: return "Error de sesión";
+        }
+        return {};
+    }
+
+    Element renderCluster() {
+        const auto state = clusterSession_->snapshot();
+        ftxui::Elements content;
+        auto status = clusterPhaseLabel(state.phase);
+        if (state.phase == ClusterPhase::Ready) status += " · P=" + std::to_string(state.members.size());
+        if (!status.empty()) content.push_back(heading(std::move(status)));
+        if (state.active() && state.phase != ClusterPhase::Loading) {
+            auto endpoint = clusterDraft_.ip + ":" + clusterDraft_.port;
+            content.push_back(ftxui::paragraph(endpoint + " · " + clusterDraft_.nodes + " nodos"));
+            if (state.planAvailable &&
+                (state.phase != ClusterPhase::Ready || controls::terminalSize().columns >= 50))
+                content.push_back(ftxui::text("Plan disponible"));
+        }
+        if (state.phase == ClusterPhase::Ready) {
+            if (controls::terminalSize().columns < 50)
+                content.push_back(ftxui::vbox({clusterDidacticButton_->Render(), clusterBenchmarkButton_->Render()}));
+            else content.push_back(ftxui::hbox({clusterDidacticButton_->Render(), ftxui::text("   "),
+                clusterBenchmarkButton_->Render()}));
+            if (!clusterInputError_.empty()) content.push_back(ftxui::paragraph(clusterInputError_));
+        }
+        if (!state.active()) {
+            constexpr std::array labels{"IP del servidor", "Puerto", "Nodos (incl. servidor)"};
+            for (std::size_t i = 0; i < labels.size(); ++i) {
+                content.push_back(ftxui::hbox({ftxui::text(std::string(labels[i]) + ": ") |
+                    ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 24), clusterFields_[i]->Render() | ftxui::flex}));
+            }
+            content.push_back(clusterButton_->Render());
+        }
+        content.push_back(ui::allocatedElement([this, state](int width, int height) {
+            didactic_view::Blocks blocks;
+            const auto message = clusterInputError_.empty() ? state.message : clusterInputError_;
+            if (!message.empty()) blocks.push_back({message, {}, true});
+            const auto commandNode = std::clamp(clusterCommandNode_, 1, lastClusterClient());
+            const auto command = clusterClientCommand(clusterDraft_, commandNode);
+            const auto addCommand = [&] {
+                if (command.empty()) return;
+                blocks.push_back({"Cliente " + std::to_string(commandNode) + " · desde la raíz del repositorio", {}, true});
+                blocks.push_back({command, {}});
+            };
+            const auto column = [](const std::string& value, int size) {
+                const auto text = fitContextLabel(value, size);
+                return text + std::string(size - ftxui::string_width(text), ' ');
+            };
+            const int teamWidth = std::max(24, width - 65);
+            const bool wide = width >= 97 && std::none_of(state.members.begin(), state.members.end(),
+                [&](const ClusterMember& member) { return ftxui::string_width(member.hostname) >= teamWidth; });
+            const bool showMembers = !state.members.empty() && state.active();
+            if (!showMembers || state.phase != ClusterPhase::Ready) addCommand();
+            if (showMembers) {
+                if (wide) blocks.push_back({column("Nodo", 7) + column("Equipo", teamWidth) +
+                    column("Rol", 11) + column("IP anunciada", 17) + column("Rank", 9) + "Estado", {}, true});
+                for (std::size_t i = 0; i < state.members.size(); ++i) {
+                    const auto& member = state.members[i];
+                    const auto node = std::to_string(i);
+                    const std::string role = i == 0 ? "Servidor" : "Cliente";
+                    const std::string rank = member.rank ? std::to_string(*member.rank) : "—";
+                    const std::string ip = member.ip.empty() ? "No disponible" : member.ip;
+                    const std::string name = member.hostname.empty() ? "No disponible" : member.hostname;
+                    const std::string connection = member.rank ? "Confirmado" :
+                        member.connected ? "MPI conectado" :
+                        i > 0 ? "Falta cliente" : state.planAvailable ? "En espera" : "Preparando";
+                    if (wide) {
+                        blocks.push_back({column(node, 7) + column(name, teamWidth) + column(role, 11) +
+                            column(ip, 17) + column(rank, 9) + connection, {}});
+                    } else {
+                        blocks.push_back({"Nodo " + node + " · " + role + " · Rank " + rank, {}, true});
+                        blocks.push_back({"Equipo: " + name + " · IP: " + ip, {}});
+                        blocks.push_back({"Estado: " + connection, {}});
+                    }
+                }
+                if (state.phase == ClusterPhase::Ready) addCommand();
+            }
+            auto rows = mpiDidacticRows(blocks, std::max(1, width));
+            auto visible = std::max(1, height);
+            const bool scroll = static_cast<int>(rows.size()) > visible && visible > 1;
+            if (scroll) --visible;
+            clusterPageRows_ = visible;
+            const auto total = static_cast<int>(rows.size());
+            clusterScroll_ = std::clamp(clusterScroll_, 0, std::max(0, total - visible));
+            const auto end = std::min(total, clusterScroll_ + visible);
+            ftxui::Elements shown;
+            for (int i = clusterScroll_; i < end; ++i) shown.push_back(std::move(rows[i]));
+            if (scroll) shown.push_back(ftxui::text("Líneas " + std::to_string(clusterScroll_ + 1) + "–" +
+                std::to_string(end) + "/" + std::to_string(total) + " · PgUp/PgDn") | ftxui::dim);
+            return ftxui::vbox(std::move(shown));
+        }) | ftxui::flex);
+        return panel("Sesión del clúster", ftxui::vbox(std::move(content)));
+    }
+
+    Element renderClusterSetup() {
+        ftxui::Elements rows{clusterCatalogButton_->Render()};
+        if (controls::terminalSize().rows >= 23) rows.push_back(ftxui::separator());
+        if (controls::terminalSize().rows >= 20) rows.push_back(heading("Tablero generado"));
+        constexpr std::array labels{"Ancho", "Alto", "Densidad (%)", "Semilla"};
+        for (std::size_t i = 0; i < labels.size(); ++i)
+            rows.push_back(ftxui::hbox({ftxui::text(std::string(labels[i]) + ": ") |
+                ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 16), clusterGeneratorFields_[i]->Render() | ftxui::flex}));
+        rows.push_back(clusterGenerateButton_->Render());
+        if (!clusterSetupError_.empty())
+            rows.push_back(ftxui::paragraph(clusterSetupError_) | ftxui::color(ftxui::Color::Red));
+        return panel("Entrada · Visualización didáctica", ftxui::vbox(std::move(rows)));
+    }
+
+    void startClusterDidactic(ClusterSession::Operation operation, std::string name) {
+        playbackTimer_.request_stop();
+        pendingEvents_.fetch_and(~kPlaybackEvent, std::memory_order_acq_rel);
+        const auto group = clusterSession_->snapshot();
+        const auto ticket = clusterSession_->submit(std::move(operation));
+        if (!ticket) {
+            clusterSetupError_ = "El grupo no está disponible para cargar la entrada.";
+            return;
+        }
+        clusterPlayback_ = {};
+        clusterPlayback_.label = std::move(name);
+        clusterPlayback_.ticket = ticket;
+        clusterPlayback_.members = group.members;
+        clusterPlayback_.loading = true;
+        state_.message.clear();
+        state_.page = Page::ClusterDidactic;
+    }
+
+    void armClusterPlayback() {
+        const auto& playback = clusterPlayback_;
+        if (playback.playing && !playback.ticket && !playback.leaving)
+            schedulePlaybackTick(std::chrono::milliseconds(static_cast<int>(2000. / playback.speed)));
+    }
+
+    void requestClusterStep() {
+        auto& playback = clusterPlayback_;
+        if (!playback.width || playback.ticket || playback.leaving) return;
+        playback.requested = playback.window;
+        playback.requested.generation = playback.generation;
+        playback.ticket = clusterSession_->submit(playback.requested);
+        if (!playback.ticket) {
+            playback.playing = false;
+            playback.error = "El grupo no está disponible para capturar.";
+        } else playback.error.clear();
+    }
+
+    void advanceClusterStage() {
+        auto& playback = clusterPlayback_;
+        if (playback.ticket || playback.leaving) return;
+        if (playback.trace && playback.stage + 1 < didactic_view::clusterStages.size()) ++playback.stage;
+        else requestClusterStep();
+        playback.scroll = 0;
+    }
+
+    void resetClusterBoard() {
+        auto& playback = clusterPlayback_;
+        playback.trace.reset();
+        playback.stage = 0;
+        playback.scroll = 0;
+        playback.loading = true;
+        playback.ticket = clusterSession_->submit(ClusterSession::Reset{});
+        if (!playback.ticket) {
+            playback.loading = false;
+            playback.error = "El grupo no está disponible para reiniciar.";
+        }
+    }
+
+    void pollClusterDidactic() {
+        auto& playback = clusterPlayback_;
+        const auto group = clusterSession_->snapshot();
+        if (group.phase == ClusterPhase::Closing) return;
+        if (group.phase != ClusterPhase::Ready) {
+            playback.ticket.reset();
+            playback.playing = false;
+            playback.loading = false;
+            playback.error = group.message.empty() ? "Se perdió el grupo MPI." : group.message;
+        }
+        if (playback.ticket && group.result && group.result->id == *playback.ticket) {
+            playback.ticket.reset();
+            const bool wasLoading = std::exchange(playback.loading, false);
+            if (!playback.leaving) {
+                if (std::exchange(playback.restart, false)) {
+                    resetClusterBoard();
+                } else if (!group.result->error.empty()) {
+                    playback.playing = false;
+                    playback.error = group.result->error;
+                } else if (wasLoading && group.result->width) {
+                    const bool newBoard = !playback.width;
+                    playback.width = group.result->width;
+                    playback.height = group.result->height;
+                    playback.population = group.result->population;
+                    playback.generation = 0;
+                    if (newBoard) {
+                        const auto first = mpi::partition_rows(playback.height, playback.members.size(), 0);
+                        playback.window.row = first.endRow() > mpi::windowRows / 2
+                            ? std::min(first.endRow() - mpi::windowRows / 2,
+                                       playback.height - std::min(playback.height, mpi::windowRows)) : 0;
+                    }
+                    requestClusterStep();
+                } else if (const auto& trace = group.result->trace;
+                           trace && trace->width == playback.width && trace->height == playback.height &&
+                           trace->selection == playback.requested) {
+                    playback.trace = *trace;
+                    playback.generation = trace->selection.generation + 1;
+                    playback.population = trace->aliveAfter;
+                    playback.stage = 0;
+                    playback.scroll = 0;
+                    armClusterPlayback();
+                } else {
+                    playback.playing = false;
+                    playback.error = "La respuesta MPI no corresponde a la ventana solicitada.";
+                }
+            }
+        }
+        if (playback.leaving && !playback.ticket) {
+            clusterPlayback_ = {};
+            clusterScroll_ = 0;
+            state_.page = Page::Cluster;
+        }
+    }
+
+    void leaveClusterDidactic() {
+        auto& playback = clusterPlayback_;
+        if (playback.leaving) {
+            clusterSession_->close();
+            return;
+        }
+        playbackTimer_.request_stop();
+        pendingEvents_.fetch_and(~kPlaybackEvent, std::memory_order_acq_rel);
+        playback.leaving = true;
+        playback.playing = false;
+        if (playback.ticket) clusterSession_->limitPendingWait();
+        pollClusterDidactic();
+    }
+
+    bool handleClusterDidactic(const Event& event) {
+        auto& playback = clusterPlayback_;
+        if (event == Event::Escape) {
+            leaveClusterDidactic();
+            return true;
+        }
+        if (playback.leaving) return true;
+        if (event == Event::PageUp || event == Event::PageDown || event == Event::Home || event == Event::End) {
+            const int page = std::max(1, playback.pageRows - 1);
+            const int maxOffset = playback.maxScroll;
+            playback.scroll = event == Event::Home ? 0 : event == Event::End ? maxOffset :
+                std::clamp(playback.scroll + (event == Event::PageDown ? page : -page), 0, maxOffset);
+            return true;
+        }
+        if (playback.width && (event == Event::ArrowUp || event == Event::ArrowDown ||
+                               event == Event::ArrowLeft || event == Event::ArrowRight)) {
+            auto& window = playback.window;
+            const auto move = [](std::size_t& offset, std::size_t end, bool forward) {
+                offset = forward ? std::min(offset + 1, end) : offset ? offset - 1 : 0;
+            };
+            if (event == Event::ArrowUp || event == Event::ArrowDown)
+                move(window.row, playback.height - std::min(playback.height, mpi::windowRows), event == Event::ArrowDown);
+            else move(window.column, playback.width - std::min(playback.width, mpi::windowColumns), event == Event::ArrowRight);
+            playback.scroll = 0;
+            return true;
+        }
+        if (!event.is_character()) return true;
+        const auto key = event.character();
+        if (key == " " || key == "p" || key == "P") {
+            playback.playing = !playback.playing;
+            if (playback.playing) armClusterPlayback();
+            else {
+                playbackTimer_.request_stop();
+                pendingEvents_.fetch_and(~kPlaybackEvent, std::memory_order_acq_rel);
+            }
+        } else if ((key == "n" || key == "N") && !playback.playing) {
+            advanceClusterStage();
+        } else if ((key == "r" || key == "R") && playback.width) {
+            playbackTimer_.request_stop();
+            pendingEvents_.fetch_and(~kPlaybackEvent, std::memory_order_acq_rel);
+            playback.playing = false;
+            playback.error.clear();
+            playback.trace.reset();
+            if (playback.ticket) playback.restart = true;
+            else resetClusterBoard();
+        } else if (key == "v" || key == "V") {
+            if (playback.view == 1) playback.previousView = playback.view;
+            playback.view = (playback.view + 1) % 3;
+            playback.scroll = 0;
+        } else if (key == "d" || key == "D") {
+            if (playback.view == 2) playback.view = playback.previousView;
+            else { playback.previousView = playback.view; playback.view = 2; }
+            playback.scroll = 0;
+        } else if ((key == "[" || key == "]") && playback.width) {
+            const auto size = static_cast<int>(playback.members.size());
+            auto& window = playback.window;
+            window.rank = (window.rank + size + (key == "]" ? 1 : -1)) % size;
+            const auto part = mpi::partition_rows(playback.height, size, window.rank);
+            if (!part.empty() && (window.row >= part.endRow() || window.row + mpi::windowRows <= part.firstRow))
+                window.row = std::min(part.firstRow, playback.height - std::min(playback.height, mpi::windowRows));
+            playback.scroll = 0;
+        } else if (key == "+" || key == "=" || key == "-") {
+            playback.speed = std::clamp(playback.speed * (key == "-" ? 0.5 : 2.0), 0.25, 8.0);
+            armClusterPlayback();
+        }
+        return true;
+    }
+
+    Element renderClusterDidactic() {
+        auto& playback = clusterPlayback_;
+        const auto stage = didactic_view::clusterStages[playback.stage];
+        const auto visible = playback.trace ? playback.trace->selection.generation +
+            (stage == DidacticStage::GenerationResult) : playback.generation;
+        const bool preparingBoard = playback.restart || playback.loading;
+        const bool closing = playback.leaving && clusterSession_->snapshot().phase == ClusterPhase::Closing;
+        const auto label = closing ? "Cerrando sesión · esperando confirmación" :
+            playback.leaving ? "Volviendo a la sesión · esperando confirmación" :
+            preparingBoard ? "Preparando G0" :
+            playback.ticket ? "Capturando" : playback.playing ? "Reproduciendo" : "En pausa";
+        const auto generation = std::string("Visible: ") + (preparingBoard ? "—" : "G" + std::to_string(visible)) +
+            " · Capturada: " + (playback.trace ? "G" + std::to_string(playback.generation) : "—");
+        static constexpr std::array views{"global", "local", "ayuda"};
+        ftxui::Elements status{heading(label), ftxui::text(generation),
+            ftxui::paragraph("Paso " + std::to_string(playback.stage + 1) + " de 6 · " + didactic_view::stage(stage)),
+            ftxui::paragraph("Vista " + std::string(views[playback.view]) + " · " + playback.label)};
+        if (!playback.error.empty())
+            status.push_back(ftxui::paragraph(playback.error) | ftxui::color(ftxui::Color::Red));
+        status.push_back(ui::allocatedElement([this, stage](int w, int h) {
+            return renderClusterCapture(stage, w, h);
+        }) | ftxui::flex);
+        return panel("DIDÁCTICA MPI · CLÚSTER", ftxui::vbox(std::move(status)));
+    }
+
+    Element renderClusterCapture(DidacticStage stage, int width, int height) {
+        auto& p = clusterPlayback_;
+        if (!p.width) return ftxui::text("Esperando la entrada del grupo MPI.");
+        const int size = static_cast<int>(p.members.size());
+        const auto part = mpi::partition_rows(p.height, size, p.window.rank);
+        const auto& window = p.window;
+        const auto position = "Ventana filas " +
+            didactic_view::rowRange(window.row, std::min(window.row + mpi::windowRows, p.height)) +
+            " · col. " + didactic_view::rowRange(window.column, std::min(window.column + mpi::windowColumns, p.width));
+        const bool sameWindow = p.trace && p.trace->selection.row == window.row &&
+            p.trace->selection.column == window.column;
+
+        didactic_view::Blocks global, local;
+        didactic_view::heading(global, "GLOBAL");
+        didactic_view::text(global, position);
+        if (p.trace) didactic_view::clusterGlobal(global, *p.trace, stage, size, sameWindow);
+        else didactic_view::text(global, "Tablero " + std::to_string(p.width) + " × " + std::to_string(p.height) +
+                                 " · Células vivas: " + std::to_string(p.population));
+
+        const auto& member = p.members[window.rank];
+        didactic_view::heading(local, p.view == 2 ? "AYUDA MPI" : "LOCAL");
+        didactic_view::text(local, "Equipo: " + (member.hostname.empty() ? std::string("No disponible") : member.hostname) +
+                            " · Rank " + std::to_string(window.rank));
+        didactic_view::clusterPartition(local, part);
+        didactic_view::text(local, position);
+        if (p.trace) didactic_view::clusterLocal(local, *p.trace, stage, part, sameWindow, p.view == 2);
+
+        const bool paired = width >= 110 && height >= 14 && p.view != 2;
+        std::vector<std::vector<Element>> columns;
+        if (p.view == 0 || paired) columns.push_back(mpiDidacticRows(global, paired ? width / 2 - 1 : width, 0));
+        if (p.view != 0 || paired) columns.push_back(mpiDidacticRows(local, paired ? width / 2 - 1 : width, 0));
+        const int visible = std::max(1, height - 1);
+        int total = 0;
+        for (const auto& column : columns) total = std::max(total, static_cast<int>(column.size()));
+        p.pageRows = visible;
+        p.maxScroll = std::max(0, total - visible);
+        p.scroll = std::clamp(p.scroll, 0, p.maxScroll);
+        ftxui::Elements panels;
+        for (auto& column : columns) {
+            const auto first = std::min(p.scroll, static_cast<int>(column.size()));
+            const auto end = std::min(first + visible, static_cast<int>(column.size()));
+            if (!panels.empty()) panels.push_back(ftxui::separator());
+            auto panel = ftxui::vbox(ftxui::Elements(column.begin() + first, column.begin() + end)) | ftxui::flex;
+            if (paired) panel = panel | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, width / 2 - 1);
+            panels.push_back(std::move(panel));
+        }
+        return ftxui::vbox({ftxui::hbox(std::move(panels)) | ftxui::flex,
+            ftxui::text("Líneas " + std::to_string(p.scroll + 1) + "–" +
+                std::to_string(std::min(total, p.scroll + visible)) + "/" + std::to_string(total) +
+                " · PgUp/PgDn") | ftxui::dim});
+    }
+
     Element renderMain() {
         // Only presentation lives here. The existing Menu still owns selection
         // and dispatch; headings and descriptions never introduce focus stops.
@@ -1966,26 +2669,30 @@ private:
             const int menuWidth=std::min(width,88);
             const bool framed=height>=14;
             const int chrome=framed?4:0; // borders, title and title separator
-            const bool descriptions=menuWidth>=64 && height>=chrome+15;
-            int naturalHeight=chrome+10+(descriptions?5:0);
+            const int baseHeight=static_cast<int>(mainItems_.size())+4;
+            const int descriptionRows=static_cast<int>(mainItems_.size())-1;
+            const bool descriptions=menuWidth>=64 && height>=chrome+baseHeight+descriptionRows;
+            int naturalHeight=chrome+baseHeight+(descriptions?descriptionRows:0);
             const bool sectionGaps=height>=naturalHeight+2;
             if(sectionGaps)naturalHeight+=2;
             const bool verticalPadding=framed && height>=naturalHeight+2;
             if(verticalPadding)naturalHeight+=2;
             const int margin=menuWidth>=80?2:menuWidth>=46?1:0;
-            const std::array<std::string,6> help{"Comprender cómo calcula cada motor","Comparar rendimiento y escalabilidad",
+            const std::array<std::string,7> help{"Comprender cómo calcula cada motor","Conectar equipos por MPI","Comparar rendimiento y escalabilidad",
                 "Explorar, reproducir y elegir un patrón","Secuencial, OpenMP o MPI","Recursos según el motor",""};
             const auto primary=ftxui::Color::RGB(25,32,38);
             const auto secondary=ftxui::Color::RGB(168,180,188);
             const auto selectedSecondary=ftxui::Color::RGB(40,55,65);
             std::vector<Element> rows;
             if(verticalPadding)rows.push_back(ftxui::text(""));
-            for(int i=0;i<6;++i) {
-                if(i==0||i==2||i==3) {
-                    if(i!=0 && sectionGaps)rows.push_back(ftxui::text(""));
-                    rows.push_back(heading(i==0?"MODOS PRINCIPALES":i==2?"EXPLORAR PATRONES":"CONFIGURACIÓN"));
+            for(int i=0;i<static_cast<int>(mainItems_.size());++i) {
+                const auto item=static_cast<MainItem>(i);
+                if(item==MainItem::Didactic || item==MainItem::Catalog || item==MainItem::Engine) {
+                    if(item!=MainItem::Didactic && sectionGaps)rows.push_back(ftxui::text(""));
+                    rows.push_back(heading(item==MainItem::Didactic?"MODOS PRINCIPALES":
+                        item==MainItem::Catalog?"EXPLORAR PATRONES":"CONFIGURACIÓN"));
                 }
-                if(i==5)rows.push_back(ftxui::separator());
+                if(item==MainItem::Exit)rows.push_back(ftxui::separator());
                 const bool selected=state_.mainSelection==i;
                 auto name=ftxui::text(std::string(selected?"> ":"  ")+mainItems_[i])|ftxui::bold;
                 if(colorsEnabled() && selected)name=name|ftxui::color(primary);
@@ -2070,7 +2777,15 @@ private:
         return ftxui::hbox({list|ftxui::size(ftxui::WIDTH,ftxui::EQUAL,static_cast<int>(width/3)),ftxui::text(" "),detail|ftxui::flex});
     }
 
+    Element renderHybridInput() {
+        return panel("RECURSOS MPI + OpenMP",ftxui::vbox({
+            ftxui::hbox({ftxui::text("Procesos MPI  "),hybridProcessesInput_->Render()|ftxui::flex}),
+            ftxui::hbox({ftxui::text("Hilos por rank  "),hybridThreadsInput_->Render()|ftxui::flex}),
+            ftxui::paragraph(hybridInputError_)|ftxui::color(ftxui::Color::Red)}));
+    }
+
     Element renderEngines() {
+        if(isDidacticEngineMenu()) return panel("MOTOR DIDÁCTICO",didacticEngineMenu_->Render()|ftxui::flex);
         return panel("MOTOR DE EJECUCIÓN",ftxui::vbox({ftxui::paragraph(state_.cudaInfo.diagnostic),engineMenu_->Render()|ftxui::flex}));
     }
 
@@ -2101,12 +2816,14 @@ private:
     void requestExit() {
         leaveCatalog();
         exitRequested_ = true;
+        if(clusterSession_)clusterSession_->close();
         if(normalSession_)normalSession_->close();
         if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
-        if (experiment_->snapshot().active()) {
+        if (experiment().snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else if (catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
+        } else if (catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
+            (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -2134,10 +2851,41 @@ private:
         return bytes;
     }
 
+    ExperimentExecution& experiment() const {
+        return *(clusterBenchmarkMode_ ? clusterBenchmark_ : experiment_);
+    }
+
+    void returnToCluster() {
+        clusterBenchmarkMode_ = false;
+        cancelClusterBenchmark_ = false;
+        completionPendingId_ = 0;
+        state_.page = Page::Cluster;
+        clusterBenchmarkButton_->TakeFocus();
+    }
+
+    void exportClusterBenchmark() {
+        const auto snapshot = experiment().snapshot();
+        if (snapshot.phase != ExecutionPhase::Finished || !snapshot.latest) return;
+        try {
+            const auto stamp = std::chrono::system_clock::now().time_since_epoch();
+            const auto name = "benchmark-cluster-" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(stamp).count()) +
+                "-" + std::to_string(snapshot.description.id);
+            const auto paths = exportExperimentCsv(std::get<ExperimentResult>(snapshot.latest->result),
+                snapshot.latest->context, std::filesystem::current_path() / name);
+            clusterExportMessage_ = "CSV guardados en " + paths.samples.parent_path().string();
+        } catch (const std::exception& error) {
+            clusterExportMessage_ = "Error al exportar CSV. " + std::string(error.what());
+        }
+        resultRow_ = 0;
+    }
+
     std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
         if(!catalogPreview_.drained())return "Espera al cierre de la vista previa antes de medir.";
+        if (clusterBenchmarkMode_ && clusterSession_->snapshot().phase != ClusterPhase::Ready)
+            return "El grupo MPI ya no está disponible.";
         if(state_.didactic && state_.didactic->ownsMPISession()) return "Espera al cierre de la sesión didáctica MPI antes de medir.";
-        if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
+        if (experiment().snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
         if (state_.benchmarkRunning || (state_.didactic && state_.didactic->busy()))
             return "Espera a que termine la preparación o medición activa.";
@@ -2149,12 +2897,19 @@ private:
         }
         try {
             const auto bytes = retainedUiPayload();
-            if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
+            if (clusterBenchmarkMode_) {
+                cancelClusterBenchmark_ = false;
+                clusterExportMessage_.clear();
+                comparisonTab_ = 0;
+                resultRow_ = 0;
+                completionDisplayedId_ = 0;
+            }
+            if (!experiment().start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
                                     std::filesystem::path(state_.path).filename().string(), bytes))
                 return "Ya hay un experimento activo.";
             resultRow_ = 0; comparisonTab_=0; scalingTab_=0; comparisonSampleDetails_=false; comparisonMethodDetails_=false; scalingSampleDetails_=false; scalingMethodDetails_=false;
             benchmarkCompletionTimer_.request_stop();
-            completionPendingId_=experiment_->snapshot().description.id;
+            completionPendingId_=experiment().snapshot().description.id;
             completionDisplayedId_=0;completionUntil_={};
             state_.page = Page::ExperimentExecution;
             return {};
@@ -2162,7 +2917,7 @@ private:
     }
 
     bool showingComparison() const {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
@@ -2170,18 +2925,18 @@ private:
 
     bool showingComparisonSamples() const {
         if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Samples) return false;
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
     }
 
     bool showingComparisonMethod() const {
         if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Method) return false;
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
     }
 
     bool showingScaling() const {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
@@ -2249,6 +3004,8 @@ private:
                 ftxui::color(ftxui::Color::RGB(98,232,137)));
         if (snapshot.phase != ExecutionPhase::Finished)
             rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
+        if (clusterBenchmarkMode_ && !clusterExportMessage_.empty())
+            rows.push_back(ftxui::paragraph(clusterExportMessage_));
         auto presentation = comparisonRows(comparison, stored.description.patternName,
             static_cast<ComparisonTab>(comparisonTab_), static_cast<int>(controls::terminalSize().columns) - 2,
             identityCyan(), ftxui::Color::RGB(98,232,137), comparisonSampleDetails_, comparisonMethodDetails_);
@@ -2258,7 +3015,7 @@ private:
             rows.push_back(ftxui::text(" "));
             rows.push_back(ftxui::text("Ejecución #" + std::to_string(stored.description.id)) | ftxui::dim);
         }
-        return panel(session ? "RESULTADOS DE LA SESIÓN" : "COMPARACIÓN DE MOTORES",
+        return panel(session ? "RESULTADOS DE LA SESIÓN" : clusterBenchmarkMode_ ? "BENCHMARK DEL CLÚSTER" : "COMPARACIÓN DE MOTORES",
             resultViewport(std::move(rows), std::move(tabs)));
     }
 
@@ -2298,22 +3055,34 @@ private:
             std::clamp(static_cast<int>(static_cast<long double>(snapshot.completedWork)*100/snapshot.totalWork),0,99):0;
         const auto tint=finished?Color::RGB(98,232,137):identityCyan();
         const int barWidth=std::clamp(static_cast<int>(terminal.columns)-24,12,48);
-        const std::string title=!d.scaling?"COMPARACIÓN DE MOTORES":
+        const std::string title=clusterBenchmarkMode_?"BENCHMARK DEL CLÚSTER":!d.scaling?"COMPARACIÓN DE MOTORES":
             sc.parallelEngine==Engine::CUDA?"BLOQUES CUDA":sc.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP";
-        const std::string status=finished?"Benchmark completado":
+        const std::string status=clusterBenchmarkMode_ && cancelClusterBenchmark_ ? "Esperando el intento en curso" :
+            finished?"Benchmark completado":
             snapshot.phase==ExecutionPhase::Preparing?"Preparando entrada":"Ejecutando benchmark";
         const auto digits=std::to_string(percent);
         auto progress=hbox({gauge(static_cast<float>(percent)/100)|color(tint)|
             bgcolor(Color::RGB(35,40,44))|size(WIDTH,EQUAL,barWidth),
             text("  "+std::string(3-digits.size(),' ')+digits+" %")|bold|color(tint)});
         auto card=vbox({text(" "),text(status)|bold|color(tint),text(" "),std::move(progress),text(" ")});
+        if (clusterBenchmarkMode_) {
+            if (snapshot.totalWork)
+                card = vbox({std::move(card), text(std::to_string(snapshot.completedWork) + "/" +
+                    std::to_string(snapshot.totalWork) + " intentos") | center});
+            const auto group = clusterSession_->snapshot();
+            if (group.phase == ClusterPhase::Error)
+                card = vbox({std::move(card), paragraph("Grupo MPI perdido durante Benchmark. " + group.message) |
+                    color(Color::Red) | size(WIDTH, LESS_THAN, barWidth)});
+            if (group.phase == ClusterPhase::Closing)
+                card = vbox({std::move(card), text("Cerrando sesión MPI") | center});
+        }
         card=hbox({text("  "),std::move(card),text("  ")})|border;
         resultRows_=1;resultRow_=0;
         return panel(session?"RESULTADOS DE LA SESIÓN":title,card|center);
     }
 
     Element renderExperiment(bool session) {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         if(showExperimentCompletion(snapshot)) return renderExperimentProgress(snapshot,session);
         if (snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (session || snapshot.phase == ExecutionPhase::Finished ||
@@ -2355,7 +3124,7 @@ private:
                 }
             } else {
                 resources="Participantes: ";
-                for(const auto& participant:c.participants) resources+=configurationName(participant)+" ";
+                for(const auto& participant:c.participants) resources+=configurationName(participant,clusterBenchmarkMode_)+" ";
             }
             rows.push_back(ftxui::paragraph(resources));
         }
@@ -2439,7 +3208,50 @@ private:
     // Render del modo didactico. Esta vista NO recalcula reglas de
     // Conway; solo muestra la StepTrace capturada por el worker y
     // la revelacion progresiva basada en el reloj de reproduccion.
-    std::vector<Element> mpiDidacticRows(const didactic_view::Blocks& blocks,int width) {
+    bool handleHybridSelection(Event event) {
+        if(!state_.didactic->isHybrid() || mpiDidacticView_!=0) return false;
+        const auto capture=state_.didactic->capture();
+        if(!capture || !capture->mpiTrace) return false;
+        const auto& trace=*capture->mpiTrace;
+        if(event==Event::Return) {
+            mpiDidacticView_=1;
+            mpiDidacticRow_=0;
+        } else if(event==Event::ArrowUp) {
+            if(mpiSelectedRow_>0) --mpiSelectedRow_;
+        } else if(event==Event::ArrowDown) {
+            mpiSelectedRow_=std::min(mpiSelectedRow_+1,trace.height-1);
+        } else return false;
+        for(const auto& rank:trace.ranks) {
+            const auto& p=rank.partition;
+            if(p.firstRow<=mpiSelectedRow_ && mpiSelectedRow_<p.endRow()) {
+                mpiDidacticRank_=p.rank;
+                break;
+            }
+        }
+        mpiFollowRow_=true;
+        return true;
+    }
+
+    didactic_view::Blocks mpiLocalBlocks(const mpi::MpiStepTrace& trace,DidacticStage stage,
+                                         std::optional<std::size_t> selected) const {
+        auto summary=didactic_view::summary(trace,mpiDidacticRank_,stage);
+        auto boards=didactic_view::local(trace,mpiDidacticRank_,stage,false,selected);
+        if(selected) {
+            const auto& rank=trace.ranks[mpiDidacticRank_];
+            if(stage==DidacticStage::MPIThreadWork && rank.team) {
+                const auto& team=*rank.team;
+                boards.insert(boards.begin(),{std::to_string(team.requested)+" solicitados · "+
+                    std::to_string(team.effective)+" efectivos · "+
+                    std::to_string(team.workers.size())+" con trabajo",{}});
+            }
+            boards.insert(boards.end(),summary.begin(),summary.end());
+            return boards;
+        }
+        summary.insert(summary.end(),boards.begin(),boards.end());
+        return summary;
+    }
+
+    std::vector<Element> mpiDidacticRows(const didactic_view::Blocks& blocks,int width,int columnOffset=-1,int* selectedLine=nullptr) {
         std::vector<Element> rows;
         const bool colors=colorsEnabled();
         auto appendText=[&](const std::string& line) {
@@ -2476,7 +3288,7 @@ private:
             const auto geometry=ui::computeBoardGeometry(std::max(0,width-labelWidth),g.height*2+1,g.width,g.height,2);
             if(!geometry.visible_cols) {appendText("Sin espacio para la cuadrícula.");continue;}
             const auto count=geometry.visible_cols;
-            const auto offset=std::min(static_cast<std::size_t>(mpiDidacticCol_),g.width-count);
+            const auto offset=std::min(static_cast<std::size_t>(columnOffset < 0 ? mpiDidacticCol_ : columnOffset),g.width-count);
             if(count<g.width)appendText("Columnas "+std::to_string(offset)+"-"+std::to_string(offset+count-1)+"/"+std::to_string(g.width)+" · ←→ mover");
             auto border=[&](const char* middle,const char* left,const char* right) {
                 rows.push_back(ftxui::hbox({ftxui::text(std::string(labelWidth,' ')),gridElement(gridBorder(count,middle,left,right,geometry.cell_chars),colors)})|ftxui::hcenter);
@@ -2488,8 +3300,9 @@ private:
                 const bool longLabel=ftxui::string_width(label)>labelWidth-3;
                 if(longLabel) appendText(label);
                 const int owner=g.owners[y*g.width+offset];
-                auto stripe=ftxui::text(colors?"▌ ":"  ");
-                auto labelText=ftxui::text(longLabel?"HALO":label)|ftxui::bold;
+                const bool selected=g.selectedRow==y;
+                auto stripe=ftxui::text(selected?"> ":colors?"▌ ":"  ");
+                auto labelText=ftxui::text(longLabel?(g.rowKinds[y]?"HALO":"FILA"):label)|ftxui::bold;
                 if(colors) {
                     stripe=stripe|ftxui::color(owner>=0?workerColor(owner):ftxui::Color::RGB(150,160,170));
                     labelText=labelText|ftxui::color(ftxui::Color::RGB(238,242,248));
@@ -2508,9 +3321,15 @@ private:
                 std::vector<Element> cells{std::move(band),edge(offset)};
                 for(std::size_t x=offset;x<offset+count;++x) {
                     const auto i=y*g.width+x;
-                    cells.push_back(didacticCellElement(g.values[i]!=0,g.known[i]!=0,static_cast<std::int8_t>(g.owners[i]),geometry.cell_chars,colors));
+                    if(g.compactSymbols && !colors) {
+                        std::string symbol(1,!g.known[i]?'?':g.values[i]?'O':'.');
+                        symbol.resize(geometry.cell_chars,' ');
+                        cells.push_back(ftxui::text(symbol));
+                    } else cells.push_back(didacticCellElement(g.values[i]!=0,g.known[i]!=0,
+                        static_cast<std::int8_t>(g.owners[i]),geometry.cell_chars,colors));
                     cells.push_back(edge(x+1));
                 }
+                if(selected && selectedLine) *selectedLine=static_cast<int>(rows.size());
                 rows.push_back(ftxui::hbox(std::move(cells))|ftxui::hcenter);
                 if(y+1==g.height)border("┴","└","┘");else border("┼","├","┤");
             }
@@ -2571,6 +3390,7 @@ private:
         const auto& f=*snapshot;
         if(!f.error_message.empty())return renderMPIError(f);
         const bool tiny=controls::terminalSize().columns<=44 || controls::terminalSize().rows<=20;
+        const bool hybrid=state_.didactic->isHybrid();
         const auto stage=f.stages.empty()?DidacticStage::MPIState:f.stages.at(f.stage_index);
         const auto playbackColor=colorsEnabled()?ftxui::Color(f.playing?ftxui::Color::RGB(98,232,137):ftxui::Color::RGB(224,185,112)):ftxui::Color(ftxui::Color::Default);
         const auto accent=colorsEnabled()?identityCyan():ftxui::Color(ftxui::Color::Default);
@@ -2585,41 +3405,41 @@ private:
         {
             const auto trace=f.mpi_trace;
             if(trace)mpiDidacticRank_=std::clamp(mpiDidacticRank_,0,static_cast<int>(trace->ranks.size())-1);
-            content=ui::allocatedElement([this,trace,stage,error=f.error_message,visibleGeneration=f.viewed_generation,capturedGeneration=f.captured_generation](int w,int h) {
+            const auto selected=hybrid?std::optional{mpiSelectedRow_}:std::nullopt;
+            content=ui::allocatedElement([this,trace,stage,selected,error=f.error_message,visibleGeneration=f.viewed_generation,capturedGeneration=f.captured_generation](int w,int h) {
                 const bool multiple=trace && error.empty() && w>=110 && h>=14 && mpiDidacticView_!=2;
                 std::vector<didactic_view::Blocks> columns;
                 if(!trace)columns.push_back({{"Sin captura disponible; esperando al trabajador.",{}},{"R reinicia; Esc cierra.",{}}});
                 else if(multiple) {
-                    columns.push_back(didactic_view::global(*trace,stage,false));
-                    auto local=didactic_view::summary(*trace,mpiDidacticRank_,stage);
-                    auto boards=didactic_view::local(*trace,mpiDidacticRank_,stage,false);
-                    local.insert(local.end(),boards.begin(),boards.end());
-                    columns.push_back(std::move(local));
-                } else if(mpiDidacticView_==0)columns.push_back(didactic_view::global(*trace,stage,false));
-                else if(mpiDidacticView_==1) {
-                    auto local=didactic_view::summary(*trace,mpiDidacticRank_,stage);
-                    auto boards=didactic_view::local(*trace,mpiDidacticRank_,stage,false);
-                    local.insert(local.end(),boards.begin(),boards.end());columns.push_back(std::move(local));
-                }
+                    columns.push_back(didactic_view::global(*trace,stage,false,selected));
+                    columns.push_back(mpiLocalBlocks(*trace,stage,selected));
+                } else if(mpiDidacticView_==0) columns.push_back(didactic_view::global(*trace,stage,false,selected));
+                else if(mpiDidacticView_==1) columns.push_back(mpiLocalBlocks(*trace,stage,selected));
                 else {
                     auto help=didactic_view::explanation(*trace,mpiDidacticRank_,stage);
                     help.insert(help.begin(),{{"AYUDA MPI · D vuelve a la vista anterior",{},true},
                         {"Captura MPI real; reproducción por etapas, no orden individual de ejecución.",{}},
                         {"Generación visible: "+std::to_string(visibleGeneration)+"   Capturada: "+(capturedGeneration?std::to_string(*capturedGeneration):"pendiente"),{}},
-                        {"Verde/inversa: viva. Marca de color: proceso. Subrayado: pendiente.",{}},{"",{}}});
-                    auto boards=didactic_view::local(*trace,mpiDidacticRank_,stage);
+                        {selected && !colorsEnabled()?"O viva · . muerta · ? pendiente. Hilos locales al rank.":"Verde/inversa: viva. Marca de color: proceso. Subrayado: pendiente.",{}},{"",{}}});
+                    auto boards=didactic_view::local(*trace,mpiDidacticRank_,stage,true,selected);
                     help.push_back({"",{}});help.insert(help.end(),boards.begin(),boards.end());
                     columns.push_back(std::move(help));
                 }
                 const int cw=std::max(8,w/static_cast<int>(columns.size())-2);
                 std::vector<std::vector<Element>> wrapped;
                 int maxRows=0;
-                for(const auto& col:columns) {
-                    auto rows=mpiDidacticRows(col,cw);
+                int selectionLine=-1;
+                for(std::size_t col=0;col<columns.size();++col) {
+                    auto rows=mpiDidacticRows(columns[col],cw,-1,col==static_cast<std::size_t>(multiple?mpiDidacticView_:0)
+                        ?&selectionLine:nullptr);
                     maxRows=std::max(maxRows,static_cast<int>(rows.size()));wrapped.push_back(std::move(rows));
                 }
                 const int visible=std::max(1,h-1);
                 mpiDidacticMaxOffset_=std::max(0,maxRows-visible);
+                if(mpiFollowRow_ && selectionLine>=0) {
+                    mpiDidacticRow_=std::clamp(mpiDidacticRow_,std::max(0,selectionLine-visible+1),selectionLine);
+                    mpiFollowRow_=false;
+                }
                 const int start=std::clamp(mpiDidacticRow_,0,mpiDidacticMaxOffset_);
                 std::vector<Element> panels;
                 for(const auto& lines:wrapped) {
@@ -2629,20 +3449,31 @@ private:
                     if(panels.size()<wrapped.size()*2-1)panels.push_back(ftxui::separator());
                 }
                 return ftxui::vbox({ftxui::hbox(std::move(panels))|ftxui::flex,
-                    ftxui::text("Líneas "+std::to_string(start+1)+"-"+std::to_string(std::min(maxRows,start+visible))+"/"+std::to_string(maxRows)+" · ↑↓ Home/End")});
+                    ftxui::text("Líneas "+std::to_string(start+1)+"-"+std::to_string(std::min(maxRows,start+visible))+"/"+std::to_string(maxRows)+
+                        (selected && mpiDidacticView_==0?" · PgUp/PgDn":" · ↑↓ Home/End"))});
             });
         }
         static constexpr const char* views[]={"global","local","ayuda"};
         std::string context="Procesos "+std::to_string(f.observed_processes?f.observed_processes:f.requested_processes)+
             (f.observed_processes?"":" solicitados")+"    Vista "+views[mpiDidacticView_];
-        if(mpiDidacticView_==1) context+="    Proceso R"+std::to_string(mpiDidacticRank_);
+        if(hybrid) context+=" R"+std::to_string(mpiDidacticRank_);
+        else if(mpiDidacticView_==1) context+="    Proceso R"+std::to_string(mpiDidacticRank_);
+        if(hybrid && f.mpi_trace) {
+            const auto& rank=f.mpi_trace->ranks[mpiDidacticRank_];
+            if(mpiSelectedRow_>=rank.partition.firstRow && mpiSelectedRow_<rank.partition.endRow()) {
+                context+=" g"+std::to_string(mpiSelectedRow_);
+                if(stage==DidacticStage::MPIThreadWork)
+                    if(const auto thread=didactic_view::threadForRow(rank,mpiSelectedRow_))
+                        context+=" · R"+std::to_string(mpiDidacticRank_)+"/H"+std::to_string(*thread);
+            }
+        }
         status.push_back(ftxui::paragraph(context));
         if(f.observed_processes && f.requested_processes!=f.observed_processes)
             status.push_back(ftxui::paragraph("Solicitados: "+std::to_string(f.requested_processes)+"   Observados: "+std::to_string(f.observed_processes))|
                 ftxui::bold|ftxui::color(colorsEnabled()?ftxui::Color::RGB(224,185,112):ftxui::Color(ftxui::Color::Default)));
         if(!tiny) status.push_back(ftxui::text(" "));
         if(tiny)return ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex})|ftxui::border;
-        return panel("DIDÁCTICA MPI",ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex}));
+        return panel(hybrid?"DIDÁCTICA MPI + OpenMP":"DIDÁCTICA MPI",ftxui::vbox({ftxui::vbox(std::move(status)),std::move(content)|ftxui::flex}));
     }
 
     std::string didacticThreadSummary(const DidacticFrame& frame) const {
@@ -2724,7 +3555,7 @@ private:
         const auto snapshot = std::make_shared<const DidacticFrame>(state_.didactic->snapshot());
         const auto& frame = *snapshot;
 
-        if (frame.mpi_trace || (state_.engine==Engine::MPI)) return renderMPIDidactic(snapshot);
+        if (state_.didactic->usesMPI()) return renderMPIDidactic(snapshot);
 
         if (frame.is_preparing) {
             return panel("VISUALIZACIÓN DIDÁCTICA",
@@ -2911,20 +3742,50 @@ private:
     }
 
     std::string footerText() const {
+        if (state_.page == Page::ClusterSetup) return "Tab campos · Enter · Esc sesión";
+        if (state_.page == Page::ClusterDidactic && clusterPlayback_.leaving)
+            return clusterSession_->snapshot().phase == ClusterPhase::Closing
+                ? "Esperando cierre colectivo" : "Esc otra vez · cerrar sesión";
+        if (state_.page == Page::ClusterDidactic)
+            return controls::terminalSize().columns < 50
+                ? "V/D vistas · [/] · N · Esp · R · Esc"
+                : "V vista · D ayuda · [/] rank · Flechas ventana · N etapa · Esp pausa · +/- · R · Esc sesión";
+        if (state_.page == Page::Cluster) {
+            const auto cluster = clusterSession_->snapshot();
+            const std::string client = lastClusterClient() > 1 ? " · [/] cliente" : "";
+            if (cluster.phase == ClusterPhase::Closing) return "Esperando confirmación";
+            if (cluster.phase == ClusterPhase::Ready)
+                return controls::terminalSize().columns < 50 ? "Tab · Enter · ↑↓ · Esc" + client :
+                    "Tab opción · Enter · ↑↓ desplazar · Esc cerrar" + client;
+            if (cluster.active()) return "↑↓ desplazar · Esc cancelar" + client;
+            return "Tab campos · Enter activar · Esc menú" + client;
+        }
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
             "Esp pausa · G paso · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
             "Esp pausa · R · U usar · D lista · ↑↓ mover · M ruta · Esc":"↑↓ lista · Enter ficha · U usar · M ruta · Esc";
+        if(state_.page==Page::Main && controls::terminalSize().columns<50)return "↑↓/Tab · Enter · V normal · Q salir";
         if(state_.page==Page::Main && controls::terminalSize().columns<80)return "Q salir · V normal · ↑↓/Tab · Enter · D/B/C/M/R";
-        if(state_.page==Page::Didactic && state_.engine==Engine::MPI && state_.didactic && !state_.didactic->errorMessage().empty())
+        if(state_.page==Page::Didactic && state_.didactic && state_.didactic->usesMPI() && !state_.didactic->errorMessage().empty())
             return "Esc menú · D detalles · ↑↓ desplazar";
-        if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · D ayuda · [/] · N paso · Esp · R · Esc";
-        if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · D ayuda · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
+        if(state_.page==Page::Didactic && state_.didactic && state_.didactic->isHybrid())
+            return "V vista · ↑↓ fila · Enter local · [/] rank · D ayuda · N · Esp · R · M motor · Esc";
+        if(state_.page==Page::Didactic && state_.didactic && state_.didactic->usesMPI())
+            return controls::terminalSize().columns<=44?"V vista · D ayuda · [/] · N paso · Esp · R · M · Esc":
+                "V vista · D ayuda · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · M motor · Esc";
+        if (clusterBenchmarkMode_ && state_.page == Page::ComparisonConfig)
+            return "Tab campos · Enter · Esc sesión";
+        if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution) {
+            const auto execution = experiment().snapshot();
+            if (execution.active()) return cancelClusterBenchmark_ ? "Esc otra vez · cerrar grupo" : "Esc · volver tras el intento";
+            if (execution.phase == ExecutionPhase::Finished) return "←→ pestañas · D detalles · E CSV · Esc sesión";
+            return "Esc sesión";
+        }
         const auto terminal = controls::terminalSize();
         if (state_.page==Page::ExperimentExecution || state_.page==Page::BenchmarkResults) {
-            const auto snapshot=experiment_->snapshot();
+            const auto snapshot=experiment().snapshot();
             if(snapshot.active() && (state_.page==Page::ExperimentExecution || !snapshot.latest))
                 return state_.page==Page::ExperimentExecution ?
                     "Esc configuración (la ejecución continúa)" :
@@ -2936,8 +3797,8 @@ private:
                     ? "D lista · Flechas tablero · Esp pausa · R · U usar · M ruta · Esc"
                     : "↑↓ lista · Enter ficha · Esp pausa · R · U usar · M ruta · Esc";
                 case Page::Didactic: return didacticWorkers_
-                    ? "T tableros · ↑↓/PgUp/PgDn hilos · N etapa · Esp · R · +/- · Esc"
-                    : "V vista · T hilos · Flechas tablero · N etapa · Esp · R · +/- · Esc";
+                    ? "T tableros · ↑↓/PgUp/PgDn hilos · N etapa · Esp · R · +/- · M motor · Esc"
+                    : "V vista · T hilos · Flechas tablero · N etapa · Esp · R · +/- · M motor · Esc";
                 case Page::ComparisonConfig:
                 case Page::BenchmarkScaling: return "Tab/Mayús+Tab campos · Enter · Esc";
                 case Page::ExperimentExecution:
@@ -2949,15 +3810,20 @@ private:
             case Page::CudaDidactic:
             case Page::Simulation:
             case Page::CudaBlocks: return {};
+            case Page::Cluster:
+            case Page::ClusterSetup:
+            case Page::ClusterDidactic: return {};
             case Page::Main: return "Q salir · V normal · ↑↓/Tab · Enter · D/B modos · C catálogo · M/R ajustes";
             case Page::Patterns: return catalogDetail_
                 ? "D lista · Flechas tablero · Esp pausa · R reiniciar · U usar · M ruta · Esc"
                 : "↑↓ lista · Enter ficha · Esp pausa · R reiniciar · U usar · M ruta · Esc";
-            case Page::Engines: return "↑↓ · Enter · S/O/M/G motor · Esc volver";
+            case Page::Engines: return isDidacticEngineMenu()?"↑↓ · Enter confirma · Esc volver":
+                "↑↓ · Enter · S/O/M/G motor · Esc volver";
             case Page::Threads: return "↑↓ navegar · Enter seleccionar · Esc volver";
             case Page::PathInput:return "Enter valida · Esc conserva el candidato anterior";
             case Page::MPIInput:
             case Page::ThreadInput: return "Enter confirmar · Esc cancelar";
+            case Page::HybridInput: return "Tab campos · Enter confirmar · Esc cancelar";
             case Page::BenchmarkMenu: return "↑↓ navegar · Enter seleccionar · Esc menú principal";
             case Page::ExperimentExecution: return (showingComparison() || showingScaling())
                 ? ((showingComparisonSamples() || showingComparisonMethod() || showingScalingSamples() || showingScalingMethod())?"←→ pestañas   D detalles   ↑↓ desplazar   Esc configuración":"←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc configuración")
@@ -2968,7 +3834,7 @@ private:
                 ? ((showingComparisonSamples() || showingComparisonMethod() || showingScalingSamples() || showingScalingMethod())?"←→ pestañas   D detalles   ↑↓ desplazar   Esc Benchmark":"←→ Resumen/Muestras/Método · ↑↓ desplazar · Esc Benchmark")
                 : "↑↓ desplazar · Esc volver a Benchmark";
             case Page::Benchmark: return "Esc volver a Benchmark · estados equivalentes";
-            case Page::Didactic: return "T tableros/hilos · Flechas mover · N etapa en pausa · Esp pausa · R · +/- · Esc";
+            case Page::Didactic: return "T tableros/hilos · Flechas mover · N etapa en pausa · Esp pausa · R · +/- · M motor · Esc";
         }
         return {};
     }
@@ -2976,6 +3842,30 @@ private:
     ftxui::ScreenInteractive& screen_;
     DifferentialOutputBuffer& output_;
     InteractiveState state_;
+    std::unique_ptr<ClusterSession> clusterSession_;
+    struct ClusterPlayback {
+        std::optional<std::uint64_t> ticket;
+        std::vector<ClusterMember> members;
+        std::optional<mpi::WindowTrace> trace;
+        mpi::WindowRequest window{}, requested{};
+        std::size_t width{}, height{}, generation{}, population{}, stage{};
+        std::string label, error;
+        int view{}, previousView{}, scroll{}, pageRows{1}, maxScroll{};
+        double speed{1.0};
+        bool loading{}, playing{}, restart{}, leaving{};
+    } clusterPlayback_;
+    ExperimentFormDraft clusterGenerator_{standardExperimentForm(false, 1, false)};
+    std::string clusterSetupError_;
+    std::array<ftxui::Component, 4> clusterGeneratorFields_;
+    ftxui::Component clusterReadyActions_, clusterBenchmarkButton_, clusterBenchmarkForm_;
+    ftxui::Component clusterDidacticButton_, clusterCatalogButton_, clusterGenerateButton_, clusterSetupForm_;
+    ClusterSettings clusterDraft_;
+    std::string clusterInputError_;
+    ftxui::Component clusterForm_, clusterButton_;
+    std::array<ftxui::Component, 3> clusterFields_;
+    bool clusterDefaultsApplied_{};
+    ClusterPhase clusterDisplayPhase_{ClusterPhase::Setup};
+    int clusterScroll_{}, clusterCommandNode_{1}, clusterPageRows_{1};
     std::vector<std::string> mainItems_;
     std::vector<std::string> benchmarkItems_;
     std::vector<std::string> patternItems_;
@@ -3004,7 +3894,10 @@ private:
     std::optional<BenchmarkResult> benchmarkResult_;
     std::string benchmarkError_;
     std::thread benchmarkWorker_;
-    std::unique_ptr<ExperimentExecution> experiment_;
+    std::unique_ptr<ExperimentExecution> experiment_, clusterBenchmark_;
+    bool clusterBenchmarkMode_{};
+    std::atomic<bool> cancelClusterBenchmark_{};
+    std::string clusterExportMessage_;
     bool exitWhenExperimentFinishes_{false};
     bool exitRequested_{false};
     int resultRow_{0}, resultRows_{1};
@@ -3019,6 +3912,14 @@ private:
     int mpiDidacticHelpReturn_=0;
     bool mpiErrorDetails_=false;
     int mpiDidacticView_=0, mpiDidacticRank_=0, mpiDidacticRow_=0, mpiDidacticMaxOffset_=0, mpiDidacticCol_=0;
+    std::size_t mpiSelectedRow_=0;
+    bool mpiFollowRow_=false;
+    int hybridProcesses_=2,hybridThreads_=2;
+    std::string hybridProcessesDraft_,hybridThreadsDraft_,hybridInputError_;
+    ftxui::Component hybridInput_,hybridProcessesInput_,hybridThreadsInput_;
+    std::vector<std::string> didacticEngineItems_{"Secuencial","OpenMP","MPI","MPI + OpenMP","Volver"};
+    int didacticEngineSelection_=0;
+    ftxui::Component didacticEngineMenu_;
     bool didacticNext_{true}, didacticWorkers_{false};
     std::chrono::steady_clock::time_point didacticTickAt_{};
     int detailRow_{0};

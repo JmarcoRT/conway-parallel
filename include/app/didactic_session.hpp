@@ -15,7 +15,7 @@ enum class DidacticPhase { Idle, Preparing, Ready, Closing, Closed, Error };
 // Presentation stages, NOT a global execution timeline. Local traces only
 // support recorded work/coverage and the resulting generation, never halo/cell events.
 enum class DidacticStage { LocalWork, GenerationResult, MPIState, MPIExchangeFirst,
-    MPIExchangeSecond, MPICell, MPIBuffers };
+    MPIExchangeSecond, MPICell, MPIThreadWork, MPIBuffers };
 struct DidacticCapture {
     Game before, after;
     std::optional<core::StepTrace> localTrace;
@@ -97,6 +97,8 @@ public:
     bool isPreparing() const {return phase_==Phase::Preparing;}
     bool busy() const {return busy_;}
     bool closed() const {return phase_==Phase::Closed;}
+    bool usesMPI() const noexcept {return configuration_.engine==Engine::MPI;}
+    bool isHybrid() const noexcept {return usesMPI() && configuration_.mpiOptions.openMPThreads>0;}
     bool ownsMPISession() const {return mpiActive_;} // Includes queued creation, close pending and uncertain cleanup.
     bool cleanupConfirmed() const {return cleanupConfirmed_;}
     const std::string& errorMessage() const {return error_;}

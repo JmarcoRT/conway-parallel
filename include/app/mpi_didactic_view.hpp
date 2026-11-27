@@ -14,6 +14,8 @@ struct Grid {
     std::vector<std::string> labels;
     // Presentation border: 0 own/message, 1 halo, 2 fixed global edge.
     std::vector<std::uint8_t> rowKinds;
+    std::optional<std::size_t> selectedRow;
+    bool compactSymbols=false;
 };
 struct Block {std::string text;std::optional<Grid> grid;bool heading=false;};
 using Blocks=std::vector<Block>;
@@ -25,6 +27,7 @@ inline std::string stage(DidacticStage s) {
     case DidacticStage::MPIState:return "Ver reparto de filas";
     case DidacticStage::MPIExchangeFirst:return "Intercambiar bordes · 1/2";
     case DidacticStage::MPIExchangeSecond:return "Intercambiar bordes · 2/2";
+    case DidacticStage::MPIThreadWork:return "Cálculo OpenMP";
     case DidacticStage::MPICell:return "Calcular una celda";
     case DidacticStage::MPIBuffers:return "Actualizar el tablero";
     case DidacticStage::GenerationResult:return "Ver resultado";
@@ -45,9 +48,19 @@ inline void highlight(Grid& g,std::size_t row,std::size_t column) {
             g.emphasis[y*g.width+x]=dy==0&&dx==0?2:1;
     }
 }
-inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s,bool technical=true) {
+inline std::optional<int> threadForRow(const mpi::RankStepTrace& rank,std::size_t globalRow) {
+    const auto& p=rank.partition;
+    if(!rank.team || globalRow<p.firstRow || globalRow>=p.endRow()) return {};
+    const auto local=globalRow-p.firstRow+1;
+    for(const auto& thread:rank.team->workers)
+        if(thread.first<=local && local<thread.end) return thread.id;
+    return {};
+}
+inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s,bool technical=true,
+                     std::optional<std::size_t> selected={}) {
     Blocks out;const bool result=s==DidacticStage::GenerationResult;
     auto g=blank(t.width,t.height);
+    g.selectedRow=selected;g.compactSymbols=!t.ranks.empty() && t.ranks.front().team.has_value();
     for(const auto& r:t.ranks) {
         const auto& p=r.partition;const auto& buffer=result?r.currentAfter:r.currentBefore;
         for(std::size_t y=0;y<p.rowCount;++y) {
@@ -69,12 +82,16 @@ inline Blocks global(const mpi::MpiStepTrace& t,DidacticStage s,bool technical=t
     text(out,"Población global: "+std::to_string(result?t.aliveAfter:t.aliveBefore));
     return out;
 }
-inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s,bool technical=true) {
+inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s,bool technical=true,
+                    std::optional<std::size_t> selected={}) {
     const auto& r=t.ranks.at(rank);const auto& p=r.partition;Blocks out;
-    if(technical)text(out,"R"+std::to_string(rank)+" · memoria privada · cálculo secuencial local");
+    if(technical)text(out,"R"+std::to_string(rank)+" · memoria privada · "+
+        (r.team?"cálculo OpenMP local":"cálculo secuencial local"));
     if(p.empty()) {text(out,technical?"Sin filas propias; sin cálculo local ni Sendrecv. Participa en colectivas.":"Sin filas propias; participa en el resultado global.");return out;}
     const bool result=s==DidacticStage::GenerationResult;
     auto g=blank(t.width,p.rowCount+2,static_cast<int>(rank));
+    g.compactSymbols=r.team.has_value();
+    if(selected && *selected>=p.firstRow && *selected<p.endRow()) g.selectedRow=*selected-p.firstRow+1;
     g.rowKinds.front()=p.firstRow==0?2:1;
     g.rowKinds.back()=p.endRow()==t.height?2:1;
     const auto& buffer=result?r.currentAfter:r.currentBefore;
@@ -95,7 +112,11 @@ inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s,
         }
     }
     g.labels.push_back(top);
-    for(std::size_t y=0;y<p.rowCount;++y)g.labels.push_back("R"+std::to_string(rank)+" g"+std::to_string(p.firstRow+y));
+    for(std::size_t y=0;y<p.rowCount;++y) {
+        const auto globalRow=p.firstRow+y;
+        const auto thread=s==DidacticStage::MPIThreadWork?threadForRow(r,globalRow):std::nullopt;
+        g.labels.push_back((thread?"H"+std::to_string(*thread):"R"+std::to_string(rank))+" g"+std::to_string(globalRow));
+    }
     g.labels.push_back(bottom);
     if(s==DidacticStage::MPICell && r.cell && r.cell->captured)highlight(g,r.cell->row,r.cell->column-1);
     grid(out,std::string(!technical?(result?"Tablero actualizado G":s==DidacticStage::MPIBuffers?"Generación anterior G":"Generación actual G"):(result?"CURRENT nuevo G":"CURRENT G"))+std::to_string(result?t.generationAfter:t.generationBefore)+(technical?(s==DidacticStage::MPIExchangeFirst?" · composición didáctica":" · captura real"):""),std::move(g));
@@ -108,6 +129,7 @@ inline Blocks local(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage s,
 
     if(s==DidacticStage::MPICell || s==DidacticStage::MPIBuffers) {
         auto next=blank(t.width,p.rowCount,static_cast<int>(rank));
+        next.compactSymbols=r.team.has_value();
         for(std::size_t y=0;y<p.rowCount;++y) {
             next.labels.push_back("R"+std::to_string(rank)+" g"+std::to_string(p.firstRow+y));
             for(std::size_t x=0;x<t.width;++x) {
@@ -151,6 +173,8 @@ inline Blocks summary(const mpi::MpiStepTrace& t,std::size_t rank,DidacticStage 
             text(out,std::string("Siguiente estado: ")+(e.after?"viva":"muerta"));
         } else text(out,"La celda seleccionada pertenece a otro proceso; cambia con [ / ].");
         break;
+    case DidacticStage::MPIThreadWork:
+        text(out,"Los hilos leen las filas propias y los halos recibidos.");break;
     case DidacticStage::MPIBuffers:
         text(out,"La generación calculada G"+std::to_string(t.generationAfter)+" pasa a ser el tablero actual.");break;
     case DidacticStage::GenerationResult:
@@ -211,6 +235,13 @@ inline Blocks explanation(const mpi::MpiStepTrace& t,std::size_t rank,DidacticSt
             text(out,"Lectura de CURRENT; escritura de la célula en NEXT. Otras células de NEXT permanecen ocultas.");
         } else text(out,"Esta célula pertenece a otro rank; selecciónalo con [ / ].");
         return out;
+    }
+    if(s==DidacticStage::MPIThreadWork && r.team) {
+        text(out,"Cada hilo calcula filas propias. Los halos aportan vecinos y se mantienen fuera de este reparto.");
+        for(const auto& thread:r.team->workers)
+            text(out,"R"+std::to_string(rank)+"/H"+std::to_string(thread.id)+" · filas globales ["+
+                std::to_string(r.partition.firstRow+thread.first-1)+","+
+                std::to_string(r.partition.firstRow+thread.end-1)+")");
     }
     if(s==DidacticStage::MPIBuffers)text(out,"NEXT completo capturado; swap confirmado. No se observa el orden individual de cálculo de las células.");
     if(s==DidacticStage::GenerationResult)text(out,"Resultado generación "+std::to_string(t.generationAfter)+" · población global "+std::to_string(t.aliveAfter)+". Los halos nuevos requieren actualización en el siguiente paso.");

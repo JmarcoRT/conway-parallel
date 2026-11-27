@@ -7,7 +7,8 @@
 
 namespace conway::app {
 enum class ExperimentField : std::size_t {
-    Width, Height, Density, Seed, Generations, Warmups, Repetitions, Threads, Source, Processes, Participants, CudaBlocks, Count
+    Width, Height, Density, Seed, Generations, Warmups, Repetitions, Threads, Source, Processes, Participants, CudaBlocks,
+    HybridProcesses, HybridThreads, Count
 };
 inline constexpr auto kExperimentFieldCount = static_cast<std::size_t>(ExperimentField::Count);
 
@@ -16,6 +17,7 @@ struct ExperimentFormDraft {
     int parallelEngine{0}; // 0 OpenMP, 1 MPI, 2 CUDA blocks.
     int source{1}; // 0: current loaded pattern; 1: generated board.
     std::array<std::string, kExperimentFieldCount> values;
+    bool hybrid{false};
 };
 struct ExperimentFormConfig {
     std::optional<input::GenerationConfig> generated;
@@ -27,6 +29,9 @@ struct ExperimentFormValidation {
     std::optional<ExperimentFormConfig> config;
 };
 ExperimentFormDraft standardExperimentForm(bool scaling, int currentThreads, bool hasPattern);
+input::GenerationConfig parseGeneratedBoard(
+    const std::array<std::string, kExperimentFieldCount>& values,
+    std::array<std::string, kExperimentFieldCount>& errors);
 // Pure validation: no generation, Game construction, measurements or OpenMP changes.
 ExperimentFormValidation validateExperimentForm(const ExperimentFormDraft& draft, bool scaling,
                                                 const InputData* loaded);
