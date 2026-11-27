@@ -19,11 +19,14 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -32,6 +35,7 @@ namespace {
 
 struct Options {
     bool server{false};
+    bool interactive{false};
     int clients{0};
     int id{0};
     std::string plan;
@@ -39,6 +43,8 @@ struct Options {
     std::string pattern{"patterns/glider.txt"};
     std::string metrics_path;
     std::string board_path;
+    std::string hostname;
+    std::string address;
     int steps{30};
 };
 
@@ -59,6 +65,7 @@ std::string get_arg(int argc, char** argv, const char* key) {
 Options parse_options(int argc, char** argv) {
     Options o;
     o.server = has_flag(argc, argv, "--server");
+    o.interactive = has_flag(argc, argv, "--interactive");
     o.clients = std::atoi(get_arg(argc, argv, "--clients").c_str());
     o.id = std::atoi(get_arg(argc, argv, "--id").c_str());
     o.plan = get_arg(argc, argv, "--plan");
@@ -67,34 +74,58 @@ Options parse_options(int argc, char** argv) {
     if (!pattern.empty()) o.pattern = pattern;
     o.metrics_path = get_arg(argc, argv, "--metrics");
     o.board_path = get_arg(argc, argv, "--board");
+    o.hostname = get_arg(argc, argv, "--hostname");
+    o.address = get_arg(argc, argv, "--address");
     const auto steps = get_arg(argc, argv, "--steps");
     if (!steps.empty()) o.steps = std::atoi(steps.c_str());
-    if (o.clients <= 0 || o.steps < 0) {
+    if (o.clients <= 0 || o.clients == std::numeric_limits<int>::max() ||
+        (!o.server && (o.id < 1 || o.id > o.clients)) || o.steps < 0) {
         throw std::invalid_argument("--clients debe ser > 0 y --steps >= 0");
     }
     return o;
 }
 
+std::string json_string(const std::string& value) {
+    std::string escaped;
+    for (const unsigned char c : value) {
+        if (c == '"' || c == '\\') escaped += '\\';
+        if (c < 32) {
+            char hex[7];
+            std::snprintf(hex, sizeof(hex), "\\u%04x", static_cast<unsigned>(c));
+            escaped += hex;
+        } else {
+            escaped += static_cast<char>(c);
+        }
+    }
+    return escaped;
+}
+
 MPI_Comm server_comm(const Options& o) {
     if (o.plan.empty()) throw std::invalid_argument("falta --plan");
-
     std::vector<std::string> ports(o.clients);
-    FILE* f = std::fopen(o.plan.c_str(), "w");
-    if (!f) throw std::runtime_error("no se pudo escribir el plan");
-    std::fprintf(f, "{\n  \"nodes\": %d,\n  \"clients\": {\n", o.clients + 1);
     for (int i = 0; i < o.clients; ++i) {
         char port[MPI_MAX_PORT_NAME];
         if (MPI_Open_port(MPI_INFO_NULL, port) != MPI_SUCCESS) {
-            std::fclose(f);
             throw std::runtime_error("MPI_Open_port fallo");
         }
         ports[i] = port;
-        std::fprintf(f, "    \"%d\": {\"port_name\": \"%s\"}%s\n",
-                     i + 1, port, (i + 1 < o.clients) ? "," : "");
-        std::fflush(f);
     }
-    std::fprintf(f, "  }\n}\n");
-    std::fclose(f);
+
+    const auto temporary = o.plan + ".tmp";
+    std::ofstream plan(temporary);
+    plan << "{\n  \"nodes\": " << o.clients + 1;
+    if (o.interactive) plan << ",\n  \"interactive\": true";
+    plan << ",\n  \"clients\": {\n";
+    for (int i = 0; i < o.clients; ++i)
+        plan << "    \"" << i + 1 << "\": {\"port_name\": \""
+             << json_string(ports[i]) << "\"}" << (i + 1 < o.clients ? "," : "") << '\n';
+    plan << "  }\n}\n";
+    plan.close();
+    if (!plan || std::rename(temporary.c_str(), o.plan.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        throw std::runtime_error("no se pudo publicar el plan");
+    }
+    if (o.interactive) std::cout << "PORTS" << std::endl;
 
     MPI_Comm comm = MPI_COMM_SELF;
     for (int step = 0; step < o.clients; ++step) {
@@ -106,6 +137,8 @@ MPI_Comm server_comm(const Options& o) {
         MPI_Comm_free(&intercomm);
         if (comm != MPI_COMM_SELF) MPI_Comm_free(&comm);
         comm = next;
+        MPI_Close_port(ports[step].c_str());
+        if (o.interactive) std::cout << "JOIN\t" << step + 1 << std::endl;
     }
     return comm;
 }
@@ -132,6 +165,57 @@ MPI_Comm client_comm(const Options& o) {
         comm = next;
     }
     return comm;
+}
+
+using MemberText = std::array<char, 256>;
+
+MemberText member_text(const std::string& text) {
+    MemberText field{};
+    const auto count = std::min(text.size(), field.size() - 1);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        field[i] = c < 32 || c == 127 ? ' ' : text[i];
+    }
+    return field;
+}
+
+void interactive_session(const Options& o, MPI_Comm comm) {
+    int rank = 0, size = 0;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    const auto name = member_text(o.hostname);
+    const auto address = member_text(o.address);
+    std::vector<int> ids(rank == 0 ? size : 0);
+    std::vector<MemberText> names(ids.size()), addresses(ids.size());
+    MPI_Gather(&o.id, 1, MPI_INT, ids.data(), 1, MPI_INT, 0, comm);
+    MPI_Gather(name.data(), name.size(), MPI_CHAR, names.data(), name.size(), MPI_CHAR, 0, comm);
+    MPI_Gather(address.data(), address.size(), MPI_CHAR, addresses.data(), address.size(), MPI_CHAR, 0, comm);
+
+    int valid = size == o.clients + 1;
+    if (rank == 0) {
+        for (int i = 0; i < size; ++i) valid = valid && ids[i] == i;
+    }
+    MPI_Bcast(&valid, 1, MPI_INT, 0, comm);
+    if (!valid) throw std::runtime_error("la membresia MPI no coincide con el plan");
+
+    if (rank == 0) {
+        for (int i = 0; i < size; ++i)
+            std::cout << "MEMBER\t" << ids[i] << '\t' << i << '\t'
+                      << names[i].data() << '\t' << addresses[i].data() << '\n';
+        std::cout << "READY" << std::endl;
+    } else {
+        std::cout << "Grupo listo: nodo " << o.id << ", rank " << rank << ", P=" << size << std::endl;
+    }
+
+    // Only rank 0 reads the private control pipe. EOF requests shutdown too.
+    // Every rank receives the same command before releasing the communicator.
+    std::string command;
+    if (rank == 0) {
+        while (std::getline(std::cin, command) && command != "CLOSE") {}
+    }
+    int close = rank == 0;
+    MPI_Bcast(&close, 1, MPI_INT, 0, comm);
+    MPI_Barrier(comm);
 }
 
 int check_conway(const Options& o, MPI_Comm comm) {
@@ -271,9 +355,13 @@ int main(int argc, char** argv) {
     try {
         const Options o = parse_options(argc, argv);
         comm = o.server ? server_comm(o) : client_comm(o);
-        const int rc = check_conway(o, comm);
+        int rc = 0;
+        if (o.interactive) interactive_session(o, comm);
+        else rc = check_conway(o, comm);
         MPI_Comm_free(&comm);
         MPI_Finalize();
+        if (o.interactive)
+            std::cout << (o.server ? "CLOSED" : "Sesión cerrada") << std::endl;
         return rc;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "conway_cluster: %s\n", e.what());

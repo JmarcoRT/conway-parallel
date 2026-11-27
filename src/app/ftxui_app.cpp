@@ -1,6 +1,7 @@
 #include "app/ftxui_app.hpp"
 
 #include "app/benchmark.hpp"
+#include "app/cluster_session.hpp"
 #include "app/experiment_form_view.hpp"
 #include "app/experiment_execution.hpp"
 #include "app/comparison_view.hpp"
@@ -121,6 +122,7 @@ Element renderDidacticBoardPanel(
 
 enum class Page {
     Main,
+    Cluster,
     Simulation,
     CudaBlocks,
     CudaDidactic,
@@ -138,6 +140,8 @@ enum class Page {
     Benchmark,
     Didactic
 };
+
+enum class MainItem { Didactic, Cluster, Benchmark, Catalog, Engine, Resources, Exit };
 
 struct InteractiveState {
     std::optional<InputData> input;
@@ -333,6 +337,7 @@ std::string fitContextLabel(const std::string& label, std::size_t columns) {
 
 // Una barra secundaria, derivada del estado compartido en cada render.
 Element renderContextBar(const InteractiveState& state, std::size_t width) {
+    if (state.page == Page::Cluster) return ftxui::text("Clúster · MPI") | ftxui::dim;
     const bool compact = width < 64;
     std::string label = compact ? "" : "Patrón: ";
     std::string dimensions;
@@ -881,7 +886,7 @@ public:
         Add(passiveView_);
         Add(benchmarkView_);
         Add(didacticView_);
-        mainItems_ = {"Visualización didáctica", "Benchmark", "Catálogo de patrones",
+        mainItems_ = {"Visualización didáctica", "Clúster", "Benchmark", "Catálogo de patrones",
                       "Seleccionar motor", "Configurar recursos", "Salir"};
         benchmarkItems_ = {
             "Comparación de motores", "Escalabilidad",
@@ -912,9 +917,11 @@ public:
         scalingForm_ = makeExperimentFormView(true, input, name, threads, style, submit);
         Add(comparisonForm_);
         Add(scalingForm_);
+        makeClusterForm();
     }
 
     ~InteractiveApp() override {
+        clusterSession_.reset();
         catalogPreview_.close();
         benchmarkCompletionTimer_.request_stop();
         experiment_->shutdown();
@@ -956,6 +963,9 @@ public:
                 content=panel("BLOQUE CUDA",ftxui::vbox({ftxui::paragraph("Enter confirma · Esc conserva. No indica simultaneidad ni ocupación."),blockMenu_->Render()|ftxui::flex}));break;
             case Page::Main:
                 content = renderMain();
+                break;
+            case Page::Cluster:
+                content = renderCluster();
                 break;
             case Page::Patterns:
                 content = renderPatterns(size.columns, layoutHeight, compact);
@@ -1046,6 +1056,17 @@ public:
     bool OnEvent(Event event) override {
         if(state_.page==Page::Main && (event==Event::Tab || event==Event::TabReverse))return mainMenu_->OnEvent(event==Event::Tab?Event::ArrowDown:Event::ArrowUp);
         if (event == Event::Custom) {
+            if (clusterSession_ && state_.page == Page::Cluster) {
+                const auto cluster = clusterSession_->snapshot();
+                if (cluster.phase != clusterDisplayPhase_) {
+                    clusterScroll_ = 0;
+                    clusterDisplayPhase_ = cluster.phase;
+                }
+                if (!clusterDefaultsApplied_ && !cluster.active()) {
+                    if (cluster.defaults) clusterDraft_ = *cluster.defaults;
+                    clusterDefaultsApplied_ = true;
+                }
+            }
             const auto execution=experiment_->snapshot();
             if(execution.phase==ExecutionPhase::Error || (execution.phase==ExecutionPhase::Finished &&
                state_.page!=Page::ExperimentExecution && state_.page!=Page::BenchmarkResults)) completionPendingId_=0;
@@ -1063,7 +1084,8 @@ public:
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
             if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
-                catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
+                catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
+                (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
                 return true;
             }
@@ -1093,6 +1115,7 @@ public:
             }
             return true;
         }
+        if (state_.page == Page::Cluster) return handleClusterEvent(event);
         if(state_.page==Page::CudaDidactic) {
             if(event==Event::Escape || (event.is_character() && (event.character()=="x"||event.character()=="X"||event.character()=="q"||event.character()=="Q"))) {
                 stopCudaPlayback();state_.page=Page::Main;return true;
@@ -1420,6 +1443,7 @@ private:
             case Page::Simulation: return passiveView_;
             case Page::CudaBlocks: return blockMenu_;
             case Page::Main: return mainMenu_;
+            case Page::Cluster: return clusterForm_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
             case Page::ExperimentExecution: return benchmarkView_;
             case Page::ComparisonConfig: return comparisonForm_;
@@ -1646,13 +1670,14 @@ private:
         else state_.page=Page::Threads;
     }
     void selectMain() {
-        switch(state_.mainSelection) {
-            case 0:startDidactic();break;
-            case 1:state_.page=Page::BenchmarkMenu;break;
-            case 2:openCatalog();break;
-            case 3:openEngines();break;
-            case 4:openResources();break;
-            case 5:requestExit();break;
+        switch(static_cast<MainItem>(state_.mainSelection)) {
+            case MainItem::Didactic:startDidactic();break;
+            case MainItem::Cluster:openCluster();break;
+            case MainItem::Benchmark:state_.page=Page::BenchmarkMenu;break;
+            case MainItem::Catalog:openCatalog();break;
+            case MainItem::Engine:openEngines();break;
+            case MainItem::Resources:openResources();break;
+            case MainItem::Exit:requestExit();break;
         }
     }
 
@@ -1918,6 +1943,10 @@ private:
             case Page::Main:
                 requestExit();
                 break;
+            case Page::Cluster:
+                if (clusterSession_->snapshot().active()) clusterSession_->close();
+                else state_.page = Page::Main;
+                break;
             case Page::Patterns:
                 if(catalogDetail_) {catalogDetail_=false;return;}
                 leaveCatalog();state_.page = state_.returnAfterCatalog;break;
@@ -1959,6 +1988,172 @@ private:
         }
     }
 
+    void makeClusterForm() {
+        ftxui::InputOption input;
+        input.multiline = false;
+        clusterFields_ = {ftxui::Input(&clusterDraft_.ip, input), ftxui::Input(&clusterDraft_.port, input),
+                          ftxui::Input(&clusterDraft_.nodes, input)};
+        ftxui::ButtonOption button = ftxui::ButtonOption::Simple();
+        button.transform = [](const ftxui::EntryState& entry) {
+            auto label = ftxui::text("[ " + entry.label + " ]") | ftxui::bold;
+            if (!entry.focused) return label;
+            return colorsEnabled() ? label | ftxui::bgcolor(identityCyan()) |
+                ftxui::color(ftxui::Color::RGB(25, 32, 38)) : label | ftxui::inverted;
+        };
+        clusterButton_ = ftxui::Button("Iniciar sesión", [this] {
+            clusterScroll_ = 0;
+            clusterInputError_ = clusterSession_->start(clusterDraft_);
+        }, button);
+        clusterForm_ = ftxui::Container::Vertical({clusterFields_[0], clusterFields_[1],
+                                                   clusterFields_[2], clusterButton_});
+        Add(clusterForm_);
+    }
+
+    void openCluster() {
+        if (!clusterSession_) {
+            clusterSession_ = std::make_unique<ClusterSession>([this] { screen_.PostEvent(Event::Custom); });
+            clusterSession_->loadDefaults();
+        }
+        clusterScroll_ = 0;
+        state_.message.clear();
+        state_.page = Page::Cluster;
+        clusterFields_.front()->TakeFocus();
+    }
+
+    int lastClusterClient() const {
+        // The form is editable, including empty and partially entered values.
+        unsigned value = 0;
+        for (char digit : clusterDraft_.nodes) {
+            if (digit < '0' || digit > '9' || value > 1024) return 1;
+            value = value * 10 + (digit - '0');
+        }
+        return value >= 2 && value <= 1024 ? static_cast<int>(value) - 1 : 1;
+    }
+
+    bool handleClusterEvent(const Event& event) {
+        const auto state = clusterSession_->snapshot();
+        if (event == Event::Escape) {
+            goBack();
+            return true;
+        }
+        if (event == Event::PageUp || event == Event::PageDown || (state.active() &&
+            (event == Event::ArrowUp || event == Event::ArrowDown))) {
+            const int page = std::max(1, clusterPageRows_ - 1);
+            const int delta = event == Event::PageUp ? -page : event == Event::PageDown ? page :
+                event == Event::ArrowUp ? -1 : 1;
+            clusterScroll_ = std::max(0, clusterScroll_ + delta);
+            return true;
+        }
+        if (event.is_character() && (event.character() == "[" || event.character() == "]")) {
+            const auto last = lastClusterClient();
+            clusterCommandNode_ = std::clamp(clusterCommandNode_, 1, last);
+            clusterCommandNode_ = (clusterCommandNode_ - 1 + last + (event.character() == "[" ? -1 : 1)) % last + 1;
+            clusterScroll_ = 0;
+            return true;
+        }
+        if (state.active()) return true;
+        const auto before = clusterDraft_;
+        const bool handled = clusterForm_->OnEvent(event);
+        if (before.ip != clusterDraft_.ip || before.port != clusterDraft_.port ||
+            before.nodes != clusterDraft_.nodes) clusterInputError_.clear();
+        return handled;
+    }
+
+    static std::string clusterPhaseLabel(ClusterPhase phase) {
+        switch (phase) {
+            case ClusterPhase::Setup: return {};
+            case ClusterPhase::Loading: return "Cargando configuración";
+            case ClusterPhase::Publishing: return "Publicando plan";
+            case ClusterPhase::Connecting: return "Conectando por MPI";
+            case ClusterPhase::Ready: return "Grupo listo";
+            case ClusterPhase::Closing: return "Cerrando sesión";
+            case ClusterPhase::Closed: return "Sesión cerrada";
+            case ClusterPhase::Cancelled: return "Sesión cancelada";
+            case ClusterPhase::Error: return "Error de sesión";
+        }
+        return {};
+    }
+
+    Element renderCluster() {
+        const auto state = clusterSession_->snapshot();
+        ftxui::Elements content;
+        auto status = clusterPhaseLabel(state.phase);
+        if (state.phase == ClusterPhase::Ready) status += " · P=" + std::to_string(state.members.size());
+        if (!status.empty()) content.push_back(heading(std::move(status)));
+        if (state.active() && state.phase != ClusterPhase::Loading) {
+            auto endpoint = clusterDraft_.ip + ":" + clusterDraft_.port;
+            content.push_back(ftxui::paragraph(endpoint + " · " + clusterDraft_.nodes + " nodos"));
+            if (state.planAvailable) content.push_back(ftxui::text("Plan disponible"));
+        }
+        if (!state.active()) {
+            constexpr std::array labels{"IP del servidor", "Puerto", "Nodos (incl. servidor)"};
+            for (std::size_t i = 0; i < labels.size(); ++i) {
+                content.push_back(ftxui::hbox({ftxui::text(std::string(labels[i]) + ": ") |
+                    ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 24), clusterFields_[i]->Render() | ftxui::flex}));
+            }
+            content.push_back(clusterButton_->Render());
+        }
+        content.push_back(ui::allocatedElement([this, state](int width, int height) {
+            didactic_view::Blocks blocks;
+            const auto message = clusterInputError_.empty() ? state.message : clusterInputError_;
+            if (!message.empty()) blocks.push_back({message, {}, true});
+            const auto commandNode = std::clamp(clusterCommandNode_, 1, lastClusterClient());
+            const auto command = clusterClientCommand(clusterDraft_, commandNode);
+            const auto addCommand = [&] {
+                if (command.empty()) return;
+                blocks.push_back({"Cliente " + std::to_string(commandNode) + " · desde la raíz del repositorio", {}, true});
+                blocks.push_back({command, {}});
+            };
+            const auto column = [](const std::string& value, int size) {
+                const auto text = fitContextLabel(value, size);
+                return text + std::string(size - ftxui::string_width(text), ' ');
+            };
+            const int teamWidth = std::max(24, width - 65);
+            const bool wide = width >= 97 && std::none_of(state.members.begin(), state.members.end(),
+                [&](const ClusterMember& member) { return ftxui::string_width(member.hostname) >= teamWidth; });
+            const bool showMembers = !state.members.empty() && state.active();
+            if (!showMembers || state.phase != ClusterPhase::Ready) addCommand();
+            if (showMembers) {
+                if (wide) blocks.push_back({column("Nodo", 7) + column("Equipo", teamWidth) +
+                    column("Rol", 11) + column("IP anunciada", 17) + column("Rank", 9) + "Estado", {}, true});
+                for (std::size_t i = 0; i < state.members.size(); ++i) {
+                    const auto& member = state.members[i];
+                    const auto node = std::to_string(i);
+                    const std::string role = i == 0 ? "Servidor" : "Cliente";
+                    const std::string rank = member.rank ? std::to_string(*member.rank) : "—";
+                    const std::string ip = member.ip.empty() ? "No disponible" : member.ip;
+                    const std::string name = member.hostname.empty() ? "No disponible" : member.hostname;
+                    const std::string connection = member.rank ? "Confirmado" :
+                        member.connected ? "MPI conectado" :
+                        i > 0 ? "Falta cliente" : state.planAvailable ? "En espera" : "Preparando";
+                    if (wide) {
+                        blocks.push_back({column(node, 7) + column(name, teamWidth) + column(role, 11) +
+                            column(ip, 17) + column(rank, 9) + connection, {}});
+                    } else {
+                        blocks.push_back({"Nodo " + node + " · " + role + " · Rank " + rank, {}, true});
+                        blocks.push_back({"Equipo: " + name + " · IP: " + ip, {}});
+                        blocks.push_back({"Estado: " + connection, {}});
+                    }
+                }
+                if (state.phase == ClusterPhase::Ready) addCommand();
+            }
+            auto rows = mpiDidacticRows(blocks, std::max(1, width));
+            auto visible = std::max(1, height);
+            const bool scroll = static_cast<int>(rows.size()) > visible && visible > 1;
+            if (scroll) --visible;
+            clusterPageRows_ = visible;
+            const auto total = static_cast<int>(rows.size());
+            clusterScroll_ = std::clamp(clusterScroll_, 0, std::max(0, total - visible));
+            const auto end = std::min(total, clusterScroll_ + visible);
+            ftxui::Elements shown;
+            for (int i = clusterScroll_; i < end; ++i) shown.push_back(std::move(rows[i]));
+            if (scroll) shown.push_back(ftxui::text("Líneas " + std::to_string(clusterScroll_ + 1) + "–" +
+                std::to_string(end) + "/" + std::to_string(total) + " · PgUp/PgDn") | ftxui::dim);
+            return ftxui::vbox(std::move(shown));
+        }) | ftxui::flex);
+        return panel("Sesión del clúster", ftxui::vbox(std::move(content)));
+    }
+
     Element renderMain() {
         // Only presentation lives here. The existing Menu still owns selection
         // and dispatch; headings and descriptions never introduce focus stops.
@@ -1966,26 +2161,30 @@ private:
             const int menuWidth=std::min(width,88);
             const bool framed=height>=14;
             const int chrome=framed?4:0; // borders, title and title separator
-            const bool descriptions=menuWidth>=64 && height>=chrome+15;
-            int naturalHeight=chrome+10+(descriptions?5:0);
+            const int baseHeight=static_cast<int>(mainItems_.size())+4;
+            const int descriptionRows=static_cast<int>(mainItems_.size())-1;
+            const bool descriptions=menuWidth>=64 && height>=chrome+baseHeight+descriptionRows;
+            int naturalHeight=chrome+baseHeight+(descriptions?descriptionRows:0);
             const bool sectionGaps=height>=naturalHeight+2;
             if(sectionGaps)naturalHeight+=2;
             const bool verticalPadding=framed && height>=naturalHeight+2;
             if(verticalPadding)naturalHeight+=2;
             const int margin=menuWidth>=80?2:menuWidth>=46?1:0;
-            const std::array<std::string,6> help{"Comprender cómo calcula cada motor","Comparar rendimiento y escalabilidad",
+            const std::array<std::string,7> help{"Comprender cómo calcula cada motor","Conectar equipos por MPI","Comparar rendimiento y escalabilidad",
                 "Explorar, reproducir y elegir un patrón","Secuencial, OpenMP o MPI","Recursos según el motor",""};
             const auto primary=ftxui::Color::RGB(25,32,38);
             const auto secondary=ftxui::Color::RGB(168,180,188);
             const auto selectedSecondary=ftxui::Color::RGB(40,55,65);
             std::vector<Element> rows;
             if(verticalPadding)rows.push_back(ftxui::text(""));
-            for(int i=0;i<6;++i) {
-                if(i==0||i==2||i==3) {
-                    if(i!=0 && sectionGaps)rows.push_back(ftxui::text(""));
-                    rows.push_back(heading(i==0?"MODOS PRINCIPALES":i==2?"EXPLORAR PATRONES":"CONFIGURACIÓN"));
+            for(int i=0;i<static_cast<int>(mainItems_.size());++i) {
+                const auto item=static_cast<MainItem>(i);
+                if(item==MainItem::Didactic || item==MainItem::Catalog || item==MainItem::Engine) {
+                    if(item!=MainItem::Didactic && sectionGaps)rows.push_back(ftxui::text(""));
+                    rows.push_back(heading(item==MainItem::Didactic?"MODOS PRINCIPALES":
+                        item==MainItem::Catalog?"EXPLORAR PATRONES":"CONFIGURACIÓN"));
                 }
-                if(i==5)rows.push_back(ftxui::separator());
+                if(item==MainItem::Exit)rows.push_back(ftxui::separator());
                 const bool selected=state_.mainSelection==i;
                 auto name=ftxui::text(std::string(selected?"> ":"  ")+mainItems_[i])|ftxui::bold;
                 if(colorsEnabled() && selected)name=name|ftxui::color(primary);
@@ -2101,12 +2300,14 @@ private:
     void requestExit() {
         leaveCatalog();
         exitRequested_ = true;
+        if(clusterSession_)clusterSession_->close();
         if(normalSession_)normalSession_->close();
         if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
         if (experiment_->snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
-        } else if (catalogPreview_.drained() && (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
+        } else if (catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
+            (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) screen_.Exit();
     }
 
     std::size_t retainedUiPayload() const {
@@ -2911,12 +3112,21 @@ private:
     }
 
     std::string footerText() const {
+        if (state_.page == Page::Cluster) {
+            const auto cluster = clusterSession_->snapshot();
+            const std::string client = lastClusterClient() > 1 ? " · [/] cliente" : "";
+            if (cluster.phase == ClusterPhase::Closing) return "Esperando confirmación";
+            if (cluster.phase == ClusterPhase::Ready) return "↑↓ desplazar · Esc cerrar sesión" + client;
+            if (cluster.active()) return "↑↓ desplazar · Esc cancelar" + client;
+            return "Tab campos · Enter activar · Esc menú" + client;
+        }
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
             "Esp pausa · G paso · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?
             "Esp pausa · R · U usar · D lista · ↑↓ mover · M ruta · Esc":"↑↓ lista · Enter ficha · U usar · M ruta · Esc";
+        if(state_.page==Page::Main && controls::terminalSize().columns<50)return "↑↓/Tab · Enter · V normal · Q salir";
         if(state_.page==Page::Main && controls::terminalSize().columns<80)return "Q salir · V normal · ↑↓/Tab · Enter · D/B/C/M/R";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && state_.didactic && !state_.didactic->errorMessage().empty())
             return "Esc menú · D detalles · ↑↓ desplazar";
@@ -2949,6 +3159,7 @@ private:
             case Page::CudaDidactic:
             case Page::Simulation:
             case Page::CudaBlocks: return {};
+            case Page::Cluster: return {};
             case Page::Main: return "Q salir · V normal · ↑↓/Tab · Enter · D/B modos · C catálogo · M/R ajustes";
             case Page::Patterns: return catalogDetail_
                 ? "D lista · Flechas tablero · Esp pausa · R reiniciar · U usar · M ruta · Esc"
@@ -2976,6 +3187,14 @@ private:
     ftxui::ScreenInteractive& screen_;
     DifferentialOutputBuffer& output_;
     InteractiveState state_;
+    std::unique_ptr<ClusterSession> clusterSession_;
+    ClusterSettings clusterDraft_;
+    std::string clusterInputError_;
+    ftxui::Component clusterForm_, clusterButton_;
+    std::array<ftxui::Component, 3> clusterFields_;
+    bool clusterDefaultsApplied_{};
+    ClusterPhase clusterDisplayPhase_{ClusterPhase::Setup};
+    int clusterScroll_{}, clusterCommandNode_{1}, clusterPageRows_{1};
     std::vector<std::string> mainItems_;
     std::vector<std::string> benchmarkItems_;
     std::vector<std::string> patternItems_;

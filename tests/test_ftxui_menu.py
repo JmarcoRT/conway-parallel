@@ -76,9 +76,9 @@ def expect_identity_heading(terminal, label):
 def raw_rows(t):
     return {int(m[1]):m[2] for m in ROW.finditer(t.raw.decode('utf-8',errors='replace'))}
 
-DESCRIPTIONS=['Comprender cómo calcula cada motor','Comparar rendimiento y escalabilidad',
+DESCRIPTIONS=['Comprender cómo calcula cada motor','Conectar equipos por MPI','Comparar rendimiento y escalabilidad',
     'Explorar, reproducir y elegir un patrón','Secuencial, OpenMP o MPI','Recursos según el motor','']
-LABELS=['Visualización didáctica','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']
+LABELS=['Visualización didáctica','Clúster','Benchmark','Catálogo de patrones','Seleccionar motor','Configurar recursos','Salir']
 
 def contrast(a,b):
     def luminance(rgb):
@@ -118,7 +118,7 @@ def check(binary,cwd,columns,rows):
     terminal=Terminal(binary,cwd,columns,rows)
     try:
         descriptions=rows>=30 and columns>=64
-        for index in range(6):
+        for index in range(len(LABELS)):
             line,fill=block(terminal,index,descriptions)
             if columns>88:
                 assert abs((fill[0]+fill[-1])-(columns-1))<=1,(columns,fill)
@@ -130,7 +130,7 @@ def check(binary,cwd,columns,rows):
             bottom=next(y for y,row in screen.items() if y>title and '╰' in row)
             exit_row=next(y for y,row in screen.items() if 'Salir' in row)
             assert bottom-exit_row<=2,(exit_row,bottom,screen)
-            assert bottom-(title-1)+1<=23,(title,bottom,screen)
+            assert bottom-(title-1)+1<=25,(title,bottom,screen)
         terminal.send('c');terminal.send('\x1b[B');terminal.send('\r')
         assert 'Sin cargar' in terminal.context()
         terminal.send('u');terminal.expect('Patrón: willow.txt','6 × 4')
@@ -146,7 +146,7 @@ def resizing(binary,cwd,no_color=False):
             binary=str(wrapper)
         terminal=Terminal(binary,cwd,160,50)
         try:
-            terminal.send('\t') # Benchmark remains selected across all sizes.
+            terminal.send('\t\t') # Benchmark remains selected across all sizes.
             for width,height in [(160,50),(80,30),(50,24),(40,18),(120,40),(240,60)]:
                 resize(terminal,width,height);terminal.read();terminal.assert_fits()
                 rows=raw_rows(terminal)
@@ -161,7 +161,7 @@ def resizing(binary,cwd,no_color=False):
                         unselected=next(row for row in rows.values() if DESCRIPTIONS[0] in ANSI.sub('',row))
                         assert '\x1b[2m' in unselected,unselected
                     assert not any(p[2]==CYAN for row in rows.values() for p in pixels(row))
-                else:block(terminal,1,height>=30)
+                else:block(terminal,2,height>=30)
             terminal.send('q');assert terminal.process.wait(timeout=5)==0
             print(f'PASS main resize and selected block preservation, NO_COLOR={no_color}',flush=True)
         finally:terminal.close()
