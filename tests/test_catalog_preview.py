@@ -7,10 +7,9 @@ import sys
 import tempfile
 import time
 sys.dont_write_bytecode=True
-from test_ftxui_header import Terminal
+from test_ftxui_header import Terminal, ROW
 from test_ftxui_mpi import wait,text,workers
 from test_ftxui_responsive import resize
-from test_ftxui_didactic_mpi_views import visual
 
 def load(t,path,confirm=False):
     t.send('c');t.send('m');t.send(str(path)+'\r')
@@ -20,10 +19,67 @@ def load(t,path,confirm=False):
 def generation(t):
     m=re.findall(r'CURRENT · generación (\d+)',text(t));return int(m[-1]) if m else None
 
-def raster_rows(view):
-    # Wide catalogue has another panel and a gap before the actual grid.
-    return [''.join(re.findall(r'│([O.?]) +(?=│)','│'+line.rsplit('││',1)[1]))[:5]
-            for line in view.splitlines() if '││' in line]
+def raster_rows(terminal):
+    """Decode actual compact 5x5 fills, including alternating checker shades.
+
+    Decode two-column cells or paired half-block rows. Read physical rows from
+    the PTY so playback assertions inspect pixels rather than generation labels.
+    """
+    lines = {}
+    for match in ROW.finditer(terminal.raw.decode('utf-8', errors='replace')):
+        background = foreground = None
+        pixels = []
+        lower = []
+        def state(color):
+            if color and len(color) == 3:
+                red, green, blue = color
+                if green > 100 and green > red * 1.3 and green > blue * 1.3:
+                    return 'O'
+                if 20 <= red <= 60 and 40 <= green <= 80 and 30 <= blue <= 90:
+                    return '.'
+            return ' '
+        for token in re.findall(r'\x1b\[[0-?]*[ -/]*[@-~]|[^\x1b]', match[2]):
+            if token.startswith('\x1b'):
+                if not token.endswith('m'):
+                    continue
+                codes = [int(value or 0) for value in token[2:-1].split(';')]
+                i = 0
+                while i < len(codes):
+                    code = codes[i]
+                    if code == 0:
+                        background = foreground = None
+                    elif code == 49:
+                        background = None
+                    elif code == 39:
+                        foreground = None
+                    elif code in (38, 48) and i + 1 < len(codes):
+                        count = 4 if codes[i + 1] == 2 else 2
+                        if code == 48:
+                            background = tuple(codes[i + 2:i + count + 1])
+                        else:
+                            foreground = tuple(codes[i + 2:i + count + 1])
+                        i += count
+                    i += 1
+            elif token not in '\r\n':
+                value = ' '
+                if token in '▓░':
+                    value = 'O' if token == '▓' else '.'
+                elif token in (' ', '▀'):
+                    value = state(foreground if token == '▀' else background)
+                pixels.append(value)
+                lower.append(state(background) if token == '▀' else ' ')
+        lines[int(match[1])] = (''.join(pixels), ''.join(lower))
+    rows = []
+    for line, lower in lines.values():
+        half = re.search(r'(?<![O.])[O.]{5}(?![O.])', lower)
+        if half:
+            rows.extend([line[half.start():half.end()], half[0]])
+            continue
+        for match in re.finditer(r'(?<![O.])[O.]{10}(?![O.])', line):
+            cells = match[0]
+            assert all(cells[i] == cells[i + 1] for i in range(0, 10, 2)), line
+            rows.append(cells[::2])
+    return rows[:5]
 
 def check(binary,root,size,no_color=False):
     t=Terminal(binary,root,*size)
@@ -40,17 +96,15 @@ def check(binary,root,size,no_color=False):
         assert 'Secuencial' in text(t) and 'En pausa' in text(t),text(t)
         assert not workers(t.process.pid)
         # Raster must contain actual grid cells, not just a title.
-        assert '┌──' in text(t) and '└──' in text(t),text(t)
+        assert len(raster_rows(t)) == 5, text(t)
         t.send(' ');wait(t,lambda:generation(t) is not None and generation(t)>=2)
         t.send(' ');paused=generation(t);raw=t.raw;t.read();assert t.raw==raw
         t.send('r');wait(t,lambda:generation(t)==0);assert 'En pausa' in text(t)
         t.send('\x1b[B'*2)
-        raster=visual(t)
-        pattern_rows=raster_rows(raster)
-        assert '..O..' in pattern_rows and '.OOO.' not in pattern_rows,raster
+        pattern_rows=raster_rows(t)
+        assert '..O..' in pattern_rows and '.OOO.' not in pattern_rows,text(t)
         t.send('n');wait(t,lambda:generation(t)==1)
-        raster=visual(t)
-        assert '.OOO.' in raster_rows(raster),raster
+        assert '.OOO.' in raster_rows(t),text(t)
         t.send('u');wait(t,lambda:'blinker.txt' in t.context())
         assert '5×5' in t.context() and 'MPI' in t.context()
         # Invalid manual input cannot confirm the old candidate accidentally.
@@ -62,14 +116,17 @@ def check(binary,root,size,no_color=False):
         t.send('c');t.send('\x1b[B');t.send('\r')
         assert generation(t)==0 and 'En pausa' in text(t)
         assert 'blinker.txt' in t.context()
+        # Keep the resize fixture independent of catalog ordering and additions.
+        t.send('m');t.send(str(Path(root)/'patterns/blinker.txt')+'\r')
+        wait(t,lambda:generation(t)==0)
         for dimensions in [(160,45),(50,24),(40,18),(120,40)]:
             resize(t,*dimensions);t.read();t.assert_fits()
             assert 'Esp' in text(t) and 'U usar' in text(t),text(t)
             if dimensions[0]<100:assert 'CURRENT · generación 0' in text(t),text(t)
         t.send('x');t.send('d')
-        wait(t,lambda:'DIDÁCTICA MPI' in text(t) and 'capturada 1' in text(t))
+        wait(t,lambda:'DIDÁCTICA MPI' in text(t) and 'Paso 1 de 6' in text(t))
         # Initial input, not the previously played generation, is captured.
-        assert 'Visible G0' in text(t);t.send(' ')
+        assert 'Generación 0' in text(t);t.send(' ')
         t.send('\x1b');wait(t,lambda:not workers(t.process.pid))
         t.send('b');t.send('\r');assert 'COMPARACIÓN DE MOTORES' in text(t)
         t.send('\x1b');t.send('\x1b');t.send('q');assert t.process.wait(timeout=8)==0
@@ -91,7 +148,7 @@ def monochrome(binary,root):
             t.send('\x1b[B'*2)
             assert '▓▓' in text(t) and '░░' in text(t),text(t)
             t.send('n');wait(t,lambda:generation(t)==1)
-            assert '░░│▓▓│▓▓│▓▓│░░' in text(t),text(t)
+            assert '.OOO.' in raster_rows(t),text(t)
             assert b'48;2;98;232;137m' not in t.raw
             t.send('x');t.send('q');assert t.process.wait(timeout=5)==0
             t.read();assert b'TERMINAL_RESTORED' in t.raw

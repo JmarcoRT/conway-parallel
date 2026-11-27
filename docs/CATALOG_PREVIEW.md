@@ -27,13 +27,15 @@ la acción de confirmar. M abre ruta manual; Enter valida y abre un candidato
 externo sin confirmar. Una ruta inválida conserva candidato y entrada confirmada;
 Esc cancela la ruta. El archivo externo no se copia al catálogo de disco.
 
-En terminal amplia hay lista y ficha con descripción, cuadrícula y reproducción.
+En terminal amplia hay lista y ficha con descripción, tablero compacto y reproducción.
 En pequeña se alterna lista/ficha con D/Tab; Esc desde la ficha vuelve a la lista,
 y desde la lista abandona. X abandona directamente. Flechas en ficha desplazan
 el tablero y PgUp/PgDn los metadatos. Generación, reproducción y ayuda se conservan
 visibles; a 40×18 se reduce el detalle para reservar al menos una fila del tablero.
-Sin color se conservan los bloques de estado y el foco inverso. Redimensionar no
-reinicia ni confirma.
+En color, los tableros grandes pueden comprimir dos filas lógicas por línea.
+El indicador y las flechas mantienen coordenadas lógicas. Sin color se conservan
+los bloques de estado y el foco inverso, sin comprimir filas mediante color.
+Redimensionar no reinicia ni confirma.
 
 ## Ejecución y cierre
 

@@ -3,9 +3,49 @@
 
 namespace conway::ui {
 using namespace ftxui;
-BoardGeometry computeBoardGeometry(std::size_t width,std::size_t height,std::size_t columns,std::size_t rows,std::size_t maxCellChars) {
+BoardGeometry computeBoardGeometry(std::size_t width,std::size_t height,std::size_t columns,std::size_t rows,
+                                   std::size_t maxCellChars,bool compact,bool halfBlocks) {
     BoardGeometry g;
-    if(width<3 || height<3 || !columns || !rows)return g;
+    if(!columns || !rows || width<(compact?1u:3u) || height<(compact?1u:3u))return g;
+    if(compact) {
+        // Adjacent cells, no interior grid. Prefer two columns per cell so the
+        // board stays square-ish, but don't let it monopolize the available
+        // width. If two columns still overflow, pack two logical rows into one
+        // terminal line so the cells remain square instead of turning tall.
+        const auto target=std::max<std::size_t>(20,width*3/4);
+        for(std::size_t cw=std::clamp<std::size_t>(maxCellChars,2,8);cw>=2;--cw) {
+            if(columns*cw>target)continue;
+            for(bool border:{true,false}) {
+                const auto w=columns*cw+(border?2:0),h=rows+(border?2:0);
+                if(w<=width && h<=height) {
+                    g.cell_chars=cw;g.compact=true;g.compact_border=border;
+                    g.visible_rows=rows;g.visible_cols=columns;
+                    g.board_chars=w;g.board_lines=h;g.full_board_shown=true;return g;
+                }
+            }
+        }
+        if(halfBlocks) {
+            const auto halfRows=(rows+1)/2;
+            for(bool border:{true,false}) {
+                const auto w=columns+(border?2:0),h=halfRows+(border?2:0);
+                if(w<=width && h<=height) {
+                    g.cell_chars=1;g.compact=true;g.compact_border=border;g.half_block=true;
+                    g.visible_rows=rows;g.visible_cols=columns;
+                    g.board_chars=w;g.board_lines=h;g.full_board_shown=true;return g;
+                }
+            }
+            // A compact viewport still shows more cells than the classic grid.
+            g.cell_chars=1;g.compact=true;g.half_block=true;
+            g.visible_cols=std::min(columns,width);
+            g.visible_rows=std::min(rows,std::max<std::size_t>(1,height*2));
+            g.board_chars=g.visible_cols;
+            g.board_lines=(g.visible_rows+1)/2;
+            return g;
+        }
+        g.cell_chars=1;g.compact=true;g.compact_border=false;
+        g.visible_cols=std::min(columns,width);g.visible_rows=std::min(rows,height);
+        g.board_chars=g.visible_cols;g.board_lines=g.visible_rows;return g;
+    }
     for(std::size_t cw=std::clamp<std::size_t>(maxCellChars,2,8);cw>=2;--cw) {
         const auto w=columns*(cw+1)+1,h=rows*2+1;
         if(w<=width && h<=height) {
@@ -35,6 +75,35 @@ std::string repeat(const char* value,std::size_t count) {
 Element renderBoardGrid(const BoardGeometry& g,std::size_t boardWidth,std::size_t boardHeight,
                        const BoardPrimitives& p,const BoardDecorations* d,std::string label) {
     if(!g.visible_rows || !g.visible_cols || !boardWidth || !boardHeight)return text("Tablero sin espacio")|dim;
+    if(g.compact) {
+        const auto cell=std::clamp<std::size_t>(g.cell_chars,1,8);
+        Elements rows;
+        const auto step=g.half_block?2:1;
+        rows.reserve((g.visible_rows+step-1)/step);
+        for(std::size_t y=0;y<g.visible_rows;y+=step) {
+            const auto r=g.row_offset+y;
+            Elements cells;
+            cells.reserve(g.visible_cols);
+            for(std::size_t x=0;x<g.visible_cols;++x) {
+                const auto c=g.col_offset+x;
+                if(g.half_block && p.pair) {
+                    const auto bottom=y+1<g.visible_rows?r+1:std::size_t(-1);
+                    cells.push_back(p.pair(r,bottom,c,cell));
+                    continue;
+                }
+                auto interior=p.cell(r,c,cell);
+                const auto mark=d && d->mark?d->mark(r,c):BoardCellMark::None;
+                if(mark==BoardCellMark::Selected)interior=interior|bold|inverted;
+                else if(mark==BoardCellMark::Neighbor)interior=interior|underlined;
+                cells.push_back(std::move(interior));
+            }
+            rows.push_back(hbox(std::move(cells)));
+        }
+        Element board=vbox(std::move(rows));
+        if(g.compact_border)board=board|(g.compact_border_light?borderLight:border);
+        if(!label.empty())board=vbox({std::move(board),text(std::move(label))|dim});
+        return vbox({filler(),hbox({filler(),std::move(board),filler()}),filler()});
+    }
     const auto cell=std::clamp<std::size_t>(g.cell_chars,2,8);
     auto selectedV=[&](std::size_t r,std::size_t c) {
         if(!d || !d->blockWidth || !d->blockHeight)return false;

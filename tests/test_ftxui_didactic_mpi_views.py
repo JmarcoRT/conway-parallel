@@ -198,10 +198,15 @@ def empty_and_initial_error(binary,root):
         t=Terminal(str(wrapper),root,60,24)
         try:
             enter(t,path,2)
-            before=collect(t);assert cells(before,'R0 g0',13)=='O'+'.'*12,before
+            before=collect(t)
+            first,last,total=map(int,re.search(r'Columnas (\d+)-(\d+)/(\d+)',before).groups())
+            count=last-first+1
+            assert first==0 and total==21 and cells(before,'R0 g0',count)=='O'+'.'*(count-1),before
             assert b'48;2;98;232;137m' not in t.raw,'NO_COLOR was ignored'
             t.send('\x1b[C'*100);after=collect(t)
-            assert 'Columnas 0-' in before and 'Columnas 0-' not in after and cells(after,'R0 g0',13)=='.'*12+'O',after
+            first,last,total=map(int,re.search(r'Columnas (\d+)-(\d+)/(\d+)',after).groups())
+            assert last==total-1 and first==total-count,after
+            assert cells(after,'R0 g0',count)=='.'*(count-1)+'O',after
             t.send('v');t.send(']')
             assert 'Sin filas propias' in text(t),text(t)
             t.send('\x1b');wait(t,lambda:not workers(t.process.pid));t.send('C');t.send('m')

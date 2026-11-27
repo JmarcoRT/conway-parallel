@@ -79,6 +79,33 @@ int main() {
             every.study->complete=false;
             check(scalingPlotPoints(every).empty(),"incomplete study plotted as valid");
         }
+        // Known medians for the shared study path, independent of plotting or
+        // requested resource order. CUDA compares categories on the same GPU.
+        for(auto engine:{Engine::OpenMP,Engine::MPI,Engine::CUDA}) {
+            ScalingResult known;known.config.parallelEngine=engine;known.study=study;
+            auto& k=*known.study;k.configurations.resize(1);k.summaries.resize(1);
+            const int requests[]={8,1,4};
+            const core::CudaBlockSize blocks[]={core::kCudaBlock8x8,core::kCudaBlock16x16,core::kCudaBlock32x8};
+            const double medians[]={9,2,5};
+            for(int i=0;i<3;++i) {
+                ExecutionConfiguration c;c.engine=engine;
+                if(engine==Engine::CUDA)c.cudaBlock=blocks[i];
+                else if(engine==Engine::MPI)c.requestedProcesses=requests[i];
+                else c.requestedThreads=requests[i];
+                k.configurations.push_back(c);
+                auto summary=study.summaries.front();summary.configurationIndex=i+1;
+                summary.statistics->medianMs=medians[i];summary.speedup=10/medians[i];
+                k.summaries.push_back(summary);
+            }
+            auto output=[&]{return render(scalingRows(known,"fixture",ScalingTab::Summary,120,ftxui::Color::Cyan,ftxui::Color::Green),120);};
+            const auto winner=engine==Engine::CUDA?"bloque 16×16":engine==Engine::MPI?"1 proceso solicitado":"1 hilo solicitado";
+            check(output().find(std::string("Menor tiempo observado: ")+winner)!=std::string::npos,"shared study winner must use minimum median");
+            k.summaries[2].equivalent=false;
+            const auto next=engine==Engine::CUDA?"bloque 32×8":engine==Engine::MPI?"4 procesos solicitados":"4 hilos solicitados";
+            check(output().find(std::string("Menor tiempo observado: ")+next)!=std::string::npos,"shared study must exclude nonequivalent fastest candidate");
+            k.complete=false;
+            check(output().find("Sin mediciones válidas para identificar")!=std::string::npos,"incomplete study must have no winner");
+        }
         result.study->configurations.erase(result.study->configurations.begin());result.study->summaries.clear();result.study->samples.clear();result.study->sessions.clear();
         text=render(comparisonRows(result,"blinker",ComparisonTab::Summary,80,ftxui::Color::Cyan,ftxui::Color::Green),80);
         check(text.find("Sin participante Secuencial")!=text.npos,"missing baseline warning");

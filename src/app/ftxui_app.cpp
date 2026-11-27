@@ -68,12 +68,13 @@ using ftxui::Event;
 // definicion (didacticBoardRows, didacticCurrentRows) y se mantienen
 // en el mismo namespace anonimo.
 Element cellElement(bool alive, bool colors);
-Element cellElement(bool alive, std::size_t cell_chars, bool colors);
+Element cellElement(bool alive, std::size_t cell_chars, bool colors, bool checker = false);
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index, bool colors);
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
-                             std::size_t cell_chars, bool colors);
+                             std::size_t cell_chars, bool colors,
+                             bool checker = false);
 Element gridElement(std::string value, bool colors);
 std::string gridBorder(
     std::size_t columns,
@@ -109,7 +110,8 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t panel_inner_width,
     std::size_t panel_inner_height,
     std::size_t board_width,
-    std::size_t board_height);
+    std::size_t board_height,
+    bool halfBlocks = false);
 
 Element renderDidacticBoardPanel(
     const conway::app::DidacticFrame& frame,
@@ -367,6 +369,21 @@ Element panel(std::string title, Element body) {
     }) | ftxui::border | ftxui::flex;
 }
 
+ftxui::Color checkerTint(const ftxui::Color& base, bool checker, bool dark) {
+    if (!checker) return base;
+    // Gamma-corrected interpolation needs different amounts for dark and
+    // bright fills to keep the checkerboard difference subtle but visible.
+    return dark
+        ? ftxui::Color::Interpolate(0.008F, base, ftxui::Color::RGB(255, 255, 255))
+        : ftxui::Color::Interpolate(0.08F, base, ftxui::Color::RGB(0, 0, 0));
+}
+
+// Two logical rows in one terminal line. The upper half uses the foreground
+// colour and the lower half the background colour.
+Element halfBlockCell(const ftxui::Color& top, const ftxui::Color& bottom) {
+    return ftxui::text("▀") | ftxui::color(top) | ftxui::bgcolor(bottom);
+}
+
 Element cellElement(bool alive, bool colors) {
     if (!colors) {
         return ftxui::text(alive ? "▓▓" : "░░");
@@ -380,16 +397,18 @@ Element cellElement(bool alive, bool colors) {
 // Variante con ancho de celda variable. En modo color se usa
 // `cell_chars` espacios como fondo; en modo monocromo se conservan
 // los bloques de 2 chars para no romper la estetica de la
-// visualizacion normal.
-Element cellElement(bool alive, std::size_t cell_chars, bool colors) {
-    if (cell_chars < 2) cell_chars = 2;
-    if (cell_chars > 8) cell_chars = 8;
+// visualizacion normal. El modo compacto permite una sola columna
+// por celda y alterna dos tonos muy cercanos para que las celdas
+// pegadas sigan siendo distinguibles.
+Element cellElement(bool alive, std::size_t cell_chars, bool colors, bool checker) {
+    cell_chars = std::clamp<std::size_t>(cell_chars, 1, 8);
     if (!colors) {
+        if (cell_chars == 1) return ftxui::text(alive ? "█" : " ");
         return ftxui::text(alive ? "▓▓" : "░░");
     }
-    const auto background = alive
+    const auto background = checkerTint(alive
         ? ftxui::Color::RGB(98, 232, 137)
-        : ftxui::Color::RGB(38, 49, 56);
+        : ftxui::Color::RGB(38, 49, 56), checker, !alive);
     return ftxui::text(std::string(cell_chars, ' ')) | ftxui::bgcolor(background);
 }
 
@@ -413,6 +432,15 @@ ftxui::Color workerColor(int index) {
     return palette[index % 8];
 }
 
+ftxui::Color didacticCellColor(bool alive, bool revealed,
+                               std::int8_t worker_index, bool checker) {
+    if(!revealed)return checkerTint(workerColor(-1),checker,true);
+    const auto background=alive
+        ? ftxui::Color::RGB(98,232,137)
+        : workerColor(worker_index);
+    return checkerTint(background,checker,!alive && worker_index<0);
+}
+
 // Celda didactica. alive siempre se pinta verde (#62E889). Las celdas
 // muertas usan el color del worker que las revelo (o dim gris si
 // no han sido reveladas). Asi el reparto se ve en las celdas
@@ -425,15 +453,15 @@ Element didacticCellElement(bool alive, bool revealed,
 // Shared by OpenMP and MPI: blank interiors, state conveyed by fill/attributes.
 Element didacticCellElement(bool alive, bool revealed,
                              std::int8_t worker_index,
-                             std::size_t cell_chars, bool colors) {
-    cell_chars=std::clamp<std::size_t>(cell_chars,2,8);
+                             std::size_t cell_chars, bool colors, bool checker) {
+    cell_chars=std::clamp<std::size_t>(cell_chars,1,8);
     auto cell=ftxui::text(std::string(cell_chars,' '));
     if(!revealed) {
-        if(colors)cell=cell|ftxui::bgcolor(workerColor(-1));
+        if(colors)cell=cell|ftxui::bgcolor(didacticCellColor(false,false,worker_index,checker));
         return cell|ftxui::underlined|ftxui::dim;
     }
     if(!colors)return alive?cell|ftxui::inverted:cell;
-    return cell|ftxui::bgcolor(alive?ftxui::Color::RGB(98,232,137):workerColor(worker_index));
+    return cell|ftxui::bgcolor(didacticCellColor(alive,true,worker_index,checker));
 }
 
 // Construye el tablero NEXT del panel didactico, usando la mascara
@@ -592,9 +620,24 @@ DidacticBoardGeometry computeDidacticBoardGeometry(
     std::size_t panel_inner_width,
     std::size_t panel_inner_height,
     std::size_t board_width,
-    std::size_t board_height
+    std::size_t board_height,
+    bool halfBlocks
 ) {
-    return ui::computeBoardGeometry(panel_inner_width,panel_inner_height,board_width,board_height);
+    // Same adaptive presentation as the catalogue: adjacent cells with a
+    // checkerboard tint, and half-block rows when a wide/tall board would
+    // otherwise dominate the didactic panel. Worker logic is untouched.
+    // Reserve the outer border before choosing a viewport. The compact fitter
+    // may omit its own border to fit all cells; this panel always draws one.
+    if(panel_inner_width<3 || panel_inner_height<3)return {};
+    auto geometry=ui::computeBoardGeometry(
+        panel_inner_width-2,panel_inner_height-2,board_width,board_height,2,true,halfBlocks);
+    if(geometry.visible_rows && geometry.visible_cols) {
+        geometry.compact_border=true;
+        geometry.compact_border_light=true;
+        geometry.board_chars=geometry.visible_cols*(geometry.half_block?1:geometry.cell_chars)+2;
+        geometry.board_lines=(geometry.half_block?(geometry.visible_rows+1)/2:geometry.visible_rows)+2;
+    }
+    return geometry;
 }
 
 // Renderiza un panel (CURRENT o NEXT) aplicando la geometria. La
@@ -607,17 +650,37 @@ Element renderDidacticBoardPanel(
     bool is_next,
     bool colors, bool showViewport
 ) {
+    auto cellColor=[&](std::size_t r,std::size_t c) {
+        const bool checker=geom.compact && ((r+c)&1U)!=0U;
+        if(r>=frame.height || c>=frame.width)
+            return didacticCellColor(false,true,std::int8_t{-1},checker);
+        const auto index=r*frame.width+c;
+        const bool alive=is_next?frame.next_alive_map[index]!=0:frame.current_alive_map[index]!=0;
+        if(is_next) {
+            const bool revealed=frame.revealed[index]!=0;
+            return didacticCellColor(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},checker);
+        }
+        return didacticCellColor(alive,true,std::int8_t{-1},checker);
+    };
     ui::BoardPrimitives primitives{
         [&](std::size_t r,std::size_t c,std::size_t cell) {
-            if(r>=frame.height || c>=frame.width)return didacticCellElement(false,true,-1,cell,colors);
+            const bool checker=geom.compact && ((r+c)&1U)!=0U;
+            if(r>=frame.height || c>=frame.width)return didacticCellElement(false,true,-1,cell,colors,checker);
             const auto index=r*frame.width+c;
             const bool alive=is_next?frame.next_alive_map[index]!=0:frame.current_alive_map[index]!=0;
             if(is_next) {
                 const bool revealed=frame.revealed[index]!=0;
-                return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors);
+                return didacticCellElement(alive,revealed,revealed?frame.worker_id[index]:std::int8_t{-1},cell,colors,checker);
             }
-            return didacticCellElement(alive,true,-1,cell,colors);
-        },[&](std::string value){return gridElement(std::move(value),colors);}};
+            return didacticCellElement(alive,true,-1,cell,colors,checker);
+        },[&](std::string value){return gridElement(std::move(value),colors);},
+        [&](std::size_t r,std::size_t bottom,std::size_t c,std::size_t) {
+            const auto topColor=cellColor(r,c);
+            const auto bottomColor=bottom==std::size_t(-1)
+                ? didacticCellColor(false,true,std::int8_t{-1},((r+1+c)&1U)!=0U)
+                : cellColor(bottom,c);
+            return halfBlockCell(topColor,bottomColor);
+        }};
     std::string label;
     if(showViewport && !geom.full_board_shown)label="Viewport: filas "+std::to_string(geom.row_offset+1)+"–"+
         std::to_string(geom.row_offset+geom.visible_rows)+"/"+std::to_string(frame.height)+" · col. "+
@@ -690,6 +753,55 @@ std::size_t visibleBoardRows(
     const std::size_t boardRowBudget = compact ? rowBudget / 4 : rowBudget / 2;
     return std::max<std::size_t>(
         1, std::min(boardHeight, boardRowBudget));
+}
+
+bool compactBoardStyle(const Game&) {
+    // Catalogue previews use adjacent cells with a subtle checkerboard tint
+    // instead of an interior grid. Other views keep their original layout.
+    return true;
+}
+
+ui::BoardGeometry gameBoardGeometry(
+    const Game& game,
+    std::size_t width,
+    std::size_t height,
+    bool halfBlocks
+) {
+    return ui::computeBoardGeometry(
+        width, height, game.width(), game.height(), 2, compactBoardStyle(game), halfBlocks);
+}
+
+Element renderGameBoard(const Game& game, const ui::BoardGeometry& geom, bool colors) {
+    auto fill=[&](std::size_t r,std::size_t c) {
+        const bool alive=game.isAlive(r,c);
+        return checkerTint(alive
+            ? ftxui::Color::RGB(98,232,137)
+            : ftxui::Color::RGB(38,49,56),
+            geom.compact && ((r+c)&1U)!=0U, !alive);
+    };
+    ui::BoardPrimitives primitives{
+        [&](std::size_t r,std::size_t c,std::size_t cell) {
+            const bool checker=geom.compact && ((r+c)&1U)!=0U;
+            return cellElement(game.isAlive(r,c),cell,colors,checker);
+        },
+        [&](std::string value){return gridElement(std::move(value),colors);},
+        [&](std::size_t r,std::size_t bottom,std::size_t c,std::size_t) {
+            const auto topColor=fill(r,c);
+            const auto bottomColor=bottom==std::size_t(-1)
+                ? ftxui::Color::RGB(38,49,56)
+                : fill(bottom,c);
+            return halfBlockCell(topColor,bottomColor);
+        }};
+    return ui::renderBoardGrid(
+        geom,game.width(),game.height(),primitives,nullptr,{});
+}
+
+Element fitResultRow(Element row,int width) {
+    auto probe=ftxui::Screen::Create(ftxui::Dimension::Fixed(std::max(1,width)),ftxui::Dimension::Fit(row));
+    ftxui::Render(probe,row);
+    // Fit chose the screen height before flexbox knew the available width.
+    // Render resolves the wrapped requirement; the screen itself stays short.
+    return row|ftxui::size(ftxui::HEIGHT,ftxui::EQUAL,std::max(1,row->requirement().min_y));
 }
 
 std::string benchmarkReport(const BenchmarkResult& result) {
@@ -1919,12 +2031,16 @@ private:
         return ui::allocatedElement([this](int width,int height) {
             const auto& game=catalogPreview_.session()->game();
             if(width<4 || height<5)return ftxui::text("Sin espacio; reduce datos o amplía la terminal.");
-            const auto rows=static_cast<std::size_t>(std::max(1,(height-3)/2));
-            const auto columns=static_cast<std::size_t>(std::max(1,(width-1)/3));
-            catalogViewport_.clamp(game.height(),game.width(),rows,columns);
+            const auto boardWidth=static_cast<std::size_t>(std::max(1,width-2));
+            const auto boardHeight=static_cast<std::size_t>(std::max(1,height-2));
+            auto geom=gameBoardGeometry(game,boardWidth,boardHeight,colorsEnabled());
+            if(!geom.visible_rows || !geom.visible_cols)return ftxui::text("Sin espacio para el tablero.");
+            catalogViewport_.clamp(game.height(),game.width(),geom.visible_rows,geom.visible_cols);
+            geom.row_offset=catalogViewport_.row;
+            geom.col_offset=catalogViewport_.column;
             return ftxui::vbox({heading("CURRENT · generación "+std::to_string(game.generation())),
-                ftxui::vbox(boardRows(game,rows,columns,colorsEnabled(),catalogViewport_.row,catalogViewport_.column,false))|ftxui::flex,
-                viewportLabel(catalogViewport_,game.height(),game.width(),rows,columns)});
+                renderGameBoard(game,geom,colorsEnabled())|ftxui::flex,
+                viewportLabel(catalogViewport_,game.height(),game.width(),geom.visible_rows,geom.visible_cols)});
         });
     }
 
@@ -2084,11 +2200,7 @@ private:
     // heights and the frame can keep showing the first screen.
     Element resultViewport(std::vector<Element> rows, Element tabs) {
         const int width = std::max(1, static_cast<int>(controls::terminalSize().columns) - 3);
-        for (auto& row : rows) {
-            auto probe = ftxui::Screen::Create(ftxui::Dimension::Fixed(width), ftxui::Dimension::Fit(row));
-            ftxui::Render(probe, row);
-            row = row | ftxui::size(ftxui::HEIGHT, ftxui::EQUAL, std::max(1, probe.dimy()));
-        }
+        for(auto& row:rows)row=fitResultRow(std::move(row),width);
         resultRows_ = static_cast<int>(rows.size());
         resultRow_ = std::clamp(resultRow_, 0, std::max(0, resultRows_ - 1));
         if (!rows.empty()) rows[resultRow_] = rows[resultRow_] | ftxui::focus;
@@ -2581,7 +2693,7 @@ private:
             if (height < (paired ? 10 : 6) || panelWidth < 4)
                 return ftxui::text("Tablero sin espacio. T consulta hilos.");
             auto geom = computeDidacticBoardGeometry(std::max(0, panelWidth - (paired ? 2 : 0)),
-                std::max(0, height - (paired ? 7 : 3)), frame.width, frame.height);
+                std::max(0, height - (paired ? 7 : 3)), frame.width, frame.height, colorsEnabled());
             didacticViewport_.clamp(frame.height, frame.width, geom.visible_rows, geom.visible_cols);
             geom.row_offset = didacticViewport_.row;
             geom.col_offset = didacticViewport_.column;
@@ -2693,8 +2805,10 @@ private:
             for (std::size_t k = 0; k < chars; ++k) {
                 filled += "\xE2\x96\x80";
             }
-            segments.push_back(ftxui::text(filled) |
-                ftxui::bgcolor(workerColor(w.color_index)));
+            auto segment=ftxui::text(filled);
+            if(colorsEnabled())segment=segment|ftxui::bgcolor(workerColor(w.color_index));
+            else segment=segment|ftxui::dim;
+            segments.push_back(std::move(segment));
             (void)block;
         }
         return ftxui::hbox(std::move(segments));
@@ -2798,7 +2912,7 @@ private:
 
     std::string footerText() const {
         if(state_.page==Page::CudaDidactic)return controls::terminalSize().columns<80?
-            "Esp pausa · +/- · G paso · N hilo · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
+            "Esp pausa · G paso · V ayuda · Esc":"Esp reproducir/pausa · +/- velocidad · G paso CUDA · HJKL hilo · [/] bloque · N explora · B bloque · A cobertura · R · U · V ayuda · Esc";
         if(state_.page==Page::Simulation)return controls::terminalSize().columns<80 ? "N paso · Esp · R · M/B ajustes · U · Esc" : "N paso · Esp pausa · R reinicia · M motor · B recursos · U recuperar · Esc menú";
         if(state_.page==Page::CudaBlocks)return "↑↓/1/2/3 · Enter confirma · Esc conserva";
         if(state_.page==Page::Patterns && controls::terminalSize().columns<80)return catalogDetail_?

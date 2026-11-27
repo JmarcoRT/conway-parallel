@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import sys
 import tempfile
 import time
 sys.dont_write_bytecode = True
-from test_ftxui_header import Terminal
 from test_ftxui_responsive import resize
-from test_ftxui_benchmark import visible, focused
+from test_ftxui_benchmark import Terminal, visible, focused
+from compact_board_assertions import assert_compact_boards
 
 SIZES = [(160, 45), (120, 40), (100, 30), (80, 24)]
 UP, DOWN, LEFT, RIGHT = "\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C"
@@ -26,13 +27,10 @@ def viewport(t, paired):
     match = RANGE.search(text)
     assert match, text
     values = tuple(map(int, match.groups()))
-    assert 1 <= values[0] <= values[1] <= values[2], values
-    assert 1 <= values[3] <= values[4] <= values[5], values
-    # The actual grid must have both borders and all advertised logical rows.
-    assert text.count("┌──") == (2 if paired else 1), text
-    assert text.count("└──") == (2 if paired else 1), text
-    cells = sum(bool(re.search(r"│(?:  │){2}", row)) for row in t.screen().values())
-    assert cells == values[1] - values[0] + 1, (cells, values, text)
+    assert 1 <= values[0] <= values[1] <= values[2], (values,text)
+    assert 1 <= values[3] <= values[4] <= values[5], (values,text)
+    assert_compact_boards(t, values[1]-values[0]+1, values[4]-values[3]+1,
+                          2 if paired else 1, getattr(t, 'monochrome', False))
     return values
 
 
@@ -111,6 +109,25 @@ def check(binary, cwd, size, name):
         t.close()
 
 
+def monochrome(binary, cwd, size):
+    wrapper=Path(cwd)/'no-color'
+    wrapper.write_text('#!/bin/sh\nexport NO_COLOR=1\nexec '+shlex.quote(binary)+'\n')
+    wrapper.chmod(0o700)
+    t=Terminal(str(wrapper),cwd,*size)
+    t.monochrome=True
+    try:
+        t.send('3o4c12\rC');t.send('\r');t.send('u');t.send('d')
+        ready(t);t.send(' ')
+        paired=size[0]>=120 and size[1]>=40
+        old=endpoints(t,paired)
+        resize(t,80,24) if paired else resize(t,160,45)
+        preserved(old,viewport(t,not paired))
+        endpoints(t,not paired)
+        assert b'48;2;' not in t.raw,'NO_COLOR emitted RGB board fills'
+        print(f'PASS monochrome compact endpoints and resize {size}',flush=True)
+    finally:t.close()
+
+
 if __name__ == "__main__":
     os.environ.update(OMP_DYNAMIC="FALSE", OMP_THREAD_LIMIT="12")
     binary = str(Path(sys.argv[1]).resolve())
@@ -123,3 +140,6 @@ if __name__ == "__main__":
         for size in SIZES:
             for name in ("gosper_glider_gun", "pulsar"):
                 check(binary, cwd, size, name)
+
+        for size in [(160,45),(80,24)]:
+            monochrome(binary,cwd,size)
