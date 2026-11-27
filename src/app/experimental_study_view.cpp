@@ -32,7 +32,8 @@ std::string configurationLabel(const ExecutionConfiguration& c) {
             unit(count.value_or(0)," hilo solicitado)"," hilos solicitados)"));
 }
 std::string yes(bool b) {return b?"SI":"NO";}
-std::string motor(const ExecutionConfiguration& c) {
+std::string motor(const ExecutionConfiguration& c, const ExperimentalStudy& study) {
+    if (!study.distributedRanks.empty() && c.engine==Engine::MPI) return "MPI distribuido";
     return c.engine==Engine::Sequential?"Secuencial":c.engine==Engine::OpenMP?"OpenMP":c.engine==Engine::MPI?"MPI":"CUDA";
 }
 std::string sampleConfiguration(const StudySample& sample,const ExecutionConfiguration& c) {
@@ -104,11 +105,17 @@ void studyMethodDetails(ftxui::Elements& rows,const ExperimentalStudy& study,ftx
     if(hasMPI) rows.push_back(paragraph("MPI: máximo entre ranks de intervalos MPI_Wtime. Incluye cálculo, halos, reducciones y barrera final."));
     if(hasMPI) rows.push_back(paragraph("Fuera del principal MPI: barrera inicial, agregación de tiempos, carga, IPC y snapshot."));
     if(hasMPI) section("TIEMPOS AUXILIARES MPI");
-    if(hasMPI) rows.push_back(paragraph("Arranque por sesión y auxiliares son tiempos del cliente separados. La solicitud del lote incluye IPC: no forma una descomposición aditiva."));
+    if(!study.distributedRanks.empty())
+        rows.push_back(paragraph("Preparación: restauración de G0 y reparto. Recolección final: empaquetado y reunión de filas en rank 0. La solicitud completa incluye IPC y estos auxiliares."));
+    else if(hasMPI) rows.push_back(paragraph("Arranque por sesión y auxiliares son tiempos del cliente separados. La solicitud del lote incluye IPC: no forma una descomposición aditiva."));
     section("CÓMO COMPARAMOS");
     rows.push_back(paragraph("Rotación por ronda; cada calentamiento y muestra parten de la misma entrada. Equivalencia completa contra oráculo secuencial fuera del tiempo principal."));
-    if(hasMPI) rows.push_back(paragraph("MPI: sesión nueva por turno y calentamientos por sesión. Cierre confirmado antes del siguiente participante."));
-    if(hasMPI) rows.push_back(paragraph("Sin ranks ociosos durante mediciones locales. Los fallos no se reintentan automáticamente."));
+    if(!study.distributedRanks.empty())
+        rows.push_back(paragraph("MPI distribuido: el grupo confirmado permanece disponible entre intentos. Cada intento parte de G0 y reúne el tablero una vez. Los ranks remotos esperan durante Secuencial."));
+    else if(hasMPI) {
+        rows.push_back(paragraph("MPI: sesión nueva por turno y calentamientos por sesión. Cierre confirmado antes del siguiente participante."));
+        rows.push_back(paragraph("Sin ranks ociosos durante mediciones locales. Los fallos no se reintentan automáticamente."));
+    }
     section("CÓMO INTERPRETAMOS");
     rows.push_back(paragraph("Speedup = mediana secuencial / mediana del participante. Eficiencia = speedup / recursos efectivos estables."));
     if(hasMPI) rows.push_back(paragraph("Recursos MPI: incluye rank 0 y ranks vacíos. La eficiencia puede superar 100 %; no es eficiencia por núcleo."));
@@ -159,7 +166,17 @@ std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy& study,int c
     rows.push_back(paragraph("Cada ejecución comienza con la misma entrada.")|size(WIDTH,LESS_THAN,width));
     rows.push_back(paragraph("El estado final se verifica contra una ejecución secuencial, fuera del tiempo medido.")|size(WIDTH,LESS_THAN,width));
     const bool hasMPI=std::any_of(study.configurations.begin(),study.configurations.end(),[](const auto& c){return c.engine==Engine::MPI;});
-    if(hasMPI) rows.push_back(paragraph("En MPI, los calentamientos se repiten en cada sesión.")|size(WIDTH,LESS_THAN,width));
+    const bool distributed = !study.distributedRanks.empty();
+    if (distributed) {
+        rows.push_back(paragraph("MPI distribuido reutiliza el grupo confirmado. Calentamientos por motor antes de las rondas medidas."));
+        explanation("Grupo reutilizado", "P=" + std::to_string(study.distributedRanks.size()));
+        for (std::size_t rank=0; rank<study.distributedRanks.size(); ++rank) {
+            const auto& member=study.distributedRanks[rank];
+            explanation("Rank "+std::to_string(rank)+(rank==0?" · PC":" · Cliente"),
+                (member.hostname.empty()?"Equipo no disponible":member.hostname) + " · " +
+                (member.ip.empty()?"IP no disponible":member.ip));
+        }
+    } else if(hasMPI) rows.push_back(paragraph("En MPI, los calentamientos se repiten en cada sesión.")|size(WIDTH,LESS_THAN,width));
     section("QUÉ TIEMPO SE COMPARA");
     const std::array<std::string,3> headers{"Motor","Incluye el tiempo principal","Fuera del tiempo principal"};
     const int engineWidth=14;
@@ -187,10 +204,14 @@ std::vector<ftxui::Element> studyMethodRows(const ExperimentalStudy& study,int c
     for(const auto& c:study.configurations) {
         if(!describedEngines.insert(c.engine).second) continue;
         if(c.engine==Engine::CUDA)
-            timingLine({motor(c),"Evolución del tablero en GPU y espera hasta terminar.","Preparación, descarga del tablero y verificación."},false);
+            timingLine({motor(c,study),"Evolución del tablero en GPU y espera hasta terminar.","Preparación, descarga del tablero y verificación."},false);
         else if(c.engine==Engine::MPI)
-            timingLine({motor(c),"Cálculo y comunicación. Tiempo del proceso más lento.","Arranque, carga y descarga del tablero, verificación y cierre."},false);
-        else timingLine({motor(c),"Ejecución de las generaciones del tablero.","Preparación y verificación."},false);
+            timingLine({motor(c,study),distributed?
+                "Máximo MPI_Wtime entre ranks. Cómputo, halos, colectivas del paso y barrera final.":
+                "Cálculo y comunicación. Tiempo del proceso más lento.",
+                distributed?"Conexión, preparación de G0, barrera inicial, recolección final, verificación y FTXUI.":
+                "Arranque, carga y descarga del tablero, verificación y cierre."},false);
+        else timingLine({motor(c,study),"Ejecución de las generaciones del tablero.","Preparación y verificación."},false);
     }
     rows.push_back(paragraph("El tiempo principal mide la evolución del tablero, no la operación completa.")|color(muted)|size(WIDTH,LESS_THAN,width));
     section("CÓMO LEER LAS MÉTRICAS");
@@ -249,7 +270,7 @@ std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int c
     for(const auto& s:study.summaries) {
         const auto& c=study.configurations.at(s.configurationIndex);
         const auto& v=s.statistics;
-        statistics.push_back({(scalingEngine?configurationLabel(c):motor(c))+(s.valid?"":" (no válido)"),v?number(v->medianMs):"N/D",
+        statistics.push_back({(scalingEngine?configurationLabel(c):motor(c,study))+(s.valid?"":" (no válido)"),v?number(v->medianMs):"N/D",
             v?number(v->meanMs):"N/D",v?number(v->minimumMs):"N/D",v?number(v->maximumMs):"N/D",
             v?number(v->populationStddevMs):"N/D"});
         invalidSummary=invalidSummary || !s.valid;
@@ -273,7 +294,7 @@ std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int c
             configuration+=" (solicitados: "+std::to_string(*requested)+")";
             differentResources=true;
         }
-        records.push_back({std::to_string(sample.round+1),std::to_string(sample.position+1),motor(c),configuration,
+        records.push_back({std::to_string(sample.round+1),std::to_string(sample.position+1),motor(c,study),configuration,
             number(sample.elapsedMs),!sample.equivalent?"No coincide":!sample.valid?"No válido":"Correcto"});
         rounds.push_back(sample.round);
     }
@@ -287,7 +308,7 @@ std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int c
     section("DETALLES TÉCNICOS POR MUESTRA");
     for(const auto& sample:study.samples) {
         const auto& c=study.configurations.at(sample.configurationIndex);
-        rows.push_back(paragraph(motor(c)+"   Ronda "+std::to_string(sample.round+1)+
+        rows.push_back(paragraph(motor(c,study)+"   Ronda "+std::to_string(sample.round+1)+
             "   Orden "+std::to_string(sample.position+1))|bold|color(accent));
         rows.push_back(paragraph("Identificador original: #"+std::to_string(sample.executionIndex)+
             "   Ronda base cero: "+std::to_string(sample.round)+"   Posición base cero: "+std::to_string(sample.position))|color(muted));
@@ -300,11 +321,17 @@ std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int c
             rows.push_back(paragraph("Operación completa: "+number(m.totalMs)+" ms"));
         }
         if(c.engine==Engine::MPI) {
-            rows.push_back(paragraph("Auxiliares MPI   Carga: "+metric(sample.loadMs," ms")+"   Snapshot: "+metric(sample.snapshotMs," ms")));
-            rows.push_back(paragraph("Solicitud del lote (incluye IPC): "+metric(sample.requestMs," ms")));
-            rows.push_back(paragraph("No se suma al tiempo principal.")|color(muted));
-            rows.push_back(paragraph("Sesión original: "+(sample.sessionIndex?"#"+std::to_string(*sample.sessionIndex):"N/D")+
-                "   Calentamientos por sesión: "+std::to_string(sample.completedWarmups)));
+            if (!study.distributedRanks.empty()) {
+                rows.push_back(paragraph("Preparación de G0: "+metric(sample.loadMs," ms")+
+                    "   Recolección final: "+metric(sample.snapshotMs," ms")));
+                rows.push_back(paragraph("Solicitud completa (incluye IPC): "+metric(sample.requestMs," ms")));
+            } else {
+                rows.push_back(paragraph("Auxiliares MPI   Carga: "+metric(sample.loadMs," ms")+"   Snapshot: "+metric(sample.snapshotMs," ms")));
+                rows.push_back(paragraph("Solicitud del lote (incluye IPC): "+metric(sample.requestMs," ms")));
+                rows.push_back(paragraph("No se suma al tiempo principal.")|color(muted));
+                rows.push_back(paragraph("Sesión original: "+(sample.sessionIndex?"#"+std::to_string(*sample.sessionIndex):"N/D")+
+                    "   Calentamientos por sesión: "+std::to_string(sample.completedWarmups)));
+            }
         }
         rows.push_back(text(" "));
     }
@@ -313,7 +340,7 @@ std::vector<ftxui::Element> studySampleRows(const ExperimentalStudy& study,int c
         const auto& s=study.sessions[i];
         rows.push_back(paragraph("Sesión original #"+std::to_string(i)+"   Ronda "+std::to_string(s.round+1))|bold|color(accent));
         const auto& c=study.configurations.at(s.configurationIndex);
-        rows.push_back(paragraph(motor(c)+"   Procesos solicitados: "+
+        rows.push_back(paragraph(motor(c,study)+"   Procesos solicitados: "+
             (c.requestedProcesses?std::to_string(*c.requestedProcesses):"N/D")));
         rows.push_back(paragraph("Arranque: "+number(s.startupMs)+" ms   Cierre: "+number(s.closeMs)+" ms"));
         rows.push_back(paragraph("Limpieza confirmada: "+yes(s.cleanupConfirmed))|color(s.cleanupConfirmed?positive:failure));
@@ -350,6 +377,7 @@ std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy& study,cons
     rows.push_back(paragraph(pattern));
     rows.push_back(text("Generaciones   "+std::to_string(study.generations)));
     rows.push_back(text("Repeticiones   "+std::to_string(study.repetitions)));
+    if (!study.distributedRanks.empty()) rows.push_back(text("P="+std::to_string(study.distributedRanks.size())+" · Grupo reutilizado"));
     rows.push_back(text(" "));
     rows.push_back(text(scalingEngine==Engine::MPI?"RESULTADOS MPI":scalingEngine==Engine::CUDA?"RESULTADOS CUDA":scalingEngine?"RESULTADOS OPENMP":"RESULTADOS")|bold|color(accent));
 
@@ -372,7 +400,7 @@ std::vector<ftxui::Element> studySummaryRows(const ExperimentalStudy& study,cons
         const auto& c=study.configurations[s.configurationIndex];
         const bool valid=usable(s);
         const bool reference=c.engine==Engine::Sequential;
-        std::string engine=reference?"Secuencial":c.engine==Engine::OpenMP?"OpenMP":c.engine==Engine::MPI?"MPI":"CUDA";
+        std::string engine=motor(c,study);
         std::string configuration;
         if(c.engine==Engine::CUDA) {
             configuration=c.cudaBlock?"Bloque "+std::to_string(c.cudaBlock->x)+"×"+std::to_string(c.cudaBlock->y):"N/D";

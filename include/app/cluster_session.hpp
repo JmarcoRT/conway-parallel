@@ -3,6 +3,7 @@
 #include "input/generated_input.hpp"
 #include "mpi/window_trace.hpp"
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,11 +30,19 @@ struct ClusterMember {
     std::string ip;
 };
 
+struct ClusterMeasurement {
+    InputData finalBoard;
+    std::size_t generation{};
+    int processes{};
+    double elapsedMs{}, prepareMs{}, collectMs{};
+};
+
 struct ClusterResult {
     std::uint64_t id{};
     std::size_t width{}, height{}, population{};
     std::optional<mpi::WindowTrace> trace;
     std::string error;
+    std::optional<ClusterMeasurement> measurement;
 };
 
 struct ClusterState {
@@ -50,12 +59,17 @@ struct ClusterState {
 class ClusterSession {
 public:
     struct Reset {};
-    using Operation = std::variant<InputData, input::GenerationConfig, Reset, mpi::WindowRequest>;
+    struct BenchmarkAttempt {
+        int generations;
+        std::shared_ptr<const InputData> initial; // Provided on the first attempt only.
+    };
+    using Operation = std::variant<InputData, input::GenerationConfig, Reset, mpi::WindowRequest, BenchmarkAttempt>;
     explicit ClusterSession(std::function<void()> notify);
     ClusterState snapshot() const;
     void loadDefaults();
     std::string start(const ClusterSettings& settings);
     std::optional<std::uint64_t> submit(Operation operation);
+    std::shared_ptr<const ClusterResult> waitForResult(std::uint64_t id);
     void limitPendingWait();
     void close();
 
@@ -65,6 +79,7 @@ private:
 
     std::function<void()> notify_;
     mutable std::mutex mutex_;
+    std::condition_variable changed_;
     ClusterState state_;
     struct Job { std::uint64_t id; Operation operation; };
     std::optional<Job> queued_;

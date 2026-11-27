@@ -220,22 +220,42 @@ void studyFields(ExperimentMetadata& metadata,const ExperimentalStudy& study,con
     put("execution.complete",study.complete?"true":"false");
     put("execution.cleanup_confirmed",study.cleanupConfirmed?"true":"false");
     put("execution.diagnostic",study.diagnostic);
-    put("execution.warmup_policy","local: per configuration before rounds; MPI: per new session before each sample; full equivalence for every warmup");
+    const bool distributed = !study.distributedRanks.empty();
+    put("execution.warmup_policy",distributed?
+        "per engine before measured rounds; same G0 and full equivalence for every attempt":
+        "local: per configuration before rounds; MPI: per new session before each sample; full equivalence for every warmup");
     put("timing.local_scope","steady_clock batch including team observation; excludes construction, input, equivalence and presentation");
     put("timing.mpi_scope","max rank MPI_Wtime batch; preparation barrier excluded; steps including halos/reductions and final barrier included; timing reduction/IPC excluded");
-    put("timing.mpi_auxiliary_scope","client wall durations: startup, load, batch request, snapshot, close; not additive decomposition");
-    put("mpi.lifecycle","one new session per MPI turn; reload generation zero before every warmup/sample; confirmed close before next participant; no retries");
-    put("mpi.launcher",study.mpiOptions.launcher); put("mpi.worker",study.mpiOptions.worker);
-    put("mpi.wire_version",integer(mpi::wire::version));
-    put("mpi.worker_operation_deadline_ms","30000");
-    put("mpi.startup_timeout_ms",integer(study.mpiOptions.startupTimeout.count()));
-    put("mpi.operation_timeout_ms",integer(study.mpiOptions.operationTimeout.count()));
-    put("mpi.close_timeout_ms",integer(study.mpiOptions.closeTimeout.count()));
-    for(std::size_t i=0;i<study.mpiOptions.launcherArguments.size();++i)
-        put("mpi.launcher_argument."+integer(i),study.mpiOptions.launcherArguments[i]);
+    if (distributed) {
+        put("mpi.topology","distributed");
+        put("execution.cleanup_scope","attempts do not own the persistent MPI group");
+        put("mpi.lifecycle","confirmed persistent group reused; connection and group closure outside the experiment");
+        put("mpi.processes",integer(study.distributedRanks.size()));
+        put("timing.mpi_auxiliary_scope","load_ms: distribute and restore G0; snapshot_ms: pack and gather final rows; batch_request_ms: entire local request including IPC; not additive");
+        for (std::size_t rank=0; rank<study.distributedRanks.size(); ++rank) {
+            const auto& member=study.distributedRanks[rank];
+            const auto prefix="mpi.rank."+integer(rank)+".";
+            put(prefix+"role",rank==0?"server":"client");
+            if (member.hostname.empty()) unavailable(f,prefix+"hostname","Hostname not announced");
+            else put(prefix+"hostname",member.hostname);
+            if (member.ip.empty()) unavailable(f,prefix+"announced_ip","IP not announced");
+            else put(prefix+"announced_ip",member.ip);
+        }
+    } else {
+        put("timing.mpi_auxiliary_scope","client wall durations: startup, load, batch request, snapshot, close; not additive decomposition");
+        put("mpi.lifecycle","one new session per MPI turn; reload generation zero before every warmup/sample; confirmed close before next participant; no retries");
+        put("mpi.launcher",study.mpiOptions.launcher); put("mpi.worker",study.mpiOptions.worker);
+        put("mpi.wire_version",integer(mpi::wire::version));
+        put("mpi.worker_operation_deadline_ms","30000");
+        put("mpi.startup_timeout_ms",integer(study.mpiOptions.startupTimeout.count()));
+        put("mpi.operation_timeout_ms",integer(study.mpiOptions.operationTimeout.count()));
+        put("mpi.close_timeout_ms",integer(study.mpiOptions.closeTimeout.count()));
+        for(std::size_t i=0;i<study.mpiOptions.launcherArguments.size();++i)
+            put("mpi.launcher_argument."+integer(i),study.mpiOptions.launcherArguments[i]);
+    }
     for(std::size_t i=0;i<study.configurations.size();++i) {
         const auto& c=study.configurations[i]; auto prefix="configuration."+integer(i)+".";
-        put(prefix+"id",configurationName(c));
+        put(prefix+"id",configurationName(c,distributed));
         if(c.engine==Engine::CUDA) {
             put(prefix+"block_x",integer(c.cudaBlock->x));put(prefix+"block_y",integer(c.cudaBlock->y));
             put(prefix+"efficiency","not_applicable_cuda");

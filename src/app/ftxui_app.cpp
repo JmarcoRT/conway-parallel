@@ -1,6 +1,8 @@
 #include "app/ftxui_app.hpp"
 
 #include "app/benchmark.hpp"
+#include "app/cluster_benchmark.hpp"
+#include "app/experiment_csv.hpp"
 #include "app/cluster_session.hpp"
 #include "app/cluster_didactic_view.hpp"
 #include "app/experiment_form_view.hpp"
@@ -920,12 +922,23 @@ public:
         };
         comparisonForm_ = makeExperimentFormView(false, input, name, threads, style, submit);
         scalingForm_ = makeExperimentFormView(true, input, name, threads, style, submit);
+        clusterBenchmarkForm_ = makeExperimentFormView(false, input, name, threads, style, submit,
+            [this] {
+                const auto group = clusterSession_->snapshot();
+                return group.phase == ClusterPhase::Ready ? static_cast<int>(group.members.size()) : 0;
+            }, [this] { openCatalog(Page::ComparisonConfig); });
+        Add(clusterBenchmarkForm_);
         Add(comparisonForm_);
         Add(scalingForm_);
         makeClusterForm();
     }
 
     ~InteractiveApp() override {
+        if (clusterBenchmark_) {
+            cancelClusterBenchmark_ = true;
+            clusterSession_->close();
+            clusterBenchmark_->shutdown();
+        }
         clusterSession_.reset();
         catalogPreview_.close();
         benchmarkCompletionTimer_.request_stop();
@@ -1008,7 +1021,12 @@ public:
                 content = renderExperiment(false);
                 break;
             case Page::ComparisonConfig:
-                content = panel("COMPARACIÓN DE MOTORES", comparisonForm_->Render());
+                if (clusterBenchmarkMode_ && clusterSession_->snapshot().phase != ClusterPhase::Ready) {
+                    const auto group = clusterSession_->snapshot();
+                    content = panel("BENCHMARK DEL CLÚSTER",
+                        ftxui::paragraph("Grupo MPI no disponible. " + group.message));
+                } else content = panel(clusterBenchmarkMode_ ? "BENCHMARK DEL CLÚSTER" : "COMPARACIÓN DE MOTORES",
+                    (clusterBenchmarkMode_ ? clusterBenchmarkForm_ : comparisonForm_)->Render());
                 break;
             case Page::BenchmarkScaling:
                 content = panel("ESCALABILIDAD · OpenMP / MPI", scalingForm_->Render());
@@ -1073,13 +1091,19 @@ public:
                 if (cluster.phase != clusterDisplayPhase_) {
                     clusterScroll_ = 0;
                     clusterDisplayPhase_ = cluster.phase;
+                    if (cluster.phase == ClusterPhase::Ready) clusterDidacticButton_->TakeFocus();
                 }
                 if (!clusterDefaultsApplied_ && !cluster.active()) {
                     if (cluster.defaults) clusterDraft_ = *cluster.defaults;
                     clusterDefaultsApplied_ = true;
                 }
             }
-            const auto execution=experiment_->snapshot();
+            const auto execution=experiment().snapshot();
+            if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution && cancelClusterBenchmark_ &&
+                !execution.active()) {
+                const auto group = clusterSession_->snapshot().phase;
+                if (group == ClusterPhase::Ready || group == ClusterPhase::Closed) returnToCluster();
+            }
             if(execution.phase==ExecutionPhase::Error || (execution.phase==ExecutionPhase::Finished &&
                state_.page!=Page::ExperimentExecution && state_.page!=Page::BenchmarkResults)) completionPendingId_=0;
             catalogPreview_.poll();
@@ -1095,7 +1119,7 @@ public:
                     ? "Error: captura MPI detenida." : state_.didactic->errorMessage();
                 if(didacticBecameReady && state_.page==Page::Didactic && state_.didactic->isPlaying()) armDidacticTimer();
             }
-            if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment_->snapshot().active() &&
+            if ((exitRequested_ || exitWhenExperimentFinishes_) && !experiment().snapshot().active() &&
                 catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
                 (!normalSession_ || normalSession_->closed()) && (!state_.didactic || state_.didactic->closed())) {
                 screen_.Exit();
@@ -1132,6 +1156,13 @@ public:
         }
         if (state_.page == Page::Cluster) return handleClusterEvent(event);
         if (state_.page == Page::ClusterDidactic) return handleClusterDidactic(event);
+        if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution && event.is_character() &&
+            (event.character() == "e" || event.character() == "E")) {
+            exportClusterBenchmark();
+            return true;
+        }
+        if (clusterBenchmarkMode_ && state_.page == Page::ComparisonConfig &&
+            clusterSession_->snapshot().phase != ClusterPhase::Ready && event != Event::Escape) return true;
         if(state_.page==Page::CudaDidactic) {
             if(event==Event::Escape || (event.is_character() && (event.character()=="x"||event.character()=="X"||event.character()=="q"||event.character()=="Q"))) {
                 stopCudaPlayback();state_.page=Page::Main;return true;
@@ -1460,12 +1491,12 @@ private:
             case Page::CudaBlocks: return blockMenu_;
             case Page::Main: return mainMenu_;
             case Page::Cluster:
-                return clusterSession_->snapshot().phase == ClusterPhase::Ready ? clusterDidacticButton_ : clusterForm_;
+                return clusterSession_->snapshot().phase == ClusterPhase::Ready ? clusterReadyActions_ : clusterForm_;
             case Page::ClusterSetup: return clusterSetupForm_;
             case Page::ClusterDidactic: return passiveView_;
             case Page::BenchmarkMenu: return benchmarkMenu_;
             case Page::ExperimentExecution: return benchmarkView_;
-            case Page::ComparisonConfig: return comparisonForm_;
+            case Page::ComparisonConfig: return clusterBenchmarkMode_ ? clusterBenchmarkForm_ : comparisonForm_;
             case Page::BenchmarkScaling: return scalingForm_;
             case Page::BenchmarkResults: return benchmarkView_;
             case Page::Patterns:
@@ -1577,7 +1608,7 @@ private:
     }
 
     void openCatalog(Page destination=Page::Main) {
-        if(experiment_->snapshot().active()) {state_.message="Catálogo disponible al finalizar el experimento.";return;}
+        if(experiment().snapshot().active()) {state_.message="Catálogo disponible al finalizar el experimento.";return;}
         state_.returnAfterCatalog=destination;refreshPatterns();state_.page=Page::Patterns;
     }
     void leaveCatalog() {
@@ -1619,7 +1650,7 @@ private:
         }
     }
     void startNormal() {
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de simular.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de simular.";return;}
         if(!state_.input) {openCatalog(Page::Simulation);return;}
         try {
             if(state_.engine==Engine::CUDA && !normalSession_) {refreshCuda(state_.cudaBlock);if(!state_.cudaInfo.available) {state_.message="Error: "+state_.cudaInfo.diagnostic;return;}}
@@ -1629,7 +1660,7 @@ private:
         } catch(const std::exception& e) {state_.message="Error al abrir simulación: "+std::string(e.what());}
     }
     void startCudaDidactic() {
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de explorar CUDA.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de explorar CUDA.";return;}
         playbackTimer_.request_stop();pendingEvents_.fetch_and(~kPlaybackEvent,std::memory_order_acq_rel);
         if(normalSession_)normalSession_->pause();
         if(!state_.input) {openCatalog(Page::CudaDidactic);return;}
@@ -1713,7 +1744,7 @@ private:
 
     void usePattern() {
         if(!catalogPreview_.initial() || !catalogPreview_.entry()) {state_.message="Selecciona una entrada válida antes de usarla.";return;}
-        if(experiment_->snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
+        if(experiment().snapshot().active()) {state_.message="Espera al experimento antes de cambiar la entrada.";return;}
         // Confirm the immutable validated initial input, never the current frame.
         state_.input=*catalogPreview_.initial();state_.path=catalogPreview_.entry()->path;
         normalSession_.reset();normalViewport_={};cudaDidactic_={};cudaViewport_={};cudaDetail_=false;cudaCoverage_=false;cudaDetailRow_=0;
@@ -1803,7 +1834,7 @@ private:
 
     void startDidactic() {
         if(state_.engine==Engine::CUDA) {startCudaDidactic();return;}
-        if (experiment_->snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
+        if (experiment().snapshot().active()) { state_.message = "Modo didáctico disponible al finalizar el experimento."; return; }
         if (!state_.input) {
             state_.returnAfterCatalog = Page::Didactic;
             refreshPatterns();
@@ -1829,7 +1860,7 @@ private:
         if(!catalogPreview_.drained()) {state_.message="Espera al cierre de la vista previa antes de medir.";return;}
         if(state_.didactic && state_.didactic->ownsMPISession()) {state_.message="Espera al cierre de la sesión didáctica MPI antes de medir.";return;}
         if(state_.didactic && state_.didactic->busy()) {state_.message="Espera al cierre o captura didáctica antes de medir.";return;}
-        if (experiment_->snapshot().active()) return;
+        if (experiment().snapshot().active()) return;
         if (state_.benchmarkRunning) {
             state_.page = Page::Benchmark;
             return;
@@ -1894,7 +1925,7 @@ private:
                 return true;
             }
             if (key == "c" || key == "C") {
-                if (experiment_->snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; return true; }
+                if (experiment().snapshot().active()) { state_.message = "Catálogo disponible al finalizar el experimento."; return true; }
                 state_.returnAfterCatalog = Page::Main;
                 refreshPatterns();
                 state_.page = Page::Patterns;
@@ -1988,11 +2019,19 @@ private:
                 state_.page = Page::Main;
                 break;
             case Page::ExperimentExecution:
-                state_.page = experiment_->snapshot().description.scaling
+                if (clusterBenchmarkMode_) {
+                    if (experiment().snapshot().active()) {
+                        if (cancelClusterBenchmark_.exchange(true)) clusterSession_->close();
+                    } else returnToCluster();
+                    break;
+                }
+                state_.page = experiment().snapshot().description.scaling
                     ? Page::BenchmarkScaling : Page::ComparisonConfig;
                 break;
-            case Page::Benchmark:
             case Page::ComparisonConfig:
+                if (clusterBenchmarkMode_) { returnToCluster(); break; }
+                [[fallthrough]];
+            case Page::Benchmark:
             case Page::BenchmarkScaling:
             case Page::BenchmarkResults:
                 state_.page = Page::BenchmarkMenu;
@@ -2040,7 +2079,27 @@ private:
             state_.page = Page::ClusterSetup;
             clusterCatalogButton_->TakeFocus();
         }, button);
-        Add(clusterDidacticButton_);
+        clusterBenchmarkButton_ = ftxui::Button("Benchmark", [this] {
+            if (clusterSession_->snapshot().phase != ClusterPhase::Ready) return;
+            if (experiment_->snapshot().active()) {
+                clusterInputError_ = "Espera a que termine el Benchmark local.";
+                return;
+            }
+            clusterInputError_.clear();
+            if (!clusterBenchmark_) {
+                clusterBenchmark_ = std::make_unique<ExperimentExecution>([this] { screen_.PostEvent(Event::Custom); },
+                    [this](const ExecutionRequest& request, const ExperimentExecution::PhasePublisher& phase) {
+                        return runClusterBenchmark(*clusterSession_, request, phase, [this] {
+                            return cancelClusterBenchmark_.load();
+                        });
+                    }, true);
+            }
+            clusterBenchmarkMode_ = true;
+            state_.page = Page::ComparisonConfig;
+            clusterBenchmarkForm_->TakeFocus();
+        }, button);
+        clusterReadyActions_ = ftxui::Container::Horizontal({clusterDidacticButton_, clusterBenchmarkButton_});
+        Add(clusterReadyActions_);
         clusterCatalogButton_ = ftxui::Button("Catálogo de patrones / ruta manual", [this] {
             openCatalog(Page::ClusterSetup);
         }, button);
@@ -2098,8 +2157,14 @@ private:
             goBack();
             return true;
         }
-        if (state.phase == ClusterPhase::Ready && event == Event::Return)
-            return clusterDidacticButton_->OnEvent(event);
+        if (state.phase == ClusterPhase::Ready) {
+            if (event == Event::Tab || event == Event::TabReverse) {
+                (clusterBenchmarkButton_->Focused() ? clusterDidacticButton_ : clusterBenchmarkButton_)->TakeFocus();
+                return true;
+            }
+            if (event == Event::Return || event == Event::ArrowLeft || event == Event::ArrowRight)
+                return clusterReadyActions_->OnEvent(event);
+        }
         if (event == Event::PageUp || event == Event::PageDown || (state.active() &&
             (event == Event::ArrowUp || event == Event::ArrowDown))) {
             const int page = std::max(1, clusterPageRows_ - 1);
@@ -2147,9 +2212,17 @@ private:
         if (state.active() && state.phase != ClusterPhase::Loading) {
             auto endpoint = clusterDraft_.ip + ":" + clusterDraft_.port;
             content.push_back(ftxui::paragraph(endpoint + " · " + clusterDraft_.nodes + " nodos"));
-            if (state.planAvailable) content.push_back(ftxui::text("Plan disponible"));
+            if (state.planAvailable &&
+                (state.phase != ClusterPhase::Ready || controls::terminalSize().columns >= 50))
+                content.push_back(ftxui::text("Plan disponible"));
         }
-        if (state.phase == ClusterPhase::Ready) content.push_back(clusterDidacticButton_->Render());
+        if (state.phase == ClusterPhase::Ready) {
+            if (controls::terminalSize().columns < 50)
+                content.push_back(ftxui::vbox({clusterDidacticButton_->Render(), clusterBenchmarkButton_->Render()}));
+            else content.push_back(ftxui::hbox({clusterDidacticButton_->Render(), ftxui::text("   "),
+                clusterBenchmarkButton_->Render()}));
+            if (!clusterInputError_.empty()) content.push_back(ftxui::paragraph(clusterInputError_));
+        }
         if (!state.active()) {
             constexpr std::array labels{"IP del servidor", "Puerto", "Nodos (incl. servidor)"};
             for (std::size_t i = 0; i < labels.size(); ++i) {
@@ -2652,7 +2725,7 @@ private:
         if(clusterSession_)clusterSession_->close();
         if(normalSession_)normalSession_->close();
         if(state_.didactic && !state_.didactic->closed()) state_.didactic->close();
-        if (experiment_->snapshot().active()) {
+        if (experiment().snapshot().active()) {
             exitWhenExperimentFinishes_ = true;
             state_.message = "Salida pendiente: se cerrará al finalizar el experimento.";
         } else if (catalogPreview_.drained() && (!clusterSession_ || !clusterSession_->snapshot().active()) &&
@@ -2684,10 +2757,41 @@ private:
         return bytes;
     }
 
+    ExperimentExecution& experiment() const {
+        return *(clusterBenchmarkMode_ ? clusterBenchmark_ : experiment_);
+    }
+
+    void returnToCluster() {
+        clusterBenchmarkMode_ = false;
+        cancelClusterBenchmark_ = false;
+        completionPendingId_ = 0;
+        state_.page = Page::Cluster;
+        clusterBenchmarkButton_->TakeFocus();
+    }
+
+    void exportClusterBenchmark() {
+        const auto snapshot = experiment().snapshot();
+        if (snapshot.phase != ExecutionPhase::Finished || !snapshot.latest) return;
+        try {
+            const auto stamp = std::chrono::system_clock::now().time_since_epoch();
+            const auto name = "benchmark-cluster-" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(stamp).count()) +
+                "-" + std::to_string(snapshot.description.id);
+            const auto paths = exportExperimentCsv(std::get<ExperimentResult>(snapshot.latest->result),
+                snapshot.latest->context, std::filesystem::current_path() / name);
+            clusterExportMessage_ = "CSV guardados en " + paths.samples.parent_path().string();
+        } catch (const std::exception& error) {
+            clusterExportMessage_ = "Error al exportar CSV. " + std::string(error.what());
+        }
+        resultRow_ = 0;
+    }
+
     std::string launchExperiment(bool scaling, ExperimentFormConfig config) {
         if(!catalogPreview_.drained())return "Espera al cierre de la vista previa antes de medir.";
+        if (clusterBenchmarkMode_ && clusterSession_->snapshot().phase != ClusterPhase::Ready)
+            return "El grupo MPI ya no está disponible.";
         if(state_.didactic && state_.didactic->ownsMPISession()) return "Espera al cierre de la sesión didáctica MPI antes de medir.";
-        if (experiment_->snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
+        if (experiment().snapshot().active()) return "Ya hay un experimento activo. Consulta Resultados de la sesión.";
         if (exitWhenExperimentFinishes_) return "La aplicación está pendiente de cierre.";
         if (state_.benchmarkRunning || (state_.didactic && state_.didactic->busy()))
             return "Espera a que termine la preparación o medición activa.";
@@ -2699,12 +2803,19 @@ private:
         }
         try {
             const auto bytes = retainedUiPayload();
-            if (!experiment_->start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
+            if (clusterBenchmarkMode_) {
+                cancelClusterBenchmark_ = false;
+                clusterExportMessage_.clear();
+                comparisonTab_ = 0;
+                resultRow_ = 0;
+                completionDisplayedId_ = 0;
+            }
+            if (!experiment().start(scaling, std::move(config), state_.input ? &*state_.input : nullptr,
                                     std::filesystem::path(state_.path).filename().string(), bytes))
                 return "Ya hay un experimento activo.";
             resultRow_ = 0; comparisonTab_=0; scalingTab_=0; comparisonSampleDetails_=false; comparisonMethodDetails_=false; scalingSampleDetails_=false; scalingMethodDetails_=false;
             benchmarkCompletionTimer_.request_stop();
-            completionPendingId_=experiment_->snapshot().description.id;
+            completionPendingId_=experiment().snapshot().description.id;
             completionDisplayedId_=0;completionUntil_={};
             state_.page = Page::ExperimentExecution;
             return {};
@@ -2712,7 +2823,7 @@ private:
     }
 
     bool showingComparison() const {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
@@ -2720,18 +2831,18 @@ private:
 
     bool showingComparisonSamples() const {
         if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Samples) return false;
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
     }
 
     bool showingComparisonMethod() const {
         if (!showingComparison() || static_cast<ComparisonTab>(comparisonTab_) != ComparisonTab::Method) return false;
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return std::get<ExperimentResult>(snapshot.latest->result).study.has_value();
     }
 
     bool showingScaling() const {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         return snapshot.latest && std::holds_alternative<ScalingResult>(snapshot.latest->result)
             && (state_.page == Page::BenchmarkResults || snapshot.phase == ExecutionPhase::Finished ||
                 (snapshot.phase == ExecutionPhase::Error && snapshot.latest->description.id == snapshot.description.id));
@@ -2799,6 +2910,8 @@ private:
                 ftxui::color(ftxui::Color::RGB(98,232,137)));
         if (snapshot.phase != ExecutionPhase::Finished)
             rows.push_back(ftxui::text("Resultado conservado · ejecución #" + std::to_string(stored.description.id)));
+        if (clusterBenchmarkMode_ && !clusterExportMessage_.empty())
+            rows.push_back(ftxui::paragraph(clusterExportMessage_));
         auto presentation = comparisonRows(comparison, stored.description.patternName,
             static_cast<ComparisonTab>(comparisonTab_), static_cast<int>(controls::terminalSize().columns) - 2,
             identityCyan(), ftxui::Color::RGB(98,232,137), comparisonSampleDetails_, comparisonMethodDetails_);
@@ -2808,7 +2921,7 @@ private:
             rows.push_back(ftxui::text(" "));
             rows.push_back(ftxui::text("Ejecución #" + std::to_string(stored.description.id)) | ftxui::dim);
         }
-        return panel(session ? "RESULTADOS DE LA SESIÓN" : "COMPARACIÓN DE MOTORES",
+        return panel(session ? "RESULTADOS DE LA SESIÓN" : clusterBenchmarkMode_ ? "BENCHMARK DEL CLÚSTER" : "COMPARACIÓN DE MOTORES",
             resultViewport(std::move(rows), std::move(tabs)));
     }
 
@@ -2848,22 +2961,34 @@ private:
             std::clamp(static_cast<int>(static_cast<long double>(snapshot.completedWork)*100/snapshot.totalWork),0,99):0;
         const auto tint=finished?Color::RGB(98,232,137):identityCyan();
         const int barWidth=std::clamp(static_cast<int>(terminal.columns)-24,12,48);
-        const std::string title=!d.scaling?"COMPARACIÓN DE MOTORES":
+        const std::string title=clusterBenchmarkMode_?"BENCHMARK DEL CLÚSTER":!d.scaling?"COMPARACIÓN DE MOTORES":
             sc.parallelEngine==Engine::CUDA?"BLOQUES CUDA":sc.parallelEngine==Engine::MPI?"ESCALABILIDAD MPI":"ESCALABILIDAD OPENMP";
-        const std::string status=finished?"Benchmark completado":
+        const std::string status=clusterBenchmarkMode_ && cancelClusterBenchmark_ ? "Esperando el intento en curso" :
+            finished?"Benchmark completado":
             snapshot.phase==ExecutionPhase::Preparing?"Preparando entrada":"Ejecutando benchmark";
         const auto digits=std::to_string(percent);
         auto progress=hbox({gauge(static_cast<float>(percent)/100)|color(tint)|
             bgcolor(Color::RGB(35,40,44))|size(WIDTH,EQUAL,barWidth),
             text("  "+std::string(3-digits.size(),' ')+digits+" %")|bold|color(tint)});
         auto card=vbox({text(" "),text(status)|bold|color(tint),text(" "),std::move(progress),text(" ")});
+        if (clusterBenchmarkMode_) {
+            if (snapshot.totalWork)
+                card = vbox({std::move(card), text(std::to_string(snapshot.completedWork) + "/" +
+                    std::to_string(snapshot.totalWork) + " intentos") | center});
+            const auto group = clusterSession_->snapshot();
+            if (group.phase == ClusterPhase::Error)
+                card = vbox({std::move(card), paragraph("Grupo MPI perdido durante Benchmark. " + group.message) |
+                    color(Color::Red) | size(WIDTH, LESS_THAN, barWidth)});
+            if (group.phase == ClusterPhase::Closing)
+                card = vbox({std::move(card), text("Cerrando sesión MPI") | center});
+        }
         card=hbox({text("  "),std::move(card),text("  ")})|border;
         resultRows_=1;resultRow_=0;
         return panel(session?"RESULTADOS DE LA SESIÓN":title,card|center);
     }
 
     Element renderExperiment(bool session) {
-        const auto snapshot = experiment_->snapshot();
+        const auto snapshot = experiment().snapshot();
         if(showExperimentCompletion(snapshot)) return renderExperimentProgress(snapshot,session);
         if (snapshot.latest && std::holds_alternative<ExperimentResult>(snapshot.latest->result)
             && (session || snapshot.phase == ExecutionPhase::Finished ||
@@ -2905,7 +3030,7 @@ private:
                 }
             } else {
                 resources="Participantes: ";
-                for(const auto& participant:c.participants) resources+=configurationName(participant)+" ";
+                for(const auto& participant:c.participants) resources+=configurationName(participant,clusterBenchmarkMode_)+" ";
             }
             rows.push_back(ftxui::paragraph(resources));
         }
@@ -3474,8 +3599,8 @@ private:
             const std::string client = lastClusterClient() > 1 ? " · [/] cliente" : "";
             if (cluster.phase == ClusterPhase::Closing) return "Esperando confirmación";
             if (cluster.phase == ClusterPhase::Ready)
-                return controls::terminalSize().columns < 50 ? "Enter didáctica · Esc cerrar" + client :
-                    "Enter didáctica · ↑↓ desplazar · Esc cerrar sesión" + client;
+                return controls::terminalSize().columns < 50 ? "Tab · Enter · ↑↓ · Esc" + client :
+                    "Tab opción · Enter · ↑↓ desplazar · Esc cerrar" + client;
             if (cluster.active()) return "↑↓ desplazar · Esc cancelar" + client;
             return "Tab campos · Enter activar · Esc menú" + client;
         }
@@ -3491,9 +3616,17 @@ private:
             return "Esc menú · D detalles · ↑↓ desplazar";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI && controls::terminalSize().columns<=44) return "V vista · D ayuda · [/] · N paso · Esp · R · Esc";
         if(state_.page==Page::Didactic && state_.engine==Engine::MPI) return "V vista · D ayuda · [/] rank · ↑↓ desplazar · N paso · Esp pausa · +/- · R · Esc";
+        if (clusterBenchmarkMode_ && state_.page == Page::ComparisonConfig)
+            return "Tab campos · Enter · Esc sesión";
+        if (clusterBenchmarkMode_ && state_.page == Page::ExperimentExecution) {
+            const auto execution = experiment().snapshot();
+            if (execution.active()) return cancelClusterBenchmark_ ? "Esc otra vez · cerrar grupo" : "Esc · volver tras el intento";
+            if (execution.phase == ExecutionPhase::Finished) return "←→ pestañas · D detalles · E CSV · Esc sesión";
+            return "Esc sesión";
+        }
         const auto terminal = controls::terminalSize();
         if (state_.page==Page::ExperimentExecution || state_.page==Page::BenchmarkResults) {
-            const auto snapshot=experiment_->snapshot();
+            const auto snapshot=experiment().snapshot();
             if(snapshot.active() && (state_.page==Page::ExperimentExecution || !snapshot.latest))
                 return state_.page==Page::ExperimentExecution ?
                     "Esc configuración (la ejecución continúa)" :
@@ -3563,6 +3696,7 @@ private:
     ExperimentFormDraft clusterGenerator_{standardExperimentForm(false, 1, false)};
     std::string clusterSetupError_;
     std::array<ftxui::Component, 4> clusterGeneratorFields_;
+    ftxui::Component clusterReadyActions_, clusterBenchmarkButton_, clusterBenchmarkForm_;
     ftxui::Component clusterDidacticButton_, clusterCatalogButton_, clusterGenerateButton_, clusterSetupForm_;
     ClusterSettings clusterDraft_;
     std::string clusterInputError_;
@@ -3599,7 +3733,10 @@ private:
     std::optional<BenchmarkResult> benchmarkResult_;
     std::string benchmarkError_;
     std::thread benchmarkWorker_;
-    std::unique_ptr<ExperimentExecution> experiment_;
+    std::unique_ptr<ExperimentExecution> experiment_, clusterBenchmark_;
+    bool clusterBenchmarkMode_{};
+    std::atomic<bool> cancelClusterBenchmark_{};
+    std::string clusterExportMessage_;
     bool exitWhenExperimentFinishes_{false};
     bool exitRequested_{false};
     int resultRow_{0}, resultRows_{1};

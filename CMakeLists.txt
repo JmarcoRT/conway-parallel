@@ -88,6 +88,7 @@ add_executable(conway
     src/app/app.cpp
     src/app/controls.cpp
     src/app/cluster_session.cpp
+    src/app/cluster_benchmark.cpp
     src/app/thread_config.cpp
     src/app/pattern_catalog.cpp
     src/app/pattern_preview.cpp
@@ -198,7 +199,11 @@ if(BUILD_TESTING)
             add_test(NAME ftxui_cluster_loopback COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_cluster.py"
                 $<TARGET_FILE:conway> $<TARGET_FILE:conway_cluster> "${CMAKE_CURRENT_SOURCE_DIR}")
-            set_tests_properties(ftxui_cluster_loopback PROPERTIES TIMEOUT 75 RUN_SERIAL TRUE)
+            add_test(NAME ftxui_cluster_benchmark_loopback COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ftxui_cluster_benchmark.py"
+                $<TARGET_FILE:conway> $<TARGET_FILE:conway_cluster> "${CMAKE_CURRENT_SOURCE_DIR}")
+            set_tests_properties(ftxui_cluster_loopback ftxui_cluster_benchmark_loopback
+                PROPERTIES TIMEOUT 75 RUN_SERIAL TRUE)
         endif()
     endif()
 

@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -231,6 +232,9 @@ std::string prepareCommand(ClusterSession::Operation& operation, std::uint64_t i
     if (const auto* selection = std::get_if<mpi::WindowRequest>(&operation)) {
         command << "STEP " << id << ' ' << selection->generation << ' ' << selection->rank
                 << ' ' << selection->row << ' ' << selection->column;
+    } else if (const auto* attempt = std::get_if<ClusterSession::BenchmarkAttempt>(&operation)) {
+        if (attempt->initial) writeInput(*attempt->initial, path);
+        command << "BENCH " << id << ' ' << attempt->generations << ' ' << bool(attempt->initial);
     } else if (std::holds_alternative<ClusterSession::Reset>(operation)) {
         command << "RESET " << id;
     } else {
@@ -244,6 +248,30 @@ std::string prepareCommand(ClusterSession::Operation& operation, std::uint64_t i
         command << "LOAD " << id;
     }
     return command.str() + '\n';
+}
+
+ClusterMeasurement readMeasurement(const std::vector<std::string>& data, const std::filesystem::path& path) {
+    ClusterMeasurement measurement{};
+    measurement.generation = number<std::size_t>(data[2]).value_or(0);
+    measurement.processes = number(data[3]).value_or(0);
+    auto& board = measurement.finalBoard;
+    board.width = number<std::size_t>(data[4]).value_or(0);
+    board.height = number<std::size_t>(data[5]).value_or(0);
+    measurement.elapsedMs = number<double>(data[6]).value_or(-1);
+    measurement.prepareMs = number<double>(data[7]).value_or(-1);
+    measurement.collectMs = number<double>(data[8]).value_or(-1);
+    const auto count = mpi::checked_cell_count(board.width, board.height);
+    if (count > mpi::windowInputCells || !measurement.generation ||
+        measurement.processes < 2 || measurement.processes > 1024)
+        throw std::runtime_error("Dimensiones, generación o P inválidos en Benchmark MPI.");
+    for (const auto ms : {measurement.elapsedMs, measurement.prepareMs, measurement.collectMs})
+        if (!std::isfinite(ms) || ms < 0) throw std::runtime_error("Tiempo inválido en Benchmark MPI.");
+    std::ifstream file(path, std::ios::binary);
+    board.cells.resize(count);
+    if (!file.read(reinterpret_cast<char*>(board.cells.data()), count) || file.peek() != EOF)
+        throw std::runtime_error("Tablero final MPI incompleto.");
+    std::filesystem::remove(path);
+    return measurement;
 }
 
 }  // namespace
@@ -265,6 +293,7 @@ void ClusterSession::publish(const ClusterState& state) {
         std::lock_guard lock(mutex_);
         state_ = state;
     }
+    changed_.notify_all();
     notify_();
 }
 
@@ -317,6 +346,16 @@ std::optional<std::uint64_t> ClusterSession::submit(Operation operation) {
     return nextId_;
 }
 
+std::shared_ptr<const ClusterResult> ClusterSession::waitForResult(std::uint64_t id) {
+    std::unique_lock lock(mutex_);
+    changed_.wait(lock, [&] {
+        return !state_.active() || (state_.phase == ClusterPhase::Ready && state_.result && state_.result->id == id);
+    });
+    if (state_.phase != ClusterPhase::Ready)
+        throw std::runtime_error("Grupo MPI perdido durante Benchmark. " + state_.message);
+    return state_.result;
+}
+
 void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> args, bool defaults) {
     auto state = snapshot();
     ClusterPhase terminal = ClusterPhase::Error;
@@ -337,6 +376,7 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
                 state_ = state;
             }
             inFlight.reset();
+            changed_.notify_all();
             notify_();
         };
         const auto defaultsDeadline = Clock::now() + 5s;
@@ -393,7 +433,7 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
                             terminal = data[1] == "CLOSED" ? ClusterPhase::Closed :
                                 data[1] == "CANCELLED" ? ClusterPhase::Cancelled : ClusterPhase::Error;
                             state.message = data[2];
-                        } else if (data[0] == "TRACE" || data[0] == "LOADED" || data[0] == "REJECT") {
+                        } else if (data[0] == "TRACE" || data[0] == "LOADED" || data[0] == "REJECT" || data[0] == "BENCHED") {
                             const auto id = data.size() > 1 ? number<std::uint64_t>(data[1]) : std::nullopt;
                             if (!inFlight || id != inFlight)
                                 throw std::runtime_error("Respuesta de una operación desconocida.");
@@ -408,6 +448,8 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
                                 result.population = number<std::size_t>(data[4]).value_or(count + 1);
                                 if (count > mpi::windowInputCells || result.population > count)
                                     throw std::runtime_error("Confirmación de entrada inválida.");
+                            } else if (data[0] == "BENCHED" && data.size() == 9) {
+                                result.measurement = readMeasurement(data, directory.inputPath().string() + ".result");
                             } else if (data[0] == "REJECT" && data.size() == 3) {
                                 result.error = data[2];
                             } else throw std::runtime_error("Respuesta incompleta del clúster.");
@@ -448,6 +490,7 @@ void ClusterSession::supervise(std::stop_token stop, std::vector<std::string> ar
         outstanding_ = false;
         state_ = state;
     }
+    changed_.notify_all();
     notify_();
 }
 

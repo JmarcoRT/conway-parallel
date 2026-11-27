@@ -10,5 +10,6 @@ ftxui::Component makeExperimentFormView(
     bool scaling, std::function<const InputData*()> input,
     std::function<std::string()> patternName, std::function<int()> currentThreads,
     std::function<ftxui::Element(ftxui::Element)> focusedStyle,
-    std::function<std::string(bool, ExperimentFormConfig)> submit);
+    std::function<std::string(bool, ExperimentFormConfig)> submit,
+    std::function<int()> confirmedProcesses = {}, std::function<void()> choosePattern = {});
 } // namespace conway::app

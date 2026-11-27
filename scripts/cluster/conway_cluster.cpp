@@ -117,8 +117,8 @@ MPI_Comm server_comm(const Options& o) {
     const auto temporary = o.plan + ".tmp";
     std::ofstream plan(temporary);
     plan << "{\n  \"nodes\": " << o.clients + 1;
-    // Version 3 changes the collective sequence during load and reset.
-    if (o.interactive) plan << ",\n  \"interactive\": 3,\n  \"session_id\": \""
+    // Version 4 adds benchmark attempts to the persistent group protocol.
+    if (o.interactive) plan << ",\n  \"interactive\": 4,\n  \"session_id\": \""
                             << json_string(o.session_id) << "\"";
     plan << ",\n  \"clients\": {\n";
     for (int i = 0; i < o.clients; ++i)

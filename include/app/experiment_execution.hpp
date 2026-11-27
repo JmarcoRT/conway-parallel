@@ -40,7 +40,7 @@ class ExperimentExecution {
 public:
     using PhasePublisher = std::function<void(ExecutionPhase)>;
     using Backend = std::function<StoredExperiment(const ExecutionRequest&, const PhasePublisher&)>;
-    explicit ExperimentExecution(std::function<void()> notify, Backend backend = {});
+    explicit ExperimentExecution(std::function<void()> notify, Backend backend = {}, bool notifyEachAttempt = false);
     ~ExperimentExecution();
     ExperimentExecution(const ExperimentExecution&) = delete;
     ExperimentExecution& operator=(const ExperimentExecution&) = delete;
@@ -57,6 +57,7 @@ private:
     void loop();
     std::function<void()> notify_;
     Backend backend_;
+    bool notifyEachAttempt_;
     mutable std::mutex mutex_;
     std::condition_variable wake_;
     ExecutionSnapshot state_;

@@ -24,8 +24,8 @@ def screen(terminal):
     return "\n".join(terminal.screen().values())
 
 
-def visible(terminal, *needles):
-    deadline = time.monotonic() + 10
+def visible(terminal, *needles, timeout=10):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if all(needle in screen(terminal) for needle in needles):
             return
@@ -152,7 +152,7 @@ def session(binary, repo, config, port):
         visible(terminal, "Conectando por MPI", "Plan disponible", "Falta cliente")
         assert "Grupo listo" not in screen(terminal)
         plan = read_plan(port)
-        assert plan["interactive"] == 3 and plan["nodes"] == 2 and plan["clients"]["1"]["port_name"]
+        assert plan["interactive"] == 4 and plan["nodes"] == 2 and plan["clients"]["1"]["port_name"]
         assert plan["session_id"]
 
         terminal.send(ESC)

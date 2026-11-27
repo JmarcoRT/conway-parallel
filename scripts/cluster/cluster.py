@@ -46,7 +46,7 @@ DEFAULT_BINARY = Path(
 ZT_API = os.environ.get("CONWAY_ZT_API", "https://my.zerotier.com/api/v1")
 DEFAULT_HTTP_PORT = 8080
 DEFAULT_TIMEOUT = 300
-INTERACTIVE_PROTOCOL = 3
+INTERACTIVE_PROTOCOL = 4
 HEALTH_INTERVAL = 2
 HEALTH_TIMEOUT = 12
 
@@ -595,7 +595,8 @@ def interactive_client(args) -> int:
         stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, bufsize=0,
     ) as child:
         try:
-            return monitor_client(child, f"http://{address}:{args.http_port}/health", session_id)
+            health_url = f"http://{address}:{args.http_port}/health/{session_id}/{args.node_id}"
+            return monitor_client(child, health_url, session_id)
         finally:
             stop_child(child)
 
@@ -649,12 +650,18 @@ def monitor_client(child, health_url, session_id):
 
 class InteractivePlanHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/health":
+        if self.path.startswith("/health/"):
+            _, _, session_id, node = self.path.split("/", 3)
+            if session_id != self.server.session_id or node not in self.server.heartbeats:
+                self.send_error(404)
+                return
             worker = self.server.worker
             if worker is None or worker.poll() is not None:
                 self.send_error(503)
                 return
-            payload = self.server.session_id.encode()
+            with self.server.heartbeat_lock:
+                self.server.heartbeats[node] = time.monotonic()
+            payload = session_id.encode()
             content_type = "text/plain"
         elif self.path == "/plan.json":
             try:
@@ -686,9 +693,10 @@ def stop_child(child):
             child.wait()
 
 
-def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
+def relay_session(child, url, diagnostics, nodes, server, keep_diagnostics):
     phase = "Publicando plan"
     ready = closing = closed = False
+    ready_at = 0
     deadline = time.monotonic() + DEFAULT_TIMEOUT
     pending = b""
     commands = b""
@@ -698,7 +706,14 @@ def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
         selector.register(sys.stdin.buffer, selectors.EVENT_READ, "ui")
         selector.register(child.stdout, selectors.EVENT_READ, "mpi")
         while True:
-            if deadline is not None and time.monotonic() >= deadline:
+            now = time.monotonic()
+            if ready and not closing and now - ready_at >= HEALTH_TIMEOUT:
+                with server.heartbeat_lock:
+                    missing = next((node for node, seen in server.heartbeats.items()
+                                    if now - max(ready_at, seen) >= HEALTH_TIMEOUT), None)
+                if missing:
+                    raise ClusterError(f"{phase}: se perdió el cliente {missing}.")
+            if deadline is not None and now >= deadline:
                 suffix = f" durante {interrupted}" if interrupted else ""
                 raise ClusterError(f"{phase}: plazo agotado{suffix}.")
             for key, _ in selector.select(0.1):
@@ -712,12 +727,12 @@ def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
                             if not ready:
                                 return "CANCELLED", f"{phase}: se cerró el servidor local. Cierre de clientes no confirmado."
                             closing = True
-                            if phase in ("Carga MPI", "Captura MPI"):
+                            if phase in ("Carga MPI", "Captura MPI", "Benchmark MPI"):
                                 interrupted = phase
                             phase = "Cerrando sesión"
                             deadline = time.monotonic() + 5
-                        elif ready and command.startswith((b"LOAD ", b"RESET ", b"STEP ")):
-                            phase = "Captura MPI" if command.startswith(b"STEP ") else "Carga MPI"
+                        elif ready and command.startswith((b"LOAD ", b"RESET ", b"STEP ", b"BENCH ")):
+                            phase = {b"STEP": "Captura MPI", b"BENCH": "Benchmark MPI"}.get(command.split()[0], "Carga MPI")
                             deadline = time.monotonic() + DEFAULT_TIMEOUT
                         else:
                             raise ClusterError(f"{phase}: orden local inválida.")
@@ -750,7 +765,7 @@ def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
                                 plan = json.load(response)
                         except (OSError, ValueError) as exc:
                             raise ClusterError(f"{phase}: no se pudo leer el plan HTTP. {exc}") from exc
-                        if (plan.get("interactive") != INTERACTIVE_PROTOCOL or plan.get("session_id") != session_id or
+                        if (plan.get("interactive") != INTERACTIVE_PROTOCOL or plan.get("session_id") != server.session_id or
                             plan["nodes"] != nodes or
                             set(plan["clients"]) != {str(i) for i in range(1, nodes)} or
                             any(not item["port_name"] for item in plan["clients"].values())):
@@ -760,10 +775,11 @@ def relay_session(child, url, diagnostics, nodes, session_id, keep_diagnostics):
                         ui_message("PLAN")
                     elif decoded == "READY":
                         phase, ready, deadline = "Grupo listo", True, None
+                        ready_at = time.monotonic()
                         ui_message("READY")
                     elif decoded == "CLOSED":
                         closed = True
-                    elif decoded.startswith(("TRACE\t", "LOADED\t", "REJECT\t")):
+                    elif decoded.startswith(("TRACE\t", "LOADED\t", "REJECT\t", "BENCHED\t")):
                         if not closing:
                             phase, deadline = "Grupo listo", None
                         ui_message(*decoded.split("\t"))
@@ -788,6 +804,8 @@ def ui_server(args) -> int:
             server.plan_path = plan
             server.session_id = secrets.token_hex(16)
             server.worker = None
+            server.heartbeat_lock = threading.Lock()
+            server.heartbeats = {str(node): 0 for node in range(1, args.nodes)}
             http = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
             http.start()
             try:
@@ -803,7 +821,7 @@ def ui_server(args) -> int:
                     server.worker = child
                     try:
                         url = plan_url({"server_ip": ip, "http_port": args.http_port})
-                        status, detail = relay_session(child, url, diagnostics, args.nodes, server.session_id, bool(log_path))
+                        status, detail = relay_session(child, url, diagnostics, args.nodes, server, bool(log_path))
                     finally:
                         stop_child(child)
             finally:
@@ -812,7 +830,7 @@ def ui_server(args) -> int:
     except ClusterError as exc:
         detail = exc.message
         if not detail.startswith(("Publicando plan:", "Conectando por MPI:", "Grupo listo:",
-                                  "Cerrando sesión:", "Captura MPI:", "Carga MPI:")):
+                                  "Cerrando sesión:", "Captura MPI:", "Carga MPI:", "Benchmark MPI:")):
             detail = "Publicando plan: " + detail
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         phase = "Sesión MPI" if launched else "Publicando plan"
